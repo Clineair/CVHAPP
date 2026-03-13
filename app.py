@@ -47,9 +47,56 @@ if st.button("Legal", type="secondary"):
         Abbreviation | Definition
         ABS | Absolute
         AGL | Above Ground Level
-        ... (full table as before)
+        ALT | Altitude
+        CAS | Calibrated Airspeed
+        CG | Center of Gravity
+        CL | Centerline
+        CONF | Configuration
+        CONT | Continuous
+        F | Fahrenheit
+        FLT | Flight
+        FPM | Feet per Minute
+        FT | Foot
+        FWD | Forward
+        GAL | Gallon
+        GAL/HR | Gallon per hour
+        GW | Gross Weight
+        IAS | Indicated Airspeed
+        IGE | In ground effect
+        IN | Inch
+        IN HG | Inches of Mercury
+        ISA | International Standard Atmosphere
+        KIAS | Knots Indicated Airspeed
+        KT | Knot
+        LB | Pound
+        LB/HR | Pounds per hour
+        MAX | Maximum
+        MB | Millibar
+        MIN | Minimum
+        MTS | Gas producer turbine speed
+        N1 | Power turbine speed
+        NM | Nautical mile
+        OAT | Outside Air Temp.
+        OGE | Out of ground effect
+        PRESS | Pressure
+        PSI | Pounds per square inch
+        R/C | Rate of climb
+        R/D | Rate of descent
+        RPM | Revolutions per minute
+        SHP | Shaft horsepower
+        SQ FT | Square feet
+        TAS | True airspeed
+        TORQ | Torque
+        TRQ | Torque
+        VDC | Volts direct current
+        Vd | Maximum design dive speed
+        Vh | Maximum level flight airspeed at maximum continuous power
+        Vne | Velocity never exceeded
+        Vy | Best rate of climb airspeed
+        WT | Weight
+        XMSN | Transmission
         
-        By using this app, you agree to these terms. This app is for educational purposes only.
+        By using this app, you agree to these terms. This app is for educational purposes only and not a substitute for official POH or professional advice.
         """)
 
 # ────────────────────────────────────────────────
@@ -63,100 +110,7 @@ if 'show_risk' not in st.session_state:
     st.session_state.show_risk = False
 
 # ────────────────────────────────────────────────
-# Aircraft Database – PERFECTLY INDENTED (this was the error line 63)
+# Aircraft Database – 100% FIXED INDENTATION
 # ────────────────────────────────────────────────
 AIRCRAFT_DATA = {
-    "Air Tractor AT-502B": {
-        "name": "Air Tractor AT-502B",
-        "base_takeoff_ground_roll_ft": 1140,
-        "base_takeoff_to_50ft_ft": 2600,
-        "base_landing_ground_roll_ft": 600,
-        "base_landing_to_50ft_ft": 1350,
-        "base_climb_rate_fpm": 870,
-        "base_stall_flaps_down_mph": 68,
-        "best_climb_speed_mph": 111,
-        "base_empty_weight_lbs": 4546,
-        "base_fuel_capacity_gal": 170,
-        "fuel_weight_per_gal": 6.0,
-        "hopper_capacity_gal": 500,
-        "hopper_weight_per_gal": 8.3,
-        "max_takeoff_weight_lbs": 9400,
-        "max_landing_weight_lbs": 8000,
-        "glide_ratio": 8.0,
-        "description": "Single-engine piston ag aircraft"
-    },
-    "Robinson R44 Raven II": {
-        "name": "Robinson R44 Raven II",
-        "base_takeoff_ground_roll_ft": 0,
-        "base_takeoff_to_50ft_ft": 0,
-        "base_landing_ground_roll_ft": 0,
-        "base_landing_to_50ft_ft": 0,
-        "base_climb_rate_fpm": 1000,
-        "base_stall_flaps_down_mph": 0,
-        "best_climb_speed_mph": 55,
-        "base_empty_weight_lbs": 1505,
-        "base_fuel_capacity_gal": 50,
-        "fuel_weight_per_gal": 6.7,
-        "hopper_capacity_gal": 83,
-        "hopper_weight_per_gal": 8.3,
-        "max_takeoff_weight_lbs": 2500,
-        "max_landing_weight_lbs": 2500,
-        "glide_ratio": 4.0,
-        "description": "Light utility/training helicopter (spray capable)",
-        "hover_ceiling_ige_max_gw": 8950,
-        "hover_ceiling_oge_max_gw": 7500
-    },
-    "Enstrom 480": {
-        "name": "Enstrom 480",
-        "base_takeoff_ground_roll_ft": 0,
-        "base_takeoff_to_50ft_ft": 0,
-        "base_landing_ground_roll_ft": 0,
-        "base_landing_to_50ft_ft": 0,
-        "base_climb_rate_fpm": 1100,
-        "base_stall_flaps_down_mph": 0,
-        "best_climb_speed_mph": 60,
-        "base_empty_weight_lbs": 1750,
-        "base_fuel_capacity_gal": 95,
-        "fuel_weight_per_gal": 6.7,
-        "hopper_capacity_gal": 100,
-        "hopper_weight_per_gal": 8.3,
-        "max_takeoff_weight_lbs": 2800,
-        "max_landing_weight_lbs": 2800,
-        "glide_ratio": 4.0,
-        "description": "Turbine light utility helicopter (spray capable)",
-        "hover_ceiling_ige_max_gw": 11000,
-        "hover_ceiling_oge_max_gw": 8500
-    },
-    "Enstrom 480B": {
-        "name": "Enstrom 480B",
-        "base_takeoff_ground_roll_ft": 0,
-        "base_takeoff_to_50ft_ft": 0,
-        "base_landing_ground_roll_ft": 0,
-        "base_landing_to_50ft_ft": 0,
-        "base_climb_rate_fpm": 1200,
-        "base_stall_flaps_down_mph": 0,
-        "best_climb_speed_mph": 60,
-        "base_empty_weight_lbs": 1800,
-        "base_fuel_capacity_gal": 95,
-        "fuel_weight_per_gal": 6.7,
-        "hopper_capacity_gal": 100,
-        "hopper_weight_per_gal": 8.3,
-        "max_takeoff_weight_lbs": 2850,
-        "max_landing_weight_lbs": 2850,
-        "glide_ratio": 4.0,
-        "description": "Improved turbine light utility helicopter (spray capable)",
-        "hover_ceiling_ige_max_gw": 12000,
-        "hover_ceiling_oge_max_gw": 9000
-    }
-}
-
-# (All the rest of the functions and main app code are exactly the same as my previous message – 
-# density altitude, helpers, compute_takeoff, compute_landing, risk gauge, fleet, weather, etc.)
-
-# ────────────────────────────────────────────────
-# [Full rest of the code from my previous response continues here – 
-# I kept it identical except the dictionary is now perfectly indented]
-# ────────────────────────────────────────────────
-# ... (density altitude function, all @st.cache_data functions, show_risk_assessment, main UI, weather section) ...
-
-# END OF FILE
+    "Air
