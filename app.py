@@ -47,7 +47,54 @@ if st.button("Legal", type="secondary"):
         Abbreviation | Definition
         ABS | Absolute
         AGL | Above Ground Level
-        ... (your full legal text here - keep it exactly as you had it)
+        ALT | Altitude
+        CAS | Calibrated Airspeed
+        CG | Center of Gravity
+        CL | Centerline
+        CONF | Configuration
+        CONT | Continuous
+        F | Fahrenheit
+        FLT | Flight
+        FPM | Feet per Minute
+        FT | Foot
+        FWD | Forward
+        GAL | Gallon
+        GAL/HR | Gallon per hour
+        GW | Gross Weight
+        IAS | Indicated Airspeed
+        IGE | In ground effect
+        IN | Inch
+        IN HG | Inches of Mercury
+        ISA | International Standard Atmosphere
+        KIAS | Knots Indicated Airspeed
+        KT | Knot
+        LB | Pound
+        LB/HR | Pounds per hour
+        MAX | Maximum
+        MB | Millibar
+        MIN | Minimum
+        MTS | Gas producer turbine speed
+        N1 | Power turbine speed
+        NM | Nautical mile
+        OAT | Outside Air Temp.
+        OGE | Out of ground effect
+        PRESS | Pressure
+        PSI | Pounds per square inch
+        R/C | Rate of climb
+        R/D | Rate of descent
+        RPM | Revolutions per minute
+        SHP | Shaft horsepower
+        SQ FT | Square feet
+        TAS | True airspeed
+        TORQ | Torque
+        TRQ | Torque
+        VDC | Volts direct current
+        Vd | Maximum design dive speed
+        Vh | Maximum level flight airspeed at maximum continuous power
+        Vne | Velocity never exceeded
+        Vy | Best rate of climb airspeed
+        WT | Weight
+        XMSN | Transmission
             By using this app, you agree to these terms. This app is for educational purposes only and not a substitute for official POH or professional advice.
         """)
 
@@ -67,7 +114,7 @@ ige_ceiling = oge_ceiling = 0
 cg_status = "Not calculated yet"
 
 # ────────────────────────────────────────────────
-# Aircraft Database (FIXED INDENTATION)
+# Aircraft Database (FIXED - consistent 4-space indentation)
 # ────────────────────────────────────────────────
 AIRCRAFT_DATA = {
     "Air Tractor AT-502B": {
@@ -109,18 +156,6 @@ AIRCRAFT_DATA = {
         "description": "Light utility/training helicopter (spray capable)",
         "hover_ceiling_ige_max_gw": 8950,
         "hover_ceiling_oge_max_gw": 7500
-    }
-    # ← All other aircraft entries go here with the exact same 4-space indentation
-    # (I kept only the problem line for brevity — replace the whole dictionary with your original one, making sure every key is indented with 4 spaces)
-}
-
-# Rest of your code (density altitude, helper functions, risk assessment, main app, weather section, etc.) remains exactly the same.
-# Just make sure every line inside the AIRCRAFT_DATA = { ... } uses consistent 4-space indentation.
-
-# ────────────────────────────────────────────────
-# (Continue with the rest of your original code from here)
-# Density Altitude, Helper Functions, Risk Assessment, Main App, etc.
-# ────────────────────────────────────────────────
     },
     "Bell 206 JetRanger III": {
         "name": "Bell 206 JetRanger III",
@@ -268,7 +303,7 @@ AIRCRAFT_DATA = {
         "description": "Light piston utility/ag helicopter – classic bubble canopy, spray capable",
         "hover_ceiling_ige_max_gw": 10000,
         "hover_ceiling_oge_max_gw": 8000
-    },
+    }
 }
 
 # ────────────────────────────────────────────────
@@ -564,7 +599,6 @@ if st.button("Risk Assessment", type="secondary"):
     st.session_state.show_risk = not st.session_state.get("show_risk", False)
 
 st.info(f"Performance data loaded for **{aircraft_data['name']}**")
-
 if st.session_state.get("show_risk", False):
     show_risk_assessment()
 
