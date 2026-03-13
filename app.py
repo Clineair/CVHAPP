@@ -9,7 +9,7 @@ from datetime import datetime
 # Page Config & Safe Logo
 # ────────────────────────────────────────────────
 st.set_page_config(
-    page_title="CVHAPP",
+    page_title="AgPilotApp – Aerial Application Performance Tool",
     page_icon="⌯✈︎",
     layout="wide",
     initial_sidebar_state="auto"
@@ -22,18 +22,14 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ────────────────────────────────────────────────
-# Custom Logo
+# Custom Logo (revised to use flaglogo.png)
 # ────────────────────────────────────────────────
-LOGO_URL = "https://raw.githubusercontent.com/Clineair/AgPilot-app/main/AgPilotApp.png"
+LOGO_URL = "flaglogo.png"  # Assuming flaglogo.png is uploaded to your repo; use URL if hosted elsewhere
 try:
     st.image(LOGO_URL, use_column_width=True)
     st.logo(LOGO_URL, size="medium")
 except Exception:
-    try:
-        st.image("flaglogo.png", use_column_width=True)
-        st.logo("flaglogo.png", size="medium")
-    except Exception:
-        st.markdown("### CVHAPP ⌯✈︎ (logo not loaded – check file/URL)")
+    st.markdown("### AgPilotApp ⌯✈︎ (logo not loaded – check file/URL)")
 
 # ────────────────────────────────────────────────
 # Legal Button
@@ -118,7 +114,7 @@ ige_ceiling = oge_ceiling = 0
 cg_status = "Not calculated yet"
 
 # ────────────────────────────────────────────────
-# Aircraft Database (fixed)
+# Aircraft Database (indent fixed)
 # ────────────────────────────────────────────────
 AIRCRAFT_DATA = {
     "Robinson R44 Raven II": {
