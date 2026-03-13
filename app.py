@@ -345,7 +345,7 @@ def show_risk_assessment():
 # ────────────────────────────────────────────────
 # Main App
 # ────────────────────────────────────────────────
-st.title("CVH")
+st.title("CVH Employee Management Tool")
 st.markdown("Performance calculator for agricultural aircraft & helicopters")
 st.caption("Prototype – educational use only. Always refer to the official Pilot Operating Handbook (POH) for actual operations.")
 
