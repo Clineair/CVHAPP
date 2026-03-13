@@ -24,12 +24,12 @@ st.markdown("""
 # ────────────────────────────────────────────────
 # Custom Logo (revised to use flaglogo.png, smaller size)
 # ────────────────────────────────────────────────
-LOGO_URL = "flaglogo.png"  # Assuming flaglogo.png is uploaded to your repo
+LOGO_URL = "flaglogo.png" # Assuming flaglogo.png is uploaded to your repo
 try:
-    st.image(LOGO_URL, width=300)  # Smaller logo (width=300 pixels)
+    st.image(LOGO_URL, width=300) # Smaller logo (width=300 pixels)
     st.logo(LOGO_URL, size="medium")
 except Exception:
-    st.markdown("###   ⌯✈︎ (logo not loaded – check file/URL)")
+    st.markdown("### ⌯✈︎ (logo not loaded – check file/URL)")
 
 # ────────────────────────────────────────────────
 # Legal Button
@@ -38,7 +38,7 @@ if st.button("Legal", type="secondary"):
     with st.expander("Legal and Terms", expanded=True):
         st.markdown("""
         ### Legal and Terms of Use
-        
+       
         List of Abbreviations
         Abbreviation | Definition
         ABS | Absolute
@@ -91,10 +91,9 @@ if st.button("Legal", type="secondary"):
         Vy | Best rate of climb airspeed
         WT | Weight
         XMSN | Transmission
-        
+       
         By using this app, you agree to these terms. This app is for educational purposes only and not a substitute for official POH or professional advice.
         """)
-
 # ────────────────────────────────────────────────
 # Session State Initialization
 # ────────────────────────────────────────────────
@@ -108,7 +107,6 @@ if 'selected_role' not in st.session_state:
     st.session_state.selected_role = None
 if 'selected_option' not in st.session_state:
     st.session_state.selected_option = None
-
 # ────────────────────────────────────────────────
 # Default performance values
 # ────────────────────────────────────────────────
@@ -116,7 +114,6 @@ ground_roll_to = to_50ft = ground_roll_land = from_50ft = 0
 climb_rate = stall_speed = glide_dist = total_weight = 0
 ige_ceiling = oge_ceiling = 0
 cg_status = "Not calculated yet"
-
 # ────────────────────────────────────────────────
 # Aircraft Database (indent fixed)
 # ────────────────────────────────────────────────
@@ -164,7 +161,6 @@ AIRCRAFT_DATA = {
         "hover_ceiling_oge_max_gw": 8500
     }
 }
-
 # ────────────────────────────────────────────────
 # Density Altitude Calculation
 # ────────────────────────────────────────────────
@@ -173,21 +169,17 @@ def calculate_density_altitude(pressure_alt_ft, oat_c):
     deviation = oat_c - isa_temp_c
     da_ft = pressure_alt_ft + (120 * deviation)
     return round(da_ft)
-
 # ────────────────────────────────────────────────
 # Helper Functions
 # ────────────────────────────────────────────────
 def adjust_for_weight(value, current_weight, base_weight, exponent=1.5):
     return value * (current_weight / base_weight) ** exponent
-
 def adjust_for_wind(value, wind_kts):
     factor = 1 - (0.1 * wind_kts / 9)
     return value * max(factor, 0.5)
-
 def adjust_for_da(value, da_ft):
     factor = 1 + (0.07 * da_ft / 1000)
     return value * factor
-
 @st.cache_data
 def compute_takeoff(pressure_alt_ft, oat_c, weight_lbs, wind_kts, aircraft):
     data = AIRCRAFT_DATA[aircraft]
@@ -199,7 +191,6 @@ def compute_takeoff(pressure_alt_ft, oat_c, weight_lbs, wind_kts, aircraft):
     to_50ft = adjust_for_da(to_50ft, da_ft)
     to_50ft = adjust_for_wind(to_50ft, wind_kts)
     return ground_roll, to_50ft
-
 @st.cache_data
 def compute_landing(pressure_alt_ft, oat_c, weight_lbs, wind_kts, aircraft):
     data = AIRCRAFT_DATA[aircraft]
@@ -212,7 +203,6 @@ def compute_landing(pressure_alt_ft, oat_c, weight_lbs, wind_kts, aircraft):
     from_50ft = adjust_for_da(from_50ft, da_ft)
     from_50ft = adjust_for_wind(from_50ft, wind_kts)
     return ground_roll, from_50ft
-
 @st.cache_data
 def compute_climb_rate(pressure_alt_ft, oat_c, weight_lbs, aircraft):
     data = AIRCRAFT_DATA[aircraft]
@@ -220,12 +210,10 @@ def compute_climb_rate(pressure_alt_ft, oat_c, weight_lbs, aircraft):
     climb = adjust_for_weight(data["base_climb_rate_fpm"], weight_lbs, data["max_takeoff_weight_lbs"], exponent=-1)
     climb *= (1 - (0.05 * da_ft / 1000))
     return max(climb, 0)
-
 @st.cache_data
 def compute_stall_speed(weight_lbs, aircraft):
     data = AIRCRAFT_DATA[aircraft]
     return data["base_stall_flaps_down_mph"] * np.sqrt(weight_lbs / data["max_landing_weight_lbs"])
-
 @st.cache_data
 def compute_glide_distance(height_ft, wind_kts, aircraft):
     data = AIRCRAFT_DATA[aircraft]
@@ -237,7 +225,6 @@ def compute_glide_distance(height_ft, wind_kts, aircraft):
     else:
         ground_speed_mph = 100 + wind_kts
         return (height_ft / 6076) * data["glide_ratio"] * (ground_speed_mph / 60)
-
 @st.cache_data
 def compute_weight_balance(fuel_gal, hopper_gal, pilot_weight_lbs, aircraft):
     data = AIRCRAFT_DATA[aircraft]
@@ -253,7 +240,6 @@ def compute_weight_balance(fuel_gal, hopper_gal, pilot_weight_lbs, aircraft):
     if total_weight > data["max_landing_weight_lbs"]:
         status += " (Exceeds max landing weight)"
     return total_weight, status
-
 def compute_hover_ceiling(da_ft, weight_lbs, aircraft):
     data = AIRCRAFT_DATA[aircraft]
     base_ceiling_ige = data.get("hover_ceiling_ige_max_gw", 0)
@@ -267,7 +253,6 @@ def compute_hover_ceiling(da_ft, weight_lbs, aircraft):
     ige_ceiling = max(0, ige_ceiling)
     oge_ceiling = max(0, oge_ceiling)
     return ige_ceiling, oge_ceiling
-
 # ────────────────────────────────────────────────
 # Risk Assessment
 # ────────────────────────────────────────────────
@@ -341,14 +326,12 @@ def show_risk_assessment():
         st.markdown("- Consult for second opinion")
         st.markdown("- Screenshot and re-assess high risk")
     st.caption("Not a substitute for official preflight briefing or company policy.")
-
 # ────────────────────────────────────────────────
 # Main App
 # ────────────────────────────────────────────────
 st.title("CVH Employee Management Tool")
 st.markdown("Performance calculator for agricultural aircraft & helicopters")
 st.caption("Prototype – educational use only. Always refer to the official Pilot Operating Handbook (POH) for actual operations.")
-
 # Fleet Management
 st.subheader("My Fleet")
 if st.session_state.fleet:
@@ -362,7 +345,6 @@ if st.session_state.fleet:
         st.success(f"Loaded **{selected_nickname}** ({entry['aircraft']}) – Empty: {custom or 'base'} lb")
 else:
     st.info("No aircraft saved to fleet yet.")
-
 # Role Selection Buttons
 col1, col2 = st.columns(2)
 with col1:
@@ -371,7 +353,6 @@ with col1:
 with col2:
     if st.button("Driver"):
         st.session_state.selected_role = "Driver"
-
 # Options based on role
 if st.session_state.selected_role == "Pilot":
     options = ["N893PC-R44", "N480MT-480", "N480ML-480"]
@@ -386,7 +367,6 @@ elif st.session_state.selected_role == "Driver":
     st.session_state.selected_option = st.selectbox("Select Option", options)
     # Map to base aircraft (assuming Heli2/3/4 are Enstrom 480 variants; adjust if needed)
     selected_aircraft = "Enstrom 480"
-
 # Aircraft data loading (if a role and option selected)
 if 'selected_option' in st.session_state and st.session_state.selected_option:
     aircraft_data = AIRCRAFT_DATA[selected_aircraft]
@@ -395,7 +375,6 @@ if 'selected_option' in st.session_state and st.session_state.selected_option:
         "R44", "Bell 206", "Enstrom 480", "Enstrom 480B", "Robinson R66",
         "Airbus AS350", "Enstrom F28F", "Bell 47"
     ])
-
     # Custom Empty Weight Input
     st.subheader("Custom Empty Weight (optional)")
     col_empty1, col_empty2 = st.columns([3, 1])
@@ -427,18 +406,14 @@ if 'selected_option' in st.session_state and st.session_state.selected_option:
                 st.success(f"Saved **{nickname}** to fleet!")
             else:
                 st.warning("Please enter a nickname to save.")
-
     effective_empty = custom_empty if custom_empty != aircraft_data["base_empty_weight_lbs"] else aircraft_data["base_empty_weight_lbs"]
     st.caption(f"**Effective Empty Weight:** {effective_empty} lb {'(custom)' if custom_empty != aircraft_data['base_empty_weight_lbs'] else '(base)'}")
-
     # Risk Assessment button
     if st.button("Risk Assessment", type="secondary"):
         st.session_state.show_risk = not st.session_state.get("show_risk", False)
-
     st.info(f"Performance data loaded for **{aircraft_data['name']}**")
     if st.session_state.get("show_risk", False):
         show_risk_assessment()
-
     # Airport Weather & Notices
     st.subheader("Airport Weather & Notices (METAR + TAF + NOTAMs)")
     common_airports = {
