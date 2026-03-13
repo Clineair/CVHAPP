@@ -22,14 +22,18 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ────────────────────────────────────────────────
-# Custom Logo (revised to use flaglogo.png)
+# Custom Logo (smaller size)
 # ────────────────────────────────────────────────
-LOGO_URL = "flaglogo.png"  # Assuming flaglogo.png is uploaded to your repo; use URL if hosted elsewhere
+LOGO_URL = "https://raw.githubusercontent.com/Clineair/AgPilot-app/main/AgPilotApp.png"
 try:
-    st.image(LOGO_URL, use_column_width=True)
-    st.logo(LOGO_URL, size="small")
+    st.image(LOGO_URL, width=300)  # Smaller logo (width=300 pixels)
+    st.logo(LOGO_URL, size="medium")
 except Exception:
-    st.markdown("### AgPilotApp ⌯✈︎ (logo not loaded – check file/URL)")
+    try:
+        st.image("AgPilotApp.png", width=300)
+        st.logo("AgPilotApp.png", size="medium")
+    except Exception:
+        st.markdown("### AgPilotApp ⌯✈︎ (logo not loaded – check file/URL)")
 
 # ────────────────────────────────────────────────
 # Legal Button
@@ -104,6 +108,10 @@ if 'custom_empty_weight' not in st.session_state:
     st.session_state.custom_empty_weight = None
 if 'show_risk' not in st.session_state:
     st.session_state.show_risk = False
+if 'selected_role' not in st.session_state:
+    st.session_state.selected_role = None
+if 'selected_option' not in st.session_state:
+    st.session_state.selected_option = None
 
 # ────────────────────────────────────────────────
 # Default performance values
@@ -359,136 +367,154 @@ if st.session_state.fleet:
 else:
     st.info("No aircraft saved to fleet yet.")
 
-# Aircraft selection
-selected_aircraft = st.selectbox(
-    "Select Aircraft",
-    options=list(AIRCRAFT_DATA.keys()),
-    index=0 if 'selected_aircraft' not in st.session_state else list(AIRCRAFT_DATA.keys()).index(st.session_state.get("selected_aircraft", list(AIRCRAFT_DATA.keys())[0])),
-    format_func=lambda x: f"{AIRCRAFT_DATA[x]['name']} – {AIRCRAFT_DATA[x]['description']}"
-)
-aircraft_data = AIRCRAFT_DATA[selected_aircraft]
+# Role Selection Buttons
+col1, col2 = st.columns(2)
+with col1:
+    if st.button("Pilot"):
+        st.session_state.selected_role = "Pilot"
+with col2:
+    if st.button("Driver"):
+        st.session_state.selected_role = "Driver"
 
-# Helicopter detection
-is_helicopter = any(heli in selected_aircraft for heli in [
-    "R44", "Bell 206", "Enstrom 480", "Enstrom 480B", "Robinson R66",
-    "Airbus AS350", "Enstrom F28F", "Bell 47"
-])
+# Options based on role
+if st.session_state.selected_role == "Pilot":
+    options = ["N893PC-R44", "N480MT-480", "N480ML-480"]
+    st.session_state.selected_option = st.selectbox("Select Option", options)
+    # Map to base aircraft
+    if "R44" in st.session_state.selected_option:
+        selected_aircraft = "Robinson R44 Raven II"
+    elif "480" in st.session_state.selected_option:
+        selected_aircraft = "Enstrom 480"
+elif st.session_state.selected_role == "Driver":
+    options = ["Heli2", "Heli3", "Heli4"]
+    st.session_state.selected_option = st.selectbox("Select Option", options)
+    # Map to base aircraft (assuming Heli2/3/4 are Enstrom 480 variants; adjust if needed)
+    selected_aircraft = "Enstrom 480"
 
-# Custom Empty Weight Input
-st.subheader("Custom Empty Weight (optional)")
-col_empty1, col_empty2 = st.columns([3, 1])
-with col_empty1:
-    current_empty = st.session_state.get('custom_empty_weight')
-    if current_empty is None:
-        current_empty = aircraft_data["base_empty_weight_lbs"]
-    else:
-        current_empty = int(current_empty)
-    custom_empty = st.number_input(
-        f"Custom Empty Weight for {aircraft_data['name']} (lb)",
-        min_value=500,
-        max_value=int(aircraft_data["max_takeoff_weight_lbs"] * 0.9),
-        value=current_empty,
-        step=10,
-        help="Override base empty weight if your aircraft has modifications, avionics, etc."
-    )
-with col_empty2:
-    st.markdown("<div style='padding-top: 28px;'></div>", unsafe_allow_html=True)
-    if st.button("Save to Fleet"):
-        nickname = st.text_input("Give this configuration a nickname (e.g. 'N123AB R66')", key="fleet_nickname")
-        if nickname.strip():
-            st.session_state.fleet = [e for e in st.session_state.fleet if e["nickname"] != nickname.strip()]
-            st.session_state.fleet.append({
-                "nickname": nickname.strip(),
-                "aircraft": selected_aircraft,
-                "custom_empty": custom_empty
-            })
-            st.success(f"Saved **{nickname}** to fleet!")
+# Aircraft data loading (if a role and option selected)
+if 'selected_option' in st.session_state and st.session_state.selected_option:
+    aircraft_data = AIRCRAFT_DATA[selected_aircraft]
+    # Helicopter detection
+    is_helicopter = any(heli in selected_aircraft for heli in [
+        "R44", "Bell 206", "Enstrom 480", "Enstrom 480B", "Robinson R66",
+        "Airbus AS350", "Enstrom F28F", "Bell 47"
+    ])
+
+    # Custom Empty Weight Input
+    st.subheader("Custom Empty Weight (optional)")
+    col_empty1, col_empty2 = st.columns([3, 1])
+    with col_empty1:
+        current_empty = st.session_state.get('custom_empty_weight')
+        if current_empty is None:
+            current_empty = aircraft_data["base_empty_weight_lbs"]
         else:
-            st.warning("Please enter a nickname to save.")
+            current_empty = int(current_empty)
+        custom_empty = st.number_input(
+            f"Custom Empty Weight for {aircraft_data['name']} (lb)",
+            min_value=500,
+            max_value=int(aircraft_data["max_takeoff_weight_lbs"] * 0.9),
+            value=current_empty,
+            step=10,
+            help="Override base empty weight if your aircraft has modifications, avionics, etc."
+        )
+    with col_empty2:
+        st.markdown("<div style='padding-top: 28px;'></div>", unsafe_allow_html=True)
+        if st.button("Save to Fleet"):
+            nickname = st.text_input("Give this configuration a nickname (e.g. 'N123AB R66')", key="fleet_nickname")
+            if nickname.strip():
+                st.session_state.fleet = [e for e in st.session_state.fleet if e["nickname"] != nickname.strip()]
+                st.session_state.fleet.append({
+                    "nickname": nickname.strip(),
+                    "aircraft": selected_aircraft,
+                    "custom_empty": custom_empty
+                })
+                st.success(f"Saved **{nickname}** to fleet!")
+            else:
+                st.warning("Please enter a nickname to save.")
 
-effective_empty = custom_empty if custom_empty != aircraft_data["base_empty_weight_lbs"] else aircraft_data["base_empty_weight_lbs"]
-st.caption(f"**Effective Empty Weight:** {effective_empty} lb {'(custom)' if custom_empty != aircraft_data['base_empty_weight_lbs'] else '(base)'}")
+    effective_empty = custom_empty if custom_empty != aircraft_data["base_empty_weight_lbs"] else aircraft_data["base_empty_weight_lbs"]
+    st.caption(f"**Effective Empty Weight:** {effective_empty} lb {'(custom)' if custom_empty != aircraft_data['base_empty_weight_lbs'] else '(base)'}")
 
-# Risk Assessment button
-if st.button("Risk Assessment", type="secondary"):
-    st.session_state.show_risk = not st.session_state.get("show_risk", False)
+    # Risk Assessment button
+    if st.button("Risk Assessment", type="secondary"):
+        st.session_state.show_risk = not st.session_state.get("show_risk", False)
 
-st.info(f"Performance data loaded for **{aircraft_data['name']}**")
-if st.session_state.get("show_risk", False):
-    show_risk_assessment()
+    st.info(f"Performance data loaded for **{aircraft_data['name']}**")
+    if st.session_state.get("show_risk", False):
+        show_risk_assessment()
 
-# Airport Weather & Notices
-st.subheader("Airport Weather & Notices (METAR + TAF + NOTAMs)")
-common_airports = {
-    "KELN": "Ellensburg Bowers Field (KELN) – Home base",
-    "KYKM": "Yakima Air Terminal (KYKM)",
-    "KEAT": "Pangborn Memorial (KEAT) – Wenatchee",
-    "KPUW": "Pullman/Moscow Regional (KPUW)",
-    "KSEA": "Seattle-Tacoma Intl (KSEA)",
-    "None": "—— No airport selected ——"
-}
-selected_icao = st.selectbox(
-    "Select Nearby Airport",
-    options=list(common_airports.keys()),
-    format_func=lambda x: common_airports.get(x, x),
-    index=0
-)
-custom_icao = st.text_input(
-    "Or enter any ICAO code (4 letters)",
-    value="",
-    max_chars=4,
-    help="For any airport worldwide (e.g. KLAX for Los Angeles, KMIA for Miami)"
-).strip().upper()
-icao_upper = custom_icao if custom_icao and len(custom_icao) == 4 and custom_icao.isalnum() else selected_icao
-metar_text = None
-metar_timestamp = None
-taf_text = None
-taf_issued = None
-if icao_upper and icao_upper != "None":
-    try:
-        url = f"https://tgftp.nws.noaa.gov/data/observations/metar/stations/{icao_upper}.TXT"
-        response = requests.get(url, timeout=10)
-        if response.status_code == 200:
-            lines = response.text.strip().splitlines()
-            if len(lines) >= 2:
-                metar_timestamp = lines[0].strip()
-                metar_text = lines[1].strip()
-            elif lines:
-                metar_text = lines[0].strip()
-    except Exception as e:
-        st.warning(f"METAR fetch error for {icao_upper}: {e}")
-    try:
-        url = f"https://aviationweather.gov/api/data/taf?ids={icao_upper}&format=raw"
-        response = requests.get(url, timeout=10)
-        if response.status_code == 200 and response.text.strip():
-            taf_text = response.text.strip()
-            lines = taf_text.splitlines()
-            if lines and "Z" in lines[0]:
-                taf_issued = lines[0].split()[1] if len(lines[0].split()) > 1 else None
-    except Exception as e:
-        st.warning(f"TAF fetch error for {icao_upper}: {e}")
-if icao_upper and icao_upper != "None":
-    st.markdown(f"**Latest Weather for {icao_upper}**")
-    st.markdown("**METAR (Current)**")
-    if metar_text:
-        st.markdown(f"({metar_timestamp or 'fetched ' + datetime.now().strftime('%Y-%m-%d %H:%M UTC')})")
-        st.code(metar_text, language="text")
-        parts = metar_text.split()
-        wind_part = next((p for p in parts if "KT" in p and len(p) >= 6), "—")
-        temp_dew_part = next((p for p in parts if "/" in p and len(p.split("/")) == 2), "—")
-        altimeter_part = next((p for p in parts if (p.startswith("A") and len(p) == 5) or p.startswith("Q")), "—")
-        cols = st.columns(3)
-        cols[0].metric("Wind", wind_part)
-        cols[1].metric("Temp / Dew", temp_dew_part)
-        cols[2].metric("Altimeter", altimeter_part)
-    else:
-        st.info("No METAR available – check ICAO code or try later.")
-    st.markdown("**TAF (Forecast)**")
-    if taf_text:
-        issued_str = f"Issued ~ {taf_issued}" if taf_issued else f"Fetched {datetime.now().strftime('%Y-%m-%d %H:%M UTC')}"
-        st.markdown(f"({issued_str})")
-        st.code(taf_text, language="text")
-    else:
-        st.info("No TAF available (common for small fields).")
-    st.markdown("**NOTAMs (Notices to Airmen)**")
-    st.caption("**Always check current NOTAMs via official FAA sources before flight.**")
+    # Airport Weather & Notices
+    st.subheader("Airport Weather & Notices (METAR + TAF + NOTAMs)")
+    common_airports = {
+        "KELN": "Ellensburg Bowers Field (KELN) – Home base",
+        "KYKM": "Yakima Air Terminal (KYKM)",
+        "KEAT": "Pangborn Memorial (KEAT) – Wenatchee",
+        "KPUW": "Pullman/Moscow Regional (KPUW)",
+        "KSEA": "Seattle-Tacoma Intl (KSEA)",
+        "None": "—— No airport selected ——"
+    }
+    selected_icao = st.selectbox(
+        "Select Nearby Airport",
+        options=list(common_airports.keys()),
+        format_func=lambda x: common_airports.get(x, x),
+        index=0
+    )
+    custom_icao = st.text_input(
+        "Or enter any ICAO code (4 letters)",
+        value="",
+        max_chars=4,
+        help="For any airport worldwide (e.g. KLAX for Los Angeles, KMIA for Miami)"
+    ).strip().upper()
+    icao_upper = custom_icao if custom_icao and len(custom_icao) == 4 and custom_icao.isalnum() else selected_icao
+    metar_text = None
+    metar_timestamp = None
+    taf_text = None
+    taf_issued = None
+    if icao_upper and icao_upper != "None":
+        try:
+            url = f"https://tgftp.nws.noaa.gov/data/observations/metar/stations/{icao_upper}.TXT"
+            response = requests.get(url, timeout=10)
+            if response.status_code == 200:
+                lines = response.text.strip().splitlines()
+                if len(lines) >= 2:
+                    metar_timestamp = lines[0].strip()
+                    metar_text = lines[1].strip()
+                elif lines:
+                    metar_text = lines[0].strip()
+        except Exception as e:
+            st.warning(f"METAR fetch error for {icao_upper}: {e}")
+        try:
+            url = f"https://aviationweather.gov/api/data/taf?ids={icao_upper}&format=raw"
+            response = requests.get(url, timeout=10)
+            if response.status_code == 200 and response.text.strip():
+                taf_text = response.text.strip()
+                lines = taf_text.splitlines()
+                if lines and "Z" in lines[0]:
+                    taf_issued = lines[0].split()[1] if len(lines[0].split()) > 1 else None
+        except Exception as e:
+            st.warning(f"TAF fetch error for {icao_upper}: {e}")
+    if icao_upper and icao_upper != "None":
+        st.markdown(f"**Latest Weather for {icao_upper}**")
+        st.markdown("**METAR (Current)**")
+        if metar_text:
+            st.markdown(f"({metar_timestamp or 'fetched ' + datetime.now().strftime('%Y-%m-%d %H:%M UTC')})")
+            st.code(metar_text, language="text")
+            parts = metar_text.split()
+            wind_part = next((p for p in parts if "KT" in p and len(p) >= 6), "—")
+            temp_dew_part = next((p for p in parts if "/" in p and len(p.split("/")) == 2), "—")
+            altimeter_part = next((p for p in parts if (p.startswith("A") and len(p) == 5) or p.startswith("Q")), "—")
+            cols = st.columns(3)
+            cols[0].metric("Wind", wind_part)
+            cols[1].metric("Temp / Dew", temp_dew_part)
+            cols[2].metric("Altimeter", altimeter_part)
+        else:
+            st.info("No METAR available – check ICAO code or try later.")
+        st.markdown("**TAF (Forecast)**")
+        if taf_text:
+            issued_str = f"Issued ~ {taf_issued}" if taf_issued else f"Fetched {datetime.now().strftime('%Y-%m-%d %H:%M UTC')}"
+            st.markdown(f"({issued_str})")
+            st.code(taf_text, language="text")
+        else:
+            st.info("No TAF available (common for small fields).")
+        st.markdown("**NOTAMs (Notices to Airmen)**")
+        st.caption("**Always check current NOTAMs via official FAA sources before flight.**")
