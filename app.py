@@ -22,18 +22,14 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ────────────────────────────────────────────────
-# Custom Logo (smaller size)
+# Custom Logo (revised to use flaglogo.png, smaller size)
 # ────────────────────────────────────────────────
-LOGO_URL = "https://raw.githubusercontent.com/Clineair/AgPilot-app/main/AgPilotApp.png"
+LOGO_URL = "flaglogo.png"  # Assuming flaglogo.png is uploaded to your repo
 try:
     st.image(LOGO_URL, width=300)  # Smaller logo (width=300 pixels)
     st.logo(LOGO_URL, size="medium")
 except Exception:
-    try:
-        st.image("AgPilotApp.png", width=300)
-        st.logo("AgPilotApp.png", size="medium")
-    except Exception:
-        st.markdown("### AgPilotApp ⌯✈︎ (logo not loaded – check file/URL)")
+    st.markdown("### AgPilotApp ⌯✈︎ (logo not loaded – check file/URL)")
 
 # ────────────────────────────────────────────────
 # Legal Button
@@ -385,7 +381,7 @@ if st.session_state.selected_role == "Pilot":
         selected_aircraft = "Robinson R44 Raven II"
     elif "480" in st.session_state.selected_option:
         selected_aircraft = "Enstrom 480"
-elif st.session_state.selected_role == "Driver":
+elif st.session_state.selected_role = "Driver":
     options = ["Heli2", "Heli3", "Heli4"]
     st.session_state.selected_option = st.selectbox("Select Option", options)
     # Map to base aircraft (assuming Heli2/3/4 are Enstrom 480 variants; adjust if needed)
