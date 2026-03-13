@@ -27,7 +27,7 @@ st.markdown("""
 LOGO_URL = "flaglogo.png"  # Assuming flaglogo.png is uploaded to your repo; use URL if hosted elsewhere
 try:
     st.image(LOGO_URL, use_column_width=True)
-    st.logo(LOGO_URL, size="medium")
+    st.logo(LOGO_URL, size="small")
 except Exception:
     st.markdown("### AgPilotApp ⌯✈︎ (logo not loaded – check file/URL)")
 
