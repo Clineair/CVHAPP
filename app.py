@@ -29,7 +29,7 @@ try:
     st.image(LOGO_URL, width=300)  # Smaller logo (width=300 pixels)
     st.logo(LOGO_URL, size="medium")
 except Exception:
-    st.markdown("### AgPilotApp ⌯✈︎ (logo not loaded – check file/URL)")
+    st.markdown("###   ⌯✈︎ (logo not loaded – check file/URL)")
 
 # ────────────────────────────────────────────────
 # Legal Button
@@ -345,7 +345,7 @@ def show_risk_assessment():
 # ────────────────────────────────────────────────
 # Main App
 # ────────────────────────────────────────────────
-st.title("AgPilot")
+st.title("CVH")
 st.markdown("Performance calculator for agricultural aircraft & helicopters")
 st.caption("Prototype – educational use only. Always refer to the official Pilot Operating Handbook (POH) for actual operations.")
 
