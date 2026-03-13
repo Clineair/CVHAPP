@@ -57,9 +57,6 @@ cg_status = "Not calculated yet"
 # ────────────────────────────────────────────────
 # Aircraft Database
 # ────────────────────────────────────────────────
-AIRCRAFT_DATA = {
-
-    },
     "Robinson R44 Raven II": {
         "name": "Robinson R44 Raven II",
         "base_takeoff_ground_roll_ft": 0,
