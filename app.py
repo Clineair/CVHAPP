@@ -22,19 +22,237 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ────────────────────────────────────────────────
-# Custom Logo (your provided logo – using raw GitHub URL)
+# Custom Logo
 # ────────────────────────────────────────────────
 LOGO_URL = "https://raw.githubusercontent.com/Clineair/AgPilot-app/main/AgPilotApp.png"
-
 try:
-    st.image(LOGO_URL, use_column_width=True)  # Displays as full-width header logo
-    st.logo(LOGO_URL, size="medium")  # Sidebar logo
+    st.image(LOGO_URL, use_column_width=True)
+    st.logo(LOGO_URL, size="medium")
 except Exception:
     try:
-        st.image("AgPilotApp.png", use_column_width=True)  # Fallback to local file if URL fails
+        st.image("AgPilotApp.png", use_column_width=True)
         st.logo("AgPilotApp.png", size="medium")
     except Exception:
         st.markdown("### AgPilotApp ⌯✈︎ (logo not loaded – check file/URL)")
+
+# ────────────────────────────────────────────────
+# Legal Button
+# ────────────────────────────────────────────────
+if st.button("Legal", type="secondary"):
+    with st.expander("Legal and Terms", expanded=True):
+        st.markdown("""
+        ### Legal and Terms of Use
+        
+        This is the National Agricultural Aviation Association's updated 2026 Strategic Plan outlining direction for the Association over the next half decade and beyond.
+
+        Per Article III of the NAAA's Articles of Incorporation, the NAAA is organized as follows:
+        a. To advance the aerial application industry, and its members in their efforts to enhance agricultural and forestry production, and to protect the public health.
+
+        b. To operate at the national level to set forth in greater detail for agricultural aviation industry the national level as set forth in the interests of the U.S. agricultural industry as the recognized public policy advocate for the agricultural aviation industry.
+
+        i. To serve as the Corporation's primary resource for agricultural aviation knowledge exchange, education, business services.
+
+        ii. To act as the public's professional source of agricultural aviation information and education.
+
+        iii. To information and education.
+
+        iv. To work toward gaining greater recognition and respect for the agricultural aviation industry and its contribution to agriculture by promoting ethical standards.
+
+        Strategic Assumptions
+
+        The following external trends, challenges and issues that will impact the agricultural aviation industry in the future. These trends may represent opportunities or threats — and some do both to NAAA.
+
+        * There will be:
+          - Some consolidation of agricultural aviation operators due to growth in larger capacity aircraft and a growing number of satellite operations, economics of scale and a tightening of workers interested in manned aviation and agriculture.
+
+          - Growth in uncrewed aerial application, younger workers and farmers' interest in requirements into aerial application, younger workers and farmers' interest in the use of other forms of application (more large corporate farms) and consolidations in agricultural aviation operations.
+
+          - A decrease in usable farm land due to renewable energy, urban encroachment and an increasing population.
+
+          - An increase in certain types of Federal agricultural spending (research) due to political divisions and federal debt issues.
+
+        * There will be continuing:
+          - Challenges of business insurance coverage and requirements.
+          - Regulation focusing on aviation safety, food safety, worker protections, environmental protection, and strengthening homeland security.
+
+          - Integration of all types of agricultural services—single farm service entities that offer products, application services and crop consulting.
+
+          - Biotechnology developments that could change the need for aerial application.
+
+        Continue to augment annual industry professional certification program by increasing robustness of curriculum and ensuring retention of certification with input from top protection product manufacturers, insurers, customers and regulators.
+
+        Develop information for prospective manned and unmanned aerial application business and pilots who are interested in the industry. This should include help for new, prospective pilots and operators, as well as a larger scope of aerial application information on legal, insurance and financing issues.
+
+        Develop website links to provide access for members to technical and legal information, Strengthen Annual Meeting/Expo and expanded key industry content and explore the feasibility of joint expositions.
+
+        Offer more NAAA programs, products and services outside of the United States (worldwide), Continue to obtain and increase the amount of government and private dollars directed to aerial application technological research.
+
+        Maintain NAAA standards for professional aerial application operations.
+
+        Milestones
+        * An increase in the number of members on NAAA's website and other technological mediums.
+
+        * An increase in the number of attendees participating in training/educational activity at the annual meeting and exposition.
+
+        * An increase of new association programs and services.
+
+        * The existence of:
+          - Collaborative relationships to develop member resources.
+          - New and advanced training programs.
+          - NAAA standards of training.
+          - On-line technical information databases.
+          - An internal marketing plan.
+          - A secure funding mechanism for aerial application technology development.
+
+        3. NAAA will be the public professional source of agricultural aviation industry information.
+
+        Strategies
+
+        Develop an external marketing plan for public relations.
+
+        * Continuously enhance the amount and quality of material for public consumption through press releases, website, and social media.
+
+        Provide training and materials for members to increase their capability to better communicate and advocate the importance of the agricultural aviation industry, as well as the importance of the NAAA.
+
+        Augment publicizing the crop and environmental benefits of aerial application to the media and public. Publicizing 'good community relations activities and successes. Improve the dissemination of information pertaining to members' good deeds — markedly improve the industry's public relations.
+
+        Augment the communications process to disseminate information to be updated frequently to include things like: state/regional association communications projects and activities. Continue to host external events, including visitors to aerial application operations, for the media and public.
+
+        Milestones
+        * An increase in the:
+          - Content of the website, sent out to the media including social media.
+          - The budget allocated to external marketing.
+
+          - The number of positive media releases concerning the industry.
+
+          - The existence of:
+            - An external marketing plan and budget.
+            - Positive media stories pertaining to the industry.
+
+        advanced technology and focusing on strengthening the industry in terms of safety, security, environmental viability.
+
+        * Be financially secure and stable.
+
+        * Have a highly functional, competent, knowledgeable and effective staff.
+
+        * Have an involved membership consisting of all U.S. aerial application businesses and pilots who join the industry. This should include manned and unmanned aerial application operators, as well as a larger scope of aerial application to support such series health, etc.) as well as a larger membership.
+
+        * Have a large membership consisting of aerial application businesses and pilots who are involved in both agricultural applications and a broader scope of aerial application to support such series health, etc.) as well as a larger membership.
+
+        * Possess a positive image with the industry, public, media and public officials.
+
+        * Have an infrastructure that is flexible and responsive, enabling them to be well informed.
+
+        * Seize opportunities to better serve and provide more value to the association to quickly respond to changes in the industry.
+
+        * Enjoy strong credibility with its own members and key external audiences.
+
+        * Provide high value through networking; advancing industry technological research and educational programs, services, training designed to maximize environmental stewardship.
+
+        * Offer an annual meeting and trade show with substantive content, exhibits, networking opportunities, attendance.
+
+        * National Agricultural Aviation Association Strategic Plan – 2026 – Page 4
+
+        4-1. Purpose The purpose of this chapter is to provide the 480 helicopter operator with the best available performance data for the 480 helicopter. Regulatory use of this information will enable you to obtain maximum safe utilization from your aircraft. Not although maximum performance is not always required, regular use of this chapter is recommended for the following reasons:
+
+        a. Knowledge of your performance margin will allow the aircraft to make better decisions when unexpected conditions or alternate missions are encountered.
+
+        b. Situations requiring maximum performance will be readily recognized.
+
+        c. Familiarity with the data will allow performance to be computed more easily and rapidly.
+
+        d. Experience will be gained in accurately estimating the effects of variables for which data are not provided.
+
+        NOTE
+
+        The information provided in this chapter is primarily intended for flight planning and is most useful when planning operations in unfamiliar areas or at extreme conditions.
+
+        4-2. General The data presented covers the maximum range of conditions and performance that can be reasonably be expected. In each area of performance, the effects of altitude, temperature, gross weight, and other parameters relating to that phase of flight are presented. In addition to the presented data, your judgment and a given set of circumstances. The conditions for the performance data are listed under the title of each performance chart. The applicable limits are shown on the charts as darker lines. Performance beyond these limits is not determined. It deteriorates rapidly if limits are exceeded. Enter the charts at the bottom and time above limits In the aircraft log book so proper maintenance action can be taken.
+
+        4-3. Limits Applicable limits are shown on the charts as darker lines. Performance beyond these limits is not determined.
+
+        4-4. Use of Charts The first page of each section contains a chart(s) and explains the usage. The primary use of each chart is given in an example and a follow the route through the chart. The use of a straight edge (ruler or page edge) and a hard fine point pencil is recommended to avoid cumulative errors. Other uses for each chart are explained in the text accompanying each phase of performance.
+
+        4-5. Specific Conditions The data are presented under the title for each chart. presented, but which may affect that phase of performance, are discussed in the text. Where data are available or reasonable estimates can be made, the amount of correction will be given.
+
+        4-6. General Conditions In addition to the specific conditions, the following general conditions are applicable to the performance data.
+
+        a. Rigging. All airframe and engine controls are assumed to be rigged within allowable tolerances.
+
+        b. Pilot Technique. Normal pilot technique is assumed. Control movements should be smooth and continuous.
+
+        c. Aircraft Variation. Variations in performance between individual aircraft are known to exist, however, they are considered to be small and cannot be individually accounted for.
+
+        d. Instrument Variation. The data shown in the performance charts do not account for instrument inaccuracies or malfunctions. Any instrument indicators, and transmitters calibrated as required by the operating limitations are considered to be present and in proper working condition.
+
+        4-7. Performance Discrepancies
+
+        Regular use of this chapter will allow you to monitor instruments and other aircraft systems for malfunction by comparing actual performance with planned performance. Knowledge will also allow you to be gained concerning the effects of variables for which data are not provided, thereby increasing the accuracy of performance predictions.
+
+        4-8. Reserved
+
+        List of Abbreviations
+
+        Abbreviation | Definition
+        ABS | Absolute
+        AGL | Above Ground Level
+        ALT | Altitude
+        CAS | Calibrated Airspeed
+        CG | Center of Gravity
+        CL | Centerline
+        CONF | Configuration
+        CONT | Continuous
+        F | Fahrenheit
+        FLT | Flight
+        FPM | Feet per Minute
+        FT | Foot
+        FWD | Forward
+        GAL | Gallon
+        GAL/HR | Gallon per hour
+        GW | Gross Weight
+        IAS | Indicated Airspeed
+        IGE | In ground effect
+        IN | Inch
+        IN HG | Inches of Mercury
+        ISA | International Standard Atmosphere
+        KIAS | Knots Indicated Airspeed
+        KT | Knot
+        LB | Pound
+        LB/HR | Pounds per hour
+        MAX | Maximum
+        MB | Millibar
+        MIN | Minimum
+        MTS | Gas producer turbine speed
+        N1 | Power turbine speed
+        NM | Nautical mile
+        OAT | Outside Air Temp.
+        OGE | Out of ground effect
+        PRESS | Pressure
+        PSI | Pounds per square inch
+        R/C | Rate of climb
+        R/D | Rate of descent
+        RPM | Revolutions per minute
+        SHP | Shaft horsepower
+        SQ FT | Square feet
+        TAS | True airspeed
+        TORQ | Torque
+        TRQ | Torque
+        VDC | Volts direct current
+        Vd | Maximum design dive speed
+        Vh | Maximum level flight airspeed at maximum continuous power
+        Vne | Velocity never exceeded
+        Vy | Best rate of climb airspeed
+        WT | Weight
+        XMSN | Transmission
+
+        FAA REV. APPROVAL DATE: FEBRUARY 1, 1995
+
+        4-AC-022 02/01/95 Rev 4
+
+        28-AC-022 02/01/95 Rev 6
+
+        By using this app, you agree to these terms and the strategic plan outlined by NAAA. This app is for educational purposes only and not a substitute for official POH or professional advice.
+        """)
 
 # ────────────────────────────────────────────────
 # Session State Initialization
@@ -58,7 +276,180 @@ cg_status = "Not calculated yet"
 # Aircraft Database
 # ────────────────────────────────────────────────
 AIRCRAFT_DATA = {
-
+    "Air Tractor AT-502B": {
+        "name": "Air Tractor AT-502B",
+        "base_takeoff_ground_roll_ft": 1140,
+        "base_takeoff_to_50ft_ft": 2600,
+        "base_landing_ground_roll_ft": 600,
+        "base_landing_to_50ft_ft": 1350,
+        "base_climb_rate_fpm": 870,
+        "base_stall_flaps_down_mph": 68,
+        "best_climb_speed_mph": 111,
+        "base_empty_weight_lbs": 4546,
+        "base_fuel_capacity_gal": 170,
+        "fuel_weight_per_gal": 6.0,
+        "hopper_capacity_gal": 500,
+        "hopper_weight_per_gal": 8.3,
+        "max_takeoff_weight_lbs": 9400,
+        "max_landing_weight_lbs": 8000,
+        "glide_ratio": 8.0,
+        "description": "Single-engine piston ag aircraft"
+    },
+    "Air Tractor AT-602": {
+        "name": "Air Tractor AT-602",
+        "base_takeoff_ground_roll_ft": 1400,
+        "base_takeoff_to_50ft_ft": 2800,
+        "base_landing_ground_roll_ft": 850,
+        "base_landing_to_50ft_ft": 1850,
+        "base_climb_rate_fpm": 1050,
+        "base_stall_flaps_down_mph": 74,
+        "best_climb_speed_mph": 118,
+        "base_empty_weight_lbs": 6200,
+        "base_fuel_capacity_gal": 380,
+        "fuel_weight_per_gal": 6.7,
+        "hopper_capacity_gal": 600,
+        "hopper_weight_per_gal": 8.3,
+        "max_takeoff_weight_lbs": 12500,
+        "max_landing_weight_lbs": 11000,
+        "glide_ratio": 7.2,
+        "description": "Turbine ag aircraft – balanced payload & performance",
+        "hover_ceiling_ige_max_gw": 0,
+        "hover_ceiling_oge_max_gw": 0
+    },
+    "Air Tractor AT-802": {
+        "name": "Air Tractor AT-802",
+        "base_takeoff_ground_roll_ft": 1800,
+        "base_takeoff_to_50ft_ft": 3400,
+        "base_landing_ground_roll_ft": 1100,
+        "base_landing_to_50ft_ft": 2200,
+        "base_climb_rate_fpm": 1050,
+        "base_stall_flaps_down_mph": 78,
+        "best_climb_speed_mph": 120,
+        "base_empty_weight_lbs": 6750,
+        "base_fuel_capacity_gal": 380,
+        "fuel_weight_per_gal": 6.7,
+        "hopper_capacity_gal": 800,
+        "hopper_weight_per_gal": 8.3,
+        "max_takeoff_weight_lbs": 16000,
+        "max_landing_weight_lbs": 14000,
+        "glide_ratio": 7.0,
+        "description": "Large turbine ag aircraft – high payload & range"
+    },
+    "Thrush 510P": {
+        "name": "Thrush 510P",
+        "base_takeoff_ground_roll_ft": 1300,
+        "base_takeoff_to_50ft_ft": 2800,
+        "base_landing_ground_roll_ft": 750,
+        "base_landing_to_50ft_ft": 1600,
+        "base_climb_rate_fpm": 950,
+        "base_stall_flaps_down_mph": 72,
+        "best_climb_speed_mph": 115,
+        "base_empty_weight_lbs": 6800,
+        "base_fuel_capacity_gal": 380,
+        "fuel_weight_per_gal": 6.0,
+        "hopper_capacity_gal": 510,
+        "hopper_weight_per_gal": 8.3,
+        "max_takeoff_weight_lbs": 12000,
+        "max_landing_weight_lbs": 10500,
+        "glide_ratio": 7.5,
+        "description": "Turbine-powered high-capacity ag aircraft"
+    },
+    "Ayres Thrush S2R-T34 Eagle": {
+        "name": "Ayres Thrush S2R-T34 Eagle",
+        "base_takeoff_ground_roll_ft": 1650,
+        "base_takeoff_to_50ft_ft": 2500,
+        "base_landing_ground_roll_ft": 600,
+        "base_landing_to_50ft_ft": 1500,
+        "base_climb_rate_fpm": 666,
+        "base_stall_flaps_down_mph": 50,
+        "best_climb_speed_mph": 110,
+        "base_empty_weight_lbs": 4900,
+        "base_fuel_capacity_gal": 228,
+        "fuel_weight_per_gal": 6.7,
+        "hopper_capacity_gal": 510,
+        "hopper_weight_per_gal": 8.3,
+        "max_takeoff_weight_lbs": 10500,
+        "max_landing_weight_lbs": 10500,
+        "glide_ratio": 7.0,
+        "description": "Turbine-powered high-capacity ag sprayer – excellent short-field & payload",
+        "hover_ceiling_ige_max_gw": 0,
+        "hover_ceiling_oge_max_gw": 0
+    },
+    "Grumman G-164B Ag-Cat": {
+        "name": "Grumman G-164B Ag-Cat",
+        "base_takeoff_ground_roll_ft": 1200,
+        "base_takeoff_to_50ft_ft": 2200,
+        "base_landing_ground_roll_ft": 800,
+        "base_landing_to_50ft_ft": 1800,
+        "base_climb_rate_fpm": 1080,
+        "base_stall_flaps_down_mph": 64,
+        "best_climb_speed_mph": 90,
+        "base_empty_weight_lbs": 3150,
+        "base_fuel_capacity_gal": 190,
+        "fuel_weight_per_gal": 6.0,
+        "hopper_capacity_gal": 400,
+        "hopper_weight_per_gal": 8.3,
+        "max_takeoff_weight_lbs": 4500,
+        "max_landing_weight_lbs": 4500,
+        "glide_ratio": 7.5,
+        "description": "Classic radial-engine biplane ag sprayer – rugged & low stall speed"
+    },
+    "Cessna 188 Ag Truck": {
+        "name": "Cessna 188 Ag Truck",
+        "base_takeoff_ground_roll_ft": 680,
+        "base_takeoff_to_50ft_ft": 1090,
+        "base_landing_ground_roll_ft": 420,
+        "base_landing_to_50ft_ft": 1265,
+        "base_climb_rate_fpm": 690,
+        "base_stall_flaps_down_mph": 50,
+        "best_climb_speed_mph": 80,
+        "base_empty_weight_lbs": 2220,
+        "base_fuel_capacity_gal": 54,
+        "fuel_weight_per_gal": 6.0,
+        "hopper_capacity_gal": 280,
+        "hopper_weight_per_gal": 8.3,
+        "max_takeoff_weight_lbs": 4200,
+        "max_landing_weight_lbs": 4200,
+        "glide_ratio": 8.0,
+        "description": "Classic single-engine piston ag sprayer"
+    },
+    "Cessna AgHusky": {
+        "name": "Cessna AgHusky",
+        "base_takeoff_ground_roll_ft": 750,
+        "base_takeoff_to_50ft_ft": 1350,
+        "base_landing_ground_roll_ft": 450,
+        "base_landing_to_50ft_ft": 1200,
+        "base_climb_rate_fpm": 750,
+        "base_stall_flaps_down_mph": 52,
+        "best_climb_speed_mph": 85,
+        "base_empty_weight_lbs": 2400,
+        "base_fuel_capacity_gal": 60,
+        "fuel_weight_per_gal": 6.0,
+        "hopper_capacity_gal": 280,
+        "hopper_weight_per_gal": 8.3,
+        "max_takeoff_weight_lbs": 4200,
+        "max_landing_weight_lbs": 4200,
+        "glide_ratio": 8.0,
+        "description": "Cessna 188 AgHusky variant – rugged piston ag sprayer with good short-field performance"
+    },
+    "Piper PA-36 Pawnee Brave": {
+        "name": "Piper PA-36 Pawnee Brave",
+        "base_takeoff_ground_roll_ft": 1200,
+        "base_takeoff_to_50ft_ft": 1500,
+        "base_landing_ground_roll_ft": 850,
+        "base_landing_to_50ft_ft": 1800,
+        "base_climb_rate_fpm": 920,
+        "base_stall_flaps_down_mph": 65,
+        "best_climb_speed_mph": 100,
+        "base_empty_weight_lbs": 2560,
+        "base_fuel_capacity_gal": 86,
+        "fuel_weight_per_gal": 6.0,
+        "hopper_capacity_gal": 275,
+        "hopper_weight_per_gal": 8.3,
+        "max_takeoff_weight_lbs": 4800,
+        "max_landing_weight_lbs": 4800,
+        "glide_ratio": 7.5,
+        "description": "Single-engine piston ag sprayer – large hopper & good swath width"
     },
     "Robinson R44 Raven II": {
         "name": "Robinson R44 Raven II",
@@ -81,6 +472,48 @@ AIRCRAFT_DATA = {
         "hover_ceiling_ige_max_gw": 8950,
         "hover_ceiling_oge_max_gw": 7500
     },
+    "Bell 206 JetRanger III": {
+        "name": "Bell 206 JetRanger III",
+        "base_takeoff_ground_roll_ft": 0,
+        "base_takeoff_to_50ft_ft": 0,
+        "base_landing_ground_roll_ft": 0,
+        "base_landing_to_50ft_ft": 0,
+        "base_climb_rate_fpm": 1280,
+        "base_stall_flaps_down_mph": 0,
+        "best_climb_speed_mph": 60,
+        "base_empty_weight_lbs": 1635,
+        "base_fuel_capacity_gal": 91,
+        "fuel_weight_per_gal": 6.7,
+        "hopper_capacity_gal": 100,
+        "hopper_weight_per_gal": 8.3,
+        "max_takeoff_weight_lbs": 3200,
+        "max_landing_weight_lbs": 3200,
+        "glide_ratio": 4.0,
+        "description": "Light utility helicopter (spray capable)",
+        "hover_ceiling_ige_max_gw": 12800,
+        "hover_ceiling_oge_max_gw": 8800
+    },
+    "Airbus AS350 B2": {
+        "name": "Airbus AS350 B2",
+        "base_takeoff_ground_roll_ft": 0,
+        "base_takeoff_to_50ft_ft": 0,
+        "base_landing_ground_roll_ft": 0,
+        "base_landing_to_50ft_ft": 0,
+        "base_climb_rate_fpm": 1675,
+        "base_stall_flaps_down_mph": 0,
+        "best_climb_speed_mph": 60,
+        "base_empty_weight_lbs": 2800,
+        "base_fuel_capacity_gal": 143,
+        "fuel_weight_per_gal": 6.7,
+        "hopper_capacity_gal": 150,
+        "hopper_weight_per_gal": 8.3,
+        "max_takeoff_weight_lbs": 4960,
+        "max_landing_weight_lbs": 4960,
+        "glide_ratio": 4.0,
+        "description": "Turbine ag spray helicopter – high performance utility",
+        "hover_ceiling_ige_max_gw": 9850,
+        "hover_ceiling_oge_max_gw": 7550
+    },
     "Enstrom 480": {
         "name": "Enstrom 480",
         "base_takeoff_ground_roll_ft": 0,
@@ -102,6 +535,92 @@ AIRCRAFT_DATA = {
         "hover_ceiling_ige_max_gw": 11000,
         "hover_ceiling_oge_max_gw": 8500
     },
+    "Enstrom 480B": {
+        "name": "Enstrom 480B",
+        "base_takeoff_ground_roll_ft": 0,
+        "base_takeoff_to_50ft_ft": 0,
+        "base_landing_ground_roll_ft": 0,
+        "base_landing_to_50ft_ft": 0,
+        "base_climb_rate_fpm": 1200,
+        "base_stall_flaps_down_mph": 0,
+        "best_climb_speed_mph": 60,
+        "base_empty_weight_lbs": 1800,
+        "base_fuel_capacity_gal": 95,
+        "fuel_weight_per_gal": 6.7,
+        "hopper_capacity_gal": 100,
+        "hopper_weight_per_gal": 8.3,
+        "max_takeoff_weight_lbs": 2850,
+        "max_landing_weight_lbs": 2850,
+        "glide_ratio": 4.0,
+        "description": "Improved turbine light utility helicopter (spray capable)",
+        "hover_ceiling_ige_max_gw": 12000,
+        "hover_ceiling_oge_max_gw": 9000
+    },
+    "Robinson R66": {
+        "name": "Robinson R66",
+        "base_takeoff_ground_roll_ft": 0,
+        "base_takeoff_to_50ft_ft": 0,
+        "base_landing_ground_roll_ft": 0,
+        "base_landing_to_50ft_ft": 0,
+        "base_climb_rate_fpm": 1100,
+        "base_stall_flaps_down_mph": 0,
+        "best_climb_speed_mph": 60,
+        "base_empty_weight_lbs": 1290,
+        "base_fuel_capacity_gal": 73.6,
+        "fuel_weight_per_gal": 6.7,
+        "hopper_capacity_gal": 130,
+        "hopper_weight_per_gal": 8.3,
+        "max_takeoff_weight_lbs": 2700,
+        "max_landing_weight_lbs": 2700,
+        "glide_ratio": 4.0,
+        "description": "Turbine light utility helicopter (spray capable)",
+        "hover_ceiling_ige_max_gw": 11000,
+        "hover_ceiling_oge_max_gw": 10000
+    },
+    "Enstrom F28F": {
+        "name": "Enstrom F28F",
+        "base_takeoff_ground_roll_ft": 0,
+        "base_takeoff_to_50ft_ft": 0,
+        "base_landing_ground_roll_ft": 0,
+        "base_landing_to_50ft_ft": 0,
+        "base_climb_rate_fpm": 1450,
+        "base_stall_flaps_down_mph": 0,
+        "best_climb_speed_mph": 57,
+        "base_empty_weight_lbs": 1640,
+        "base_fuel_capacity_gal": 40,
+        "fuel_weight_per_gal": 6.0,
+        "hopper_capacity_gal": 100,
+        "hopper_weight_per_gal": 8.3,
+        "max_takeoff_weight_lbs": 2600,
+        "max_landing_weight_lbs": 2600,
+        "glide_ratio": 4.0,
+        "description": "Piston helicopter (Falcon) – utility/ag capable",
+        "hover_ceiling_ige_max_gw": 13200,
+        "hover_ceiling_oge_max_gw": 8700
+    },
+    "Scott's Bell 47": {
+        "name": "Scott's Bell 47",
+        "base_takeoff_ground_roll_ft": 0,
+        "base_takeoff_to_50ft_ft": 0,
+        "base_landing_ground_roll_ft": 0,
+        "base_landing_to_50ft_ft": 0,
+        "base_climb_rate_fpm": 900,
+        "base_stall_flaps_down_mph": 0,
+        "best_climb_speed_mph": 60,
+        "base_empty_weight_lbs": 1900,
+        "base_fuel_capacity_gal": 43,
+        "fuel_weight_per_gal": 6.0,
+        "hopper_capacity_gal": 100,
+        "hopper_weight_per_gal": 8.3,
+        "max_takeoff_weight_lbs": 2950,
+        "max_landing_weight_lbs": 2950,
+        "glide_ratio": 4.0,
+        "description": "Light piston utility/ag helicopter – classic bubble canopy, spray capable",
+        "hover_ceiling_ige_max_gw": 10000,
+        "hover_ceiling_oge_max_gw": 8000
+    },
+}
+
 # ────────────────────────────────────────────────
 # Density Altitude Calculation
 # ────────────────────────────────────────────────
@@ -277,7 +796,7 @@ def show_risk_assessment():
     <div style="text-align:center; margin: 30px 0;">
         <div style="
             width: 220px;
-            height: 220px;
+            height: 220px,
             border-radius: 50%;
             background: conic-gradient(
                 {color} {risk_percent}%,
@@ -318,14 +837,12 @@ def show_risk_assessment():
         st.markdown("- Consult for second opinion")
         st.markdown("- Screenshot and re-assess high risk")
     st.caption("Not a substitute for official preflight briefing or company policy.")
-
 # ────────────────────────────────────────────────
 # Main App
 # ────────────────────────────────────────────────
 st.title("AgPilot")
 st.markdown("Performance calculator for agricultural aircraft & helicopters")
 st.caption("Prototype – educational use only. Always refer to the official Pilot Operating Handbook (POH) for actual operations.")
-
 # Fleet Management
 st.subheader("My Fleet")
 if st.session_state.fleet:
@@ -339,7 +856,6 @@ if st.session_state.fleet:
         st.success(f"Loaded **{selected_nickname}** ({entry['aircraft']}) – Empty: {custom or 'base'} lb")
 else:
     st.info("No aircraft saved to fleet yet.")
-
 # Aircraft selection
 selected_aircraft = st.selectbox(
     "Select Aircraft",
@@ -348,12 +864,11 @@ selected_aircraft = st.selectbox(
     format_func=lambda x: f"{AIRCRAFT_DATA[x]['name']} – {AIRCRAFT_DATA[x]['description']}"
 )
 aircraft_data = AIRCRAFT_DATA[selected_aircraft]
-
 # Helicopter detection
 is_helicopter = any(heli in selected_aircraft for heli in [
-    "R44", "Enstrom 480"
+    "R44", "Bell 206", "Enstrom 480", "Enstrom 480B", "Robinson R66",
+    "Airbus AS350", "Enstrom F28F", "Bell 47"
 ])
-
 # Custom Empty Weight Input
 st.subheader("Custom Empty Weight (optional)")
 col_empty1, col_empty2 = st.columns([3, 1])
@@ -385,19 +900,14 @@ with col_empty2:
             st.success(f"Saved **{nickname}** to fleet!")
         else:
             st.warning("Please enter a nickname to save.")
-
 effective_empty = custom_empty if custom_empty != aircraft_data["base_empty_weight_lbs"] else aircraft_data["base_empty_weight_lbs"]
 st.caption(f"**Effective Empty Weight:** {effective_empty} lb {'(custom)' if custom_empty != aircraft_data['base_empty_weight_lbs'] else '(base)'}")
-
 # Risk Assessment button
 if st.button("Risk Assessment", type="secondary"):
     st.session_state.show_risk = not st.session_state.get("show_risk", False)
-
 st.info(f"Performance data loaded for **{aircraft_data['name']}**")
-
 if st.session_state.get("show_risk", False):
     show_risk_assessment()
-
 # Airport Weather & Notices
 st.subheader("Airport Weather & Notices (METAR + TAF + NOTAMs)")
 common_airports = {
