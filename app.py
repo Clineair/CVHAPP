@@ -9,7 +9,7 @@ from datetime import datetime
 # Page Config & Safe Logo
 # ────────────────────────────────────────────────
 st.set_page_config(
-    page_title="AgPilotApp – Aerial Application Performance Tool",
+    page_title="CVH Employee Tool",
     page_icon="⌯✈︎",
     layout="wide",
     initial_sidebar_state="auto"
@@ -381,7 +381,7 @@ if st.session_state.selected_role == "Pilot":
         selected_aircraft = "Robinson R44 Raven II"
     elif "480" in st.session_state.selected_option:
         selected_aircraft = "Enstrom 480"
-elif st.session_state.selected_role = "Driver":
+elif st.session_state.selected_role == "Driver":
     options = ["Heli2", "Heli3", "Heli4"]
     st.session_state.selected_option = st.selectbox("Select Option", options)
     # Map to base aircraft (assuming Heli2/3/4 are Enstrom 480 variants; adjust if needed)
