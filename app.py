@@ -81,48 +81,6 @@ AIRCRAFT_DATA = {
         "hover_ceiling_ige_max_gw": 8950,
         "hover_ceiling_oge_max_gw": 7500
     },
-    "Bell 206 JetRanger III": {
-        "name": "Bell 206 JetRanger III",
-        "base_takeoff_ground_roll_ft": 0,
-        "base_takeoff_to_50ft_ft": 0,
-        "base_landing_ground_roll_ft": 0,
-        "base_landing_to_50ft_ft": 0,
-        "base_climb_rate_fpm": 1280,
-        "base_stall_flaps_down_mph": 0,
-        "best_climb_speed_mph": 60,
-        "base_empty_weight_lbs": 1635,
-        "base_fuel_capacity_gal": 91,
-        "fuel_weight_per_gal": 6.7,
-        "hopper_capacity_gal": 100,
-        "hopper_weight_per_gal": 8.3,
-        "max_takeoff_weight_lbs": 3200,
-        "max_landing_weight_lbs": 3200,
-        "glide_ratio": 4.0,
-        "description": "Light utility helicopter (spray capable)",
-        "hover_ceiling_ige_max_gw": 12800,
-        "hover_ceiling_oge_max_gw": 8800
-    },
-    "Airbus AS350 B2": {
-        "name": "Airbus AS350 B2",
-        "base_takeoff_ground_roll_ft": 0,
-        "base_takeoff_to_50ft_ft": 0,
-        "base_landing_ground_roll_ft": 0,
-        "base_landing_to_50ft_ft": 0,
-        "base_climb_rate_fpm": 1675,
-        "base_stall_flaps_down_mph": 0,
-        "best_climb_speed_mph": 60,
-        "base_empty_weight_lbs": 2800,
-        "base_fuel_capacity_gal": 143,
-        "fuel_weight_per_gal": 6.7,
-        "hopper_capacity_gal": 150,
-        "hopper_weight_per_gal": 8.3,
-        "max_takeoff_weight_lbs": 4960,
-        "max_landing_weight_lbs": 4960,
-        "glide_ratio": 4.0,
-        "description": "Turbine ag spray helicopter – high performance utility",
-        "hover_ceiling_ige_max_gw": 9850,
-        "hover_ceiling_oge_max_gw": 7550
-    },
     "Enstrom 480": {
         "name": "Enstrom 480",
         "base_takeoff_ground_roll_ft": 0,
@@ -144,92 +102,6 @@ AIRCRAFT_DATA = {
         "hover_ceiling_ige_max_gw": 11000,
         "hover_ceiling_oge_max_gw": 8500
     },
-    "Enstrom 480B": {
-        "name": "Enstrom 480B",
-        "base_takeoff_ground_roll_ft": 0,
-        "base_takeoff_to_50ft_ft": 0,
-        "base_landing_ground_roll_ft": 0,
-        "base_landing_to_50ft_ft": 0,
-        "base_climb_rate_fpm": 1200,
-        "base_stall_flaps_down_mph": 0,
-        "best_climb_speed_mph": 60,
-        "base_empty_weight_lbs": 1800,
-        "base_fuel_capacity_gal": 95,
-        "fuel_weight_per_gal": 6.7,
-        "hopper_capacity_gal": 100,
-        "hopper_weight_per_gal": 8.3,
-        "max_takeoff_weight_lbs": 2850,
-        "max_landing_weight_lbs": 2850,
-        "glide_ratio": 4.0,
-        "description": "Improved turbine light utility helicopter (spray capable)",
-        "hover_ceiling_ige_max_gw": 12000,
-        "hover_ceiling_oge_max_gw": 9000
-    },
-    "Robinson R66": {
-        "name": "Robinson R66",
-        "base_takeoff_ground_roll_ft": 0,
-        "base_takeoff_to_50ft_ft": 0,
-        "base_landing_ground_roll_ft": 0,
-        "base_landing_to_50ft_ft": 0,
-        "base_climb_rate_fpm": 1100,
-        "base_stall_flaps_down_mph": 0,
-        "best_climb_speed_mph": 60,
-        "base_empty_weight_lbs": 1290,
-        "base_fuel_capacity_gal": 73.6,
-        "fuel_weight_per_gal": 6.7,
-        "hopper_capacity_gal": 130,
-        "hopper_weight_per_gal": 8.3,
-        "max_takeoff_weight_lbs": 2700,
-        "max_landing_weight_lbs": 2700,
-        "glide_ratio": 4.0,
-        "description": "Turbine light utility helicopter (spray capable)",
-        "hover_ceiling_ige_max_gw": 11000,
-        "hover_ceiling_oge_max_gw": 10000
-    },
-    "Enstrom F28F": {
-        "name": "Enstrom F28F",
-        "base_takeoff_ground_roll_ft": 0,
-        "base_takeoff_to_50ft_ft": 0,
-        "base_landing_ground_roll_ft": 0,
-        "base_landing_to_50ft_ft": 0,
-        "base_climb_rate_fpm": 1450,
-        "base_stall_flaps_down_mph": 0,
-        "best_climb_speed_mph": 57,
-        "base_empty_weight_lbs": 1640,
-        "base_fuel_capacity_gal": 40,
-        "fuel_weight_per_gal": 6.0,
-        "hopper_capacity_gal": 100,
-        "hopper_weight_per_gal": 8.3,
-        "max_takeoff_weight_lbs": 2600,
-        "max_landing_weight_lbs": 2600,
-        "glide_ratio": 4.0,
-        "description": "Piston helicopter (Falcon) – utility/ag capable",
-        "hover_ceiling_ige_max_gw": 13200,
-        "hover_ceiling_oge_max_gw": 8700
-    },
-    "Scott's Bell 47": {
-        "name": "Scott's Bell 47",
-        "base_takeoff_ground_roll_ft": 0,
-        "base_takeoff_to_50ft_ft": 0,
-        "base_landing_ground_roll_ft": 0,
-        "base_landing_to_50ft_ft": 0,
-        "base_climb_rate_fpm": 900,
-        "base_stall_flaps_down_mph": 0,
-        "best_climb_speed_mph": 60,
-        "base_empty_weight_lbs": 1900,
-        "base_fuel_capacity_gal": 43,
-        "fuel_weight_per_gal": 6.0,
-        "hopper_capacity_gal": 100,
-        "hopper_weight_per_gal": 8.3,
-        "max_takeoff_weight_lbs": 2950,
-        "max_landing_weight_lbs": 2950,
-        "glide_ratio": 4.0,
-        "description": "Light piston utility/ag helicopter – classic bubble canopy, spray capable",
-        "hover_ceiling_ige_max_gw": 10000,
-        "hover_ceiling_oge_max_gw": 8000
-    },
-}
-
 # ────────────────────────────────────────────────
 # Density Altitude Calculation
 # ────────────────────────────────────────────────
@@ -479,8 +351,7 @@ aircraft_data = AIRCRAFT_DATA[selected_aircraft]
 
 # Helicopter detection
 is_helicopter = any(heli in selected_aircraft for heli in [
-    "R44", "Bell 206", "Enstrom 480", "Enstrom 480B", "Robinson R66",
-    "Airbus AS350", "Enstrom F28F", "Bell 47"
+    "R44", "Enstrom 480"
 ])
 
 # Custom Empty Weight Input
