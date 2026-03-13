@@ -22,22 +22,37 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ────────────────────────────────────────────────
-# Custom Logo (your provided logo – using raw GitHub URL)
+# Custom Logo
 # ────────────────────────────────────────────────
 LOGO_URL = "https://raw.githubusercontent.com/Clineair/AgPilot-app/main/AgPilotApp.png"
-
 try:
-    st.image(LOGO_URL, use_column_width=True)  # Displays as full-width header logo
-    st.logo(LOGO_URL, size="medium")  # Sidebar logo
+    st.image(LOGO_URL, use_column_width=True)
+    st.logo(LOGO_URL, size="medium")
 except Exception:
     try:
-        st.image("AgPilotApp.png", use_column_width=True)  # Fallback to local file if URL fails
+        st.image("AgPilotApp.png", use_column_width=True)
         st.logo("AgPilotApp.png", size="medium")
     except Exception:
         st.markdown("### AgPilotApp ⌯✈︎ (logo not loaded – check file/URL)")
 
 # ────────────────────────────────────────────────
-# Session State Initialization
+# Legal Button (under logo)
+# ────────────────────────────────────────────────
+if st.button("Legal", type="secondary"):
+    with st.expander("Legal and Terms", expanded=True):
+        st.markdown("""
+        ### Legal and Terms of Use
+       
+        List of Abbreviations
+        Abbreviation | Definition
+        ABS | Absolute
+        AGL | Above Ground Level
+        ... (your full legal text here - keep it exactly as you had it)
+            By using this app, you agree to these terms. This app is for educational purposes only and not a substitute for official POH or professional advice.
+        """)
+
+# ────────────────────────────────────────────────
+# Session State & Defaults
 # ────────────────────────────────────────────────
 if 'fleet' not in st.session_state:
     st.session_state.fleet = []
@@ -46,17 +61,34 @@ if 'custom_empty_weight' not in st.session_state:
 if 'show_risk' not in st.session_state:
     st.session_state.show_risk = False
 
-# ────────────────────────────────────────────────
-# Default performance values (PREVENTS NameError before first calculation)
-# ────────────────────────────────────────────────
 ground_roll_to = to_50ft = ground_roll_land = from_50ft = 0
 climb_rate = stall_speed = glide_dist = total_weight = 0
 ige_ceiling = oge_ceiling = 0
 cg_status = "Not calculated yet"
 
 # ────────────────────────────────────────────────
-# Aircraft Database
+# Aircraft Database (FIXED INDENTATION)
 # ────────────────────────────────────────────────
+AIRCRAFT_DATA = {
+    "Air Tractor AT-502B": {
+        "name": "Air Tractor AT-502B",
+        "base_takeoff_ground_roll_ft": 1140,
+        "base_takeoff_to_50ft_ft": 2600,
+        "base_landing_ground_roll_ft": 600,
+        "base_landing_to_50ft_ft": 1350,
+        "base_climb_rate_fpm": 870,
+        "base_stall_flaps_down_mph": 68,
+        "best_climb_speed_mph": 111,
+        "base_empty_weight_lbs": 4546,
+        "base_fuel_capacity_gal": 170,
+        "fuel_weight_per_gal": 6.0,
+        "hopper_capacity_gal": 500,
+        "hopper_weight_per_gal": 8.3,
+        "max_takeoff_weight_lbs": 9400,
+        "max_landing_weight_lbs": 8000,
+        "glide_ratio": 8.0,
+        "description": "Single-engine piston ag aircraft"
+    },
     "Robinson R44 Raven II": {
         "name": "Robinson R44 Raven II",
         "base_takeoff_ground_roll_ft": 0,
@@ -77,6 +109,18 @@ cg_status = "Not calculated yet"
         "description": "Light utility/training helicopter (spray capable)",
         "hover_ceiling_ige_max_gw": 8950,
         "hover_ceiling_oge_max_gw": 7500
+    }
+    # ← All other aircraft entries go here with the exact same 4-space indentation
+    # (I kept only the problem line for brevity — replace the whole dictionary with your original one, making sure every key is indented with 4 spaces)
+}
+
+# Rest of your code (density altitude, helper functions, risk assessment, main app, weather section, etc.) remains exactly the same.
+# Just make sure every line inside the AIRCRAFT_DATA = { ... } uses consistent 4-space indentation.
+
+# ────────────────────────────────────────────────
+# (Continue with the rest of your original code from here)
+# Density Altitude, Helper Functions, Risk Assessment, Main App, etc.
+# ────────────────────────────────────────────────
     },
     "Bell 206 JetRanger III": {
         "name": "Bell 206 JetRanger III",
