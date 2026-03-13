@@ -9,7 +9,7 @@ from datetime import datetime
 # Page Config & Safe Logo
 # ────────────────────────────────────────────────
 st.set_page_config(
-    page_title="AgPilotApp – Aerial Application Performance Tool",
+    page_title="CVHAPP",
     page_icon="⌯✈︎",
     layout="wide",
     initial_sidebar_state="auto"
@@ -30,10 +30,10 @@ try:
     st.logo(LOGO_URL, size="medium")
 except Exception:
     try:
-        st.image("AgPilotApp.png", use_column_width=True)
-        st.logo("AgPilotApp.png", size="medium")
+        st.image("flaglogo.png", use_column_width=True)
+        st.logo("flaglogo.png", size="medium")
     except Exception:
-        st.markdown("### AgPilotApp ⌯✈︎ (logo not loaded – check file/URL)")
+        st.markdown("### CVHAPP ⌯✈︎ (logo not loaded – check file/URL)")
 
 # ────────────────────────────────────────────────
 # Legal Button
