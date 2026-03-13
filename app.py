@@ -118,7 +118,7 @@ ige_ceiling = oge_ceiling = 0
 cg_status = "Not calculated yet"
 
 # ────────────────────────────────────────────────
-# Aircraft Database (indent fixed)
+# Aircraft Database (fixed)
 # ────────────────────────────────────────────────
 AIRCRAFT_DATA = {
     "Robinson R44 Raven II": {
