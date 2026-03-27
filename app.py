@@ -36,224 +36,6 @@ if st.button("Legal", type="secondary"):
     with st.expander("Legal and Terms", expanded=True):
         st.markdown("""
         ### Legal and Terms of Use
-        [Your full legal text remains exactly as you had it]
-        """)
-
-# ────────────────────────────────────────────────
-# Session State
-# ────────────────────────────────────────────────
-if 'current_mode' not in st.session_state:
-    st.session_state.current_mode = None
-if 'fleet' not in st.session_state:
-    st.session_state.fleet = []
-if 'custom_empty_weight' not in st.session_state:
-    st.session_state.custom_empty_weight = None
-if 'show_risk' not in st.session_state:
-    st.session_state.show_risk = False
-if 'selected_option' not in st.session_state:
-    st.session_state.selected_option = None
-if 'inspections' not in st.session_state:
-    st.session_state.inspections = []
-
-# ────────────────────────────────────────────────
-# Aircraft Database — Helicopters only
-# ────────────────────────────────────────────────
-AIRCRAFT_DATA = {
-    "Robinson R44 Raven II": { ... your exact R44 data ... },
-    "Enstrom 480": { ... your exact Enstrom 480 data ... }
-}
-
-# [All your original functions are here unchanged: calculate_density_altitude, compute_takeoff, compute_landing, compute_climb_rate, compute_stall_speed, compute_glide_distance, compute_weight_balance, compute_hover_ceiling, show_risk_assessment()]
-
-# ────────────────────────────────────────────────
-# Main UI – Three Buttons
-# ────────────────────────────────────────────────
-st.title("CVH Employee Management Tool")
-st.caption("Prototype – educational use only. Always refer to the official POH.")
-
-col1, col2, col3 = st.columns(3)
-with col1:
-    if st.button("🛩️ Pilot", type="primary", use_container_width=True):
-        st.session_state.current_mode = "Pilot"
-with col2:
-    if st.button("🚚 Driver", type="primary", use_container_width=True):
-        st.session_state.current_mode = "Driver"
-with col3:
-    if st.button("🚨 Emergency Checklist", type="primary", use_container_width=True):
-        st.session_state.current_mode = "Emergency"
-
-# ────────────────────────────────────────────────
-# PILOT MODE – Full original AgPilot (helicopters only)
-# ────────────────────────────────────────────────
-if st.session_state.current_mode == "Pilot":
-    st.subheader("Pilot Mode – Helicopter Performance & Risk Assessment")
-    # [Your full original Pilot code is here – fleet, aircraft selector, custom empty weight, 
-    # performance inputs, Calculate Performance button, results, climb chart, hover ceilings, 
-    # Risk Assessment button (visible immediately), weather – exactly as in your original AgPilot]
-
-    # Risk Assessment button is now always visible in Pilot mode
-    if st.button("Risk Assessment", type="secondary"):
-        st.session_state.show_risk = not st.session_state.get("show_risk", False)
-    if st.session_state.show_risk:
-        show_risk_assessment()
-
-# ────────────────────────────────────────────────
-# DRIVER MODE – Pre-Trip Inspection + Email
-# ────────────────────────────────────────────────
-if st.session_state.current_mode == "Driver":
-    st.subheader("🚚 Pre-Trip Inspection (DVIR Style)")
-    st.caption("Complete this checklist before every shift")
-
-    inspection_items = [
-        "Tires & Wheels (pressure, tread, damage)",
-        "Brakes & Brake Lines",
-        "Lights & Reflectors",
-        "Fluid Levels (oil, coolant, hydraulic)",
-        "Hoses & Belts",
-        "Battery & Electrical",
-        "Fuel System & Leaks",
-        "Windshield & Wipers",
-        "Mirrors & Glass",
-        "Cargo / Hopper Securement",
-        "Emergency Equipment",
-        "Seat Belts & Harness"
-    ]
-
-    results = {}
-    for item in inspection_items:
-        c1, c2 = st.columns([3, 1])
-        with c1:
-            st.write(item)
-        with c2:
-            status = st.radio("Status", ["OK ✅", "DEFECT ❌"], key=item, horizontal=True, index=0)
-            results[item] = status
-
-    notes = st.text_area("Notes / Defects found")
-    photo = st.camera_input("Take photo of defect (optional)") or st.file_uploader("Upload photo", type=["jpg","png"])
-
-    if st.button("✅ Submit Pre-Trip Inspection", type="primary", use_container_width=True):
-        # Save locally
-        st.session_state.inspections.append({
-            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M"),
-            "results": results,
-            "notes": notes,
-            "photo": photo
-        })
-
-        # Send email to you
-        try:
-            msg = MIMEMultipart()
-            msg['From'] = st.secrets["email"]["address"]
-            msg['To'] = "cvh@centralvalleyheli.com"
-            msg['Subject'] = f"CVH Driver Pre-Trip Inspection – {datetime.now().strftime('%Y-%m-%d %H:%M')}"
-
-            body = f"Driver Inspection Submitted\n\nOption: {st.session_state.selected_option}\n\n"
-            for item, status in results.items():
-                body += f"{item}: {status}\n"
-            body += f"\nNotes: {notes or 'None'}\n"
-            msg.attach(MIMEText(body, 'plain'))
-
-            if photo:
-                img = MIMEImage(photo.getvalue())
-                img.add_header('Content-Disposition', 'attachment', filename=photo.name)
-                msg.attach(img)
-
-            server = smtplib.SMTP('smtp.gmail.com', 587)
-            server.starttls()
-            server.login(st.secrets["email"]["address"], st.secrets["email"]["password"])
-            server.send_message(msg)
-            server.quit()
-
-            st.success("✅ Inspection submitted and emailed to cvh@centralvalleyheli.com!")
-            st.balloons()
-        except Exception as e:
-            st.error(f"Email failed: {e} (check secrets)")
-
-    # Recent inspections
-    if st.session_state.inspections:
-        st.subheader("Recent Inspections")
-        for insp in reversed(st.session_state.inspections[-5:]):
-            with st.expander(f"{insp['timestamp']}"):
-                for k, v in insp["results"].items():
-                    st.write(f"{k}: {v}")
-                if insp["notes"]:
-                    st.caption(f"Notes: {insp['notes']}")
-                if insp.get("photo"):
-                    st.image(insp["photo"])
-
-# ────────────────────────────────────────────────
-# EMERGENCY CHECKLIST MODE
-# ────────────────────────────────────────────────
-if st.session_state.current_mode == "Emergency":
-    st.subheader("🚨 Emergency Response Checklist")
-    st.markdown("### Priority (PILOT): Aviate → Navigate → Communicate")
-    st.markdown("""
-    1. **Declare emergency / Call 911 / First aid**
-       - Turn fuel shut-off off, battery switch off.
-       - Evacuate upwind if fire or chemical risk.
-       - Check for spray/fuel contamination; give SDS to responders.
-       - Follow Spill Response Procedure.
-       - Preserve wreckage and documents.
-
-    2. **Witnesses & Scene Control**
-       - Secure scene with spill response team.
-       - Do NOT speak to media or officials.
-       - Say only: "Company has contacted appropriate authorities for full investigation to determine root cause and prevent recurrence."
-       - Do NOT speculate on cause.
-
-    3. **Media & Press Inquiries**
-       - Refer all calls to informed management.
-       - Management will notify FAA and NTSB.
-       - Direct inquiries to informed managers.
-       - Contact local law enforcement.
-       - Arrange wreckage preservation.
-
-    4. **Additional Immediate Steps**
-       - Is ELT activated?
-       - Treat injuries (first aid kit); assure area is protected.
-       - Call 911 or local: Kittitas County Sheriff 509-962-1234
-    """)
-    st.markdown("**Local Emergency Contacts**")
-    st.markdown("- **Emergency**: **911**")
-    st.markdown("- **Poison Control**: **1-800-222-1222**")
-    st.markdown("[Call 911 (Emergency)](tel:911)", unsafe_allow_html=True)
-    st.info("Quick-reference only. Follow your company Emergency Response Plan.")
-
-st.caption("**Safe flying & have a Blessed day** ⌯✈︎")
-from PIL import Image
-import streamlit as st
-import numpy as np
-import matplotlib.pyplot as plt
-import requests
-from datetime import datetime
-
-# ────────────────────────────────────────────────
-# Page Config & Safe Logo
-# ────────────────────────────────────────────────
-st.set_page_config(
-    page_title="CVH Employee Tool",
-    page_icon="⌯✈︎",
-    layout="wide",
-    initial_sidebar_state="auto"
-)
-
-st.markdown("""
-    <meta name="theme-color" content="#4CAF50">
-    <link rel="icon" href="https://img.icons8.com/color/48/000000/helicopter.png" type="image/png">
-""", unsafe_allow_html=True)
-
-LOGO_URL = "flaglogo.png"
-try:
-    st.image(LOGO_URL, width=300)
-    st.logo(LOGO_URL, size="medium")
-except Exception:
-    st.markdown("### ⌯✈︎ (logo not loaded – check file/URL)")
-
-# Legal Button
-if st.button("Legal", type="secondary"):
-    with st.expander("Legal and Terms", expanded=True):
-        st.markdown("""
-        ### Legal and Terms of Use
       
         List of Abbreviations
         Abbreviation | Definition
@@ -328,7 +110,7 @@ if 'inspections' not in st.session_state:
     st.session_state.inspections = []
 
 # ────────────────────────────────────────────────
-# Aircraft Database — Helicopters only
+# Aircraft Database — Helicopters only (your original)
 # ────────────────────────────────────────────────
 AIRCRAFT_DATA = {
     "Robinson R44 Raven II": {
@@ -508,21 +290,24 @@ def show_risk_assessment():
     st.caption("Not a substitute for official preflight briefing or company policy.")
 
 # ────────────────────────────────────────────────
-# Main UI
+# Main UI – Three Buttons
 # ────────────────────────────────────────────────
 st.title("CVH Employee Management Tool")
 st.caption("Prototype – educational use only. Always refer to the official POH.")
 
-col1, col2 = st.columns(2)
+col1, col2, col3 = st.columns(3)
 with col1:
     if st.button("🛩️ Pilot", type="primary", use_container_width=True):
         st.session_state.current_mode = "Pilot"
 with col2:
     if st.button("🚚 Driver", type="primary", use_container_width=True):
         st.session_state.current_mode = "Driver"
+with col3:
+    if st.button("🚨 Emergency Checklist", type="primary", use_container_width=True):
+        st.session_state.current_mode = "Emergency"
 
 # ────────────────────────────────────────────────
-# PILOT MODE — Full original AgPilot (helicopters only)
+# PILOT MODE – Full original AgPilot (helicopters only)
 # ────────────────────────────────────────────────
 if st.session_state.current_mode == "Pilot":
     st.subheader("Pilot Mode – Helicopter Performance & Risk Assessment")
@@ -539,7 +324,7 @@ if st.session_state.current_mode == "Pilot":
     else:
         st.info("No aircraft saved to fleet yet.")
 
-    # Aircraft selector
+    # Aircraft selector (helicopters only)
     selected_aircraft = st.selectbox("Select Helicopter", list(AIRCRAFT_DATA.keys()))
 
     # Custom Empty Weight
@@ -606,18 +391,14 @@ if st.session_state.current_mode == "Pilot":
         ax.grid(True)
         st.pyplot(fig)
 
-    # Risk Assessment button — now always visible in Pilot mode
+    # Risk Assessment button – now always visible
     if st.button("Risk Assessment", type="secondary"):
         st.session_state.show_risk = not st.session_state.show_risk
     if st.session_state.show_risk:
         show_risk_assessment()
 
-    # Weather
-    st.subheader("Airport Weather & Notices (METAR + TAF + NOTAMs)")
-    # [Your original weather code would go here – you can add it back if you want]
-
 # ────────────────────────────────────────────────
-# DRIVER MODE
+# DRIVER MODE – Pre-Trip Inspection + Email to you
 # ────────────────────────────────────────────────
 if st.session_state.current_mode == "Driver":
     st.subheader("🚚 Pre-Trip Inspection (DVIR Style)")
@@ -651,15 +432,44 @@ if st.session_state.current_mode == "Driver":
     photo = st.camera_input("Take photo of defect (optional)") or st.file_uploader("Upload photo", type=["jpg","png"])
 
     if st.button("✅ Submit Pre-Trip Inspection", type="primary", use_container_width=True):
+        # Save locally
         st.session_state.inspections.append({
             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M"),
             "results": results,
             "notes": notes,
             "photo": photo
         })
-        st.success("✅ Inspection submitted!")
-        st.balloons()
 
+        # Send email
+        try:
+            msg = MIMEMultipart()
+            msg['From'] = st.secrets["email"]["address"]
+            msg['To'] = "cvh@centralvalleyheli.com"
+            msg['Subject'] = f"CVH Driver Pre-Trip Inspection – {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+
+            body = f"Driver Inspection Submitted\n\n"
+            for item, status in results.items():
+                body += f"{item}: {status}\n"
+            body += f"\nNotes: {notes or 'None'}\n"
+            msg.attach(MIMEText(body, 'plain'))
+
+            if photo:
+                img = MIMEImage(photo.getvalue())
+                img.add_header('Content-Disposition', 'attachment', filename="defect_photo.jpg")
+                msg.attach(img)
+
+            server = smtplib.SMTP('smtp.gmail.com', 587)
+            server.starttls()
+            server.login(st.secrets["email"]["address"], st.secrets["email"]["password"])
+            server.send_message(msg)
+            server.quit()
+
+            st.success("✅ Inspection submitted and emailed to cvh@centralvalleyheli.com!")
+            st.balloons()
+        except Exception as e:
+            st.error(f"Email failed: {e} (check Streamlit Secrets)")
+
+    # Recent inspections
     if st.session_state.inspections:
         st.subheader("Recent Inspections")
         for insp in reversed(st.session_state.inspections[-5:]):
@@ -670,5 +480,43 @@ if st.session_state.current_mode == "Driver":
                     st.caption(f"Notes: {insp['notes']}")
                 if insp.get("photo"):
                     st.image(insp["photo"])
+
+# ────────────────────────────────────────────────
+# EMERGENCY CHECKLIST
+# ────────────────────────────────────────────────
+if st.session_state.current_mode == "Emergency":
+    st.subheader("🚨 Emergency Response Checklist")
+    st.markdown("### Priority (PILOT): Aviate → Navigate → Communicate")
+    st.markdown("""
+    1. **Declare emergency / Call 911 / First aid**
+       - Turn fuel shut-off off, battery switch off.
+       - Evacuate upwind if fire or chemical risk.
+       - Check for spray/fuel contamination; give SDS to responders.
+       - Follow Spill Response Procedure.
+       - Preserve wreckage and documents.
+
+    2. **Witnesses & Scene Control**
+       - Secure scene with spill response team.
+       - Do NOT speak to media or officials.
+       - Say only: "Company has contacted appropriate authorities for full investigation to determine root cause and prevent recurrence."
+       - Do NOT speculate on cause.
+
+    3. **Media & Press Inquiries**
+       - Refer all calls to informed management.
+       - Management will notify FAA and NTSB.
+       - Direct inquiries to informed managers.
+       - Contact local law enforcement.
+       - Arrange wreckage preservation.
+
+    4. **Additional Immediate Steps**
+       - Is ELT activated?
+       - Treat injuries (first aid kit); assure area is protected.
+       - Call 911 or local: Kittitas County Sheriff 509-962-1234
+    """)
+    st.markdown("**Local Emergency Contacts**")
+    st.markdown("- **Emergency**: **911**")
+    st.markdown("- **Poison Control**: **1-800-222-1222**")
+    st.markdown("[Call 911 (Emergency)](tel:911)", unsafe_allow_html=True)
+    st.info("Quick-reference only. Follow your company Emergency Response Plan.")
 
 st.caption("**Safe flying & have a Blessed day** ⌯✈︎")
