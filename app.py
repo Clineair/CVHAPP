@@ -164,7 +164,7 @@ HELI_FUEL_MAX_LBS = {
     "Heli2": 3082, "Heli3": 3082, "Heli4": 938, "Seed1": 0, "C8000": 0
 }
 DEFAULT_EMPTY_WEIGHT = {
-    "Heli2": 31120, "Heli3": 31120, "Heli4": 31120,
+    "Heli2": 27520, "Heli3": 31120, "Heli4": 31120,
     "Seed1": 31120,   # ← change to your exact value
     "C8000": 31120    # ← change to your exact value
 }
