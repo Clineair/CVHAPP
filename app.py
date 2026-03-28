@@ -400,7 +400,7 @@ if st.session_state.current_mode == "Pilot":
         show_risk_assessment()
 
 # ────────────────────────────────────────────────
-# DRIVER MODE – Three Heli buttons + Compute Water for all Helis
+# DRIVER MODE – Three Heli buttons + Compute Water section BEFORE inspection
 # ────────────────────────────────────────────────
 if st.session_state.current_mode == "Driver":
     st.subheader("Select Your Heli")
@@ -418,7 +418,25 @@ if st.session_state.current_mode == "Driver":
     if st.session_state.get("selected_heli"):
         st.subheader(f"Pre-Trip Inspection for {st.session_state.selected_heli}")
 
-        # Pre-trip inspection checklist
+        # === NEW COMPUTE WATER SECTION (before inspection) ===
+        st.markdown("---")
+        st.subheader("💧 Compute Water Load")
+        st.caption("Enter values below to calculate max water load")
+
+        empty_weight = st.number_input("Empty Weight (lbs)", value=31120, step=10)
+        gvw = st.number_input("GVW (lbs)", value=54000, step=10)
+        product_weight = st.number_input("Product Weight (lbs)", value=0, step=10)
+        heli_fuel_pct = st.slider("Heli Fuel Tank % Full", 0, 100, 100)
+        truck_fuel_pct = st.slider("Truck Fuel % Full", 0, 100, 100)
+
+        if st.button("Compute Water", type="primary", use_container_width=True):
+            remaining_weight = gvw - empty_weight - product_weight
+            max_water_gal = max(0, remaining_weight / 8.34)   # water density 8.34 lbs/gal
+            st.success(f"**Maximum water you can load: {max_water_gal:.0f} gallons**")
+            st.info(f"Remaining weight available: {remaining_weight:.0f} lbs")
+
+        # === Pre-Trip Inspection Checklist (after the new cells) ===
+        st.markdown("---")
         inspection_items = [
             "Tires & Wheels (pressure, tread, damage)",
             "Brakes & Brake Lines",
@@ -456,23 +474,16 @@ if st.session_state.current_mode == "Driver":
             })
             st.success("Inspection submitted!")
 
-        # Compute Water section for all Helis
-        st.markdown("---")
-        st.subheader("💧 Compute Water Load")
-        st.caption("Enter values below to calculate max water load")
-
-        empty_weight = st.number_input("Empty Weight (lbs)", value=31120, step=10)
-        gvw = st.number_input("GVW (lbs)", value=54000, step=10)
-        product_weight = st.number_input("Product Weight (lbs)", value=0, step=10)
-        heli_fuel_pct = st.slider("Heli Fuel Tank % Full", 0, 100, 100)
-        truck_fuel_pct = st.slider("Truck Fuel % Full", 0, 100, 100)
-
-        if st.button("Compute Water", type="primary", use_container_width=True):
-            # Simple calculation (you can give me exact formula/numbers next)
-            remaining_weight = gvw - empty_weight - product_weight
-            max_water_gal = max(0, remaining_weight / 8.34)  # water density 8.34 lbs/gal
-            st.success(f"**Maximum water you can load: {max_water_gal:.0f} gallons**")
-            st.info(f"Remaining weight available: {remaining_weight:.0f} lbs")
+        if st.session_state.inspections:
+            st.subheader("Recent Inspections")
+            for insp in reversed(st.session_state.inspections[-5:]):
+                with st.expander(f"{insp['timestamp']} – {insp.get('heli','Unknown')}"):
+                    for k, v in insp["results"].items():
+                        st.write(f"{k}: {v}")
+                    if insp["notes"]:
+                        st.caption(f"Notes: {insp['notes']}")
+                    if insp.get("photo"):
+                        st.image(insp["photo"])
 
 # ────────────────────────────────────────────────
 # EMERGENCY CHECKLIST
