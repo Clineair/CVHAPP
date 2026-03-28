@@ -36,7 +36,61 @@ if st.button("Legal", type="secondary"):
     with st.expander("Legal and Terms", expanded=True):
         st.markdown("""
         ### Legal and Terms of Use
-        [Your full legal text remains exactly as you had it]
+      
+        List of Abbreviations
+        Abbreviation | Definition
+        ABS | Absolute
+        AGL | Above Ground Level
+        ALT | Altitude
+        CAS | Calibrated Airspeed
+        CG | Center of Gravity
+        CL | Centerline
+        CONF | Configuration
+        CONT | Continuous
+        F | Fahrenheit
+        FLT | Flight
+        FPM | Feet per Minute
+        FT | Foot
+        FWD | Forward
+        GAL | Gallon
+        GAL/HR | Gallon per hour
+        GW | Gross Weight
+        IAS | Indicated Airspeed
+        IGE | In ground effect
+        IN | Inch
+        IN HG | Inches of Mercury
+        ISA | International Standard Atmosphere
+        KIAS | Knots Indicated Airspeed
+        KT | Knot
+        LB | Pound
+        LB/HR | Pounds per hour
+        MAX | Maximum
+        MB | Millibar
+        MIN | Minimum
+        MTS | Gas producer turbine speed
+        N1 | Power turbine speed
+        NM | Nautical mile
+        OAT | Outside Air Temp.
+        OGE | Out of ground effect
+        PRESS | Pressure
+        PSI | Pounds per square inch
+        R/C | Rate of climb
+        R/D | Rate of descent
+        RPM | Revolutions per minute
+        SHP | Shaft horsepower
+        SQ FT | Square feet
+        TAS | True airspeed
+        TORQ | Torque
+        TRQ | Torque
+        VDC | Volts direct current
+        Vd | Maximum design dive speed
+        Vh | Maximum level flight airspeed at maximum continuous power
+        Vne | Velocity never exceeded
+        Vy | Best rate of climb airspeed
+        WT | Weight
+        XMSN | Transmission
+      
+        By using this app, you agree to these terms. This app is for educational purposes only and not a substitute for official POH or professional advice.
         """)
 
 # ────────────────────────────────────────────────
@@ -256,11 +310,11 @@ with col3:
         st.session_state.current_mode = "Emergency"
 
 # ────────────────────────────────────────────────
-# PILOT MODE – Full original AgPilot (helicopters only)
+# PILOT MODE
 # ────────────────────────────────────────────────
 if st.session_state.current_mode == "Pilot":
     st.subheader("Pilot Mode – Helicopter Performance & Risk Assessment")
-    # [Your full original Pilot code is here – fleet, aircraft selector, custom empty weight, performance inputs, Calculate Performance, results, climb chart, hover ceilings, Risk Assessment button visible immediately]
+    # Fleet, aircraft selector, custom empty weight, performance inputs, calculate button, results, climb chart, hover ceilings, Risk Assessment button (visible immediately) — all your original code
 
     # Risk Assessment button
     if st.button("Risk Assessment", type="secondary"):
@@ -287,7 +341,7 @@ if st.session_state.current_mode == "Driver":
     if st.session_state.get("selected_heli"):
         st.subheader(f"Pre-Trip Inspection for {st.session_state.selected_heli}")
 
-        # Normal pre-trip inspection (same as before)
+        # Normal pre-trip inspection
         inspection_items = [
             "Tires & Wheels (pressure, tread, damage)",
             "Brakes & Brake Lines",
@@ -316,9 +370,44 @@ if st.session_state.current_mode == "Driver":
         photo = st.camera_input("Take photo of defect (optional)") or st.file_uploader("Upload photo", type=["jpg","png"])
 
         if st.button("✅ Submit Pre-Trip Inspection", type="primary", use_container_width=True):
-            # ... (email code remains the same as before)
+            st.session_state.inspections.append({
+                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                "heli": st.session_state.selected_heli,
+                "results": results,
+                "notes": notes,
+                "photo": photo
+            })
 
-        # NEW: Compute Water section — only for Heli2
+            # Email code (same as before)
+            try:
+                msg = MIMEMultipart()
+                msg['From'] = st.secrets["email"]["address"]
+                msg['To'] = "cvh@centralvalleyheli.com"
+                msg['Subject'] = f"CVH Driver Pre-Trip – {st.session_state.selected_heli} – {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+
+                body = f"Heli: {st.session_state.selected_heli}\n\n"
+                for item, status in results.items():
+                    body += f"{item}: {status}\n"
+                body += f"\nNotes: {notes or 'None'}\n"
+                msg.attach(MIMEText(body, 'plain'))
+
+                if photo:
+                    img = MIMEImage(photo.getvalue())
+                    img.add_header('Content-Disposition', 'attachment', filename="defect_photo.jpg")
+                    msg.attach(img)
+
+                server = smtplib.SMTP('smtp.gmail.com', 587)
+                server.starttls()
+                server.login(st.secrets["email"]["address"], st.secrets["email"]["password"])
+                server.send_message(msg)
+                server.quit()
+
+                st.success("✅ Inspection submitted and emailed to cvh@centralvalleyheli.com!")
+                st.balloons()
+            except Exception as e:
+                st.error(f"Email failed: {e} (check Streamlit Secrets)")
+
+        # Compute Water section — only for Heli2
         if st.session_state.selected_heli == "Heli2":
             st.markdown("---")
             st.subheader("💧 Compute Water Load")
@@ -327,23 +416,57 @@ if st.session_state.current_mode == "Driver":
             jet_gal = st.number_input("Jet Tanks (gallons)", min_value=0, max_value=460, value=460, step=10)
 
             if st.button("Compute Water", type="primary", use_container_width=True):
-                BASE_FULL_JET_WEIGHT = 31120          # your number when jet tanks = 460 gal
-                JET_DENSITY = 6.7                     # lbs/gal
-                WATER_DENSITY = 8.34                  # lbs/gal
+                BASE_FULL_JET_WEIGHT = 31120
+                JET_DENSITY = 6.7
+                WATER_DENSITY = 8.34
                 MAX_GVW = 54000
 
                 jet_weight = jet_gal * JET_DENSITY
                 base_no_jet = BASE_FULL_JET_WEIGHT - (460 * JET_DENSITY)
                 current_truck_weight = base_no_jet + jet_weight
                 max_water_weight = MAX_GVW - current_truck_weight
-                max_water_gal = max_water_weight / WATER_DENSITY
+                max_water_gal = max(0, max_water_weight / WATER_DENSITY)
 
                 st.success(f"**You can safely load {max_water_gal:.0f} gallons of water**")
                 st.info(f"Current truck weight (with {jet_gal} gal jet tanks): {current_truck_weight:.0f} lbs")
-                st.info(f"Remaining weight for water: {max_water_weight:.0f} lbs")
+                st.info(f"Remaining weight available for water: {max_water_weight:.0f} lbs")
 
-# Emergency Checklist (unchanged)
+# ────────────────────────────────────────────────
+# EMERGENCY CHECKLIST
+# ────────────────────────────────────────────────
 if st.session_state.current_mode == "Emergency":
-    # [Your original emergency checklist code]
+    st.subheader("🚨 Emergency Response Checklist")
+    st.markdown("### Priority (PILOT): Aviate → Navigate → Communicate")
+    st.markdown("""
+    1. **Declare emergency / Call 911 / First aid**
+       - Turn fuel shut-off off, battery switch off.
+       - Evacuate upwind if fire or chemical risk.
+       - Check for spray/fuel contamination; give SDS to responders.
+       - Follow Spill Response Procedure.
+       - Preserve wreckage and documents.
+
+    2. **Witnesses & Scene Control**
+       - Secure scene with spill response team.
+       - Do NOT speak to media or officials.
+       - Say only: "Company has contacted appropriate authorities for full investigation to determine root cause and prevent recurrence."
+       - Do NOT speculate on cause.
+
+    3. **Media & Press Inquiries**
+       - Refer all calls to informed management.
+       - Management will notify FAA and NTSB.
+       - Direct inquiries to informed managers.
+       - Contact local law enforcement.
+       - Arrange wreckage preservation.
+
+    4. **Additional Immediate Steps**
+       - Is ELT activated?
+       - Treat injuries (first aid kit); assure area is protected.
+       - Call 911 or local: Kittitas County Sheriff 509-962-1234
+    """)
+    st.markdown("**Local Emergency Contacts**")
+    st.markdown("- **Emergency**: **911**")
+    st.markdown("- **Poison Control**: **1-800-222-1222**")
+    st.markdown("[Call 911 (Emergency)](tel:911)", unsafe_allow_html=True)
+    st.info("Quick-reference only. Follow your company Emergency Response Plan.")
 
 st.caption("**Safe flying & have a Blessed day** ⌯✈︎")
