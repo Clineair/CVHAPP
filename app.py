@@ -546,4 +546,4 @@ if st.session_state.current_mode == "Emergency":
     st.markdown("[Call 911 (Emergency)](tel:911)", unsafe_allow_html=True)
     st.info("Quick-reference only. Follow your company Emergency Response Plan.")
 
-st.caption("**Safe flying & have a Blessed day** ⌯✈︎")
+st.caption("**Safe flying/Driving & have a Blessed day** ⌯✈︎")
