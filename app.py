@@ -400,7 +400,7 @@ if st.session_state.current_mode == "Pilot":
         show_risk_assessment()
 
 # ────────────────────────────────────────────────
-# DRIVER MODE – Three Heli buttons + Compute Water for Heli2
+# DRIVER MODE – Three Heli buttons + Compute Water for all Helis
 # ────────────────────────────────────────────────
 if st.session_state.current_mode == "Driver":
     st.subheader("Select Your Heli")
@@ -418,6 +418,7 @@ if st.session_state.current_mode == "Driver":
     if st.session_state.get("selected_heli"):
         st.subheader(f"Pre-Trip Inspection for {st.session_state.selected_heli}")
 
+        # Pre-trip inspection checklist
         inspection_items = [
             "Tires & Wheels (pressure, tread, damage)",
             "Brakes & Brake Lines",
@@ -453,59 +454,25 @@ if st.session_state.current_mode == "Driver":
                 "notes": notes,
                 "photo": photo
             })
+            st.success("Inspection submitted!")
 
-            # Email code
-            try:
-                msg = MIMEMultipart()
-                msg['From'] = st.secrets["email"]["address"]
-                msg['To'] = "cvh@centralvalleyheli.com"
-                msg['Subject'] = f"CVH Driver Pre-Trip – {st.session_state.selected_heli} – {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+        # Compute Water section for all Helis
+        st.markdown("---")
+        st.subheader("💧 Compute Water Load")
+        st.caption("Enter values below to calculate max water load")
 
-                body = f"Heli: {st.session_state.selected_heli}\n\n"
-                for item, status in results.items():
-                    body += f"{item}: {status}\n"
-                body += f"\nNotes: {notes or 'None'}\n"
-                msg.attach(MIMEText(body, 'plain'))
+        empty_weight = st.number_input("Empty Weight (lbs)", value=31120, step=10)
+        gvw = st.number_input("GVW (lbs)", value=54000, step=10)
+        product_weight = st.number_input("Product Weight (lbs)", value=0, step=10)
+        heli_fuel_pct = st.slider("Heli Fuel Tank % Full", 0, 100, 100)
+        truck_fuel_pct = st.slider("Truck Fuel % Full", 0, 100, 100)
 
-                if photo:
-                    img = MIMEImage(photo.getvalue())
-                    img.add_header('Content-Disposition', 'attachment', filename="defect_photo.jpg")
-                    msg.attach(img)
-
-                server = smtplib.SMTP('smtp.gmail.com', 587)
-                server.starttls()
-                server.login(st.secrets["email"]["address"], st.secrets["email"]["password"])
-                server.send_message(msg)
-                server.quit()
-
-                st.success("✅ Inspection submitted and emailed to cvh@centralvalleyheli.com!")
-                st.balloons()
-            except Exception as e:
-                st.error(f"Email failed: {e} (check Streamlit Secrets)")
-
-        # Compute Water for Heli2
-        if st.session_state.selected_heli == "Heli2":
-            st.markdown("---")
-            st.subheader("💧 Compute Water Load")
-            st.caption("2500 gallon tank – Max GVW 54,000 lbs")
-
-            jet_gal = st.number_input("Jet Tanks (gallons)", min_value=0, max_value=460, value=460, step=10)
-
-            if st.button("Compute Water", type="primary", use_container_width=True):
-                BASE_FULL_JET_WEIGHT = 31120
-                JET_DENSITY = 6.7
-                WATER_DENSITY = 8.34
-                MAX_GVW = 54000
-
-                jet_weight = jet_gal * JET_DENSITY
-                base_no_jet = BASE_FULL_JET_WEIGHT - (460 * JET_DENSITY)
-                current_truck_weight = base_no_jet + jet_weight
-                max_water_weight = MAX_GVW - current_truck_weight
-                max_water_gal = max(0, max_water_weight / WATER_DENSITY)
-
-                st.success(f"**You can safely load {max_water_gal:.0f} gallons of water**")
-                st.info(f"Current truck weight (with {jet_gal} gal jet tanks): {current_truck_weight:.0f} lbs")
-                st.info(f"Remaining weight available for water: {max_water_weight:.0f} lbs")
+        if st.button("Compute Water", type="primary", use_container_width=True):
+            # Simple calculation (you can give me exact formula/numbers next)
+            remaining_weight = gvw - empty_weight - product_weight
+            max_water_gal = max(0, remaining_weight / 8.34)  # water density 8.34 lbs/gal
+            st.success(f"**Maximum water you can load: {max_water_gal:.0f} gallons**")
+            st.info(f"Remaining weight available: {remaining_weight:.0f} lbs")
 
 # ────────────────────────────────────────────────
 # EMERGENCY CHECKLIST
