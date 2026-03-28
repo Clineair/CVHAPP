@@ -159,6 +159,13 @@ AIRCRAFT_DATA = {
     }
 }
 
+# Truck fuel max lbs per Heli (updated per your numbers)
+TRUCK_FUEL_MAX_LBS = {
+    "Heli2": 480,   # 80 gal × 6 lbs/gal
+    "Heli3": 420,   # ← Change this number when you give me Heli3's fuel capacity
+    "Heli4": 420    # 70 gal × 6 lbs/gal
+}
+
 # ────────────────────────────────────────────────
 # All your original functions (unchanged)
 # ────────────────────────────────────────────────
@@ -400,7 +407,7 @@ if st.session_state.current_mode == "Pilot":
         show_risk_assessment()
 
 # ────────────────────────────────────────────────
-# DRIVER MODE – Three Heli buttons + Compute Water section BEFORE inspection
+# DRIVER MODE – Three Heli buttons + Compute Water BEFORE inspection
 # ────────────────────────────────────────────────
 if st.session_state.current_mode == "Driver":
     st.subheader("Select Your Heli")
@@ -418,7 +425,7 @@ if st.session_state.current_mode == "Driver":
     if st.session_state.get("selected_heli"):
         st.subheader(f"Pre-Trip Inspection for {st.session_state.selected_heli}")
 
-        # === NEW COMPUTE WATER SECTION (before inspection) ===
+        # === COMPUTE WATER SECTION (before inspection) ===
         st.markdown("---")
         st.subheader("💧 Compute Water Load")
         st.caption("Enter values below to calculate max water load")
@@ -430,9 +437,14 @@ if st.session_state.current_mode == "Driver":
         truck_fuel_pct = st.slider("Truck Fuel % Full", 0, 100, 100)
 
         if st.button("Compute Water", type="primary", use_container_width=True):
-            remaining_weight = gvw - empty_weight - product_weight
+            # Heli-specific truck fuel max lbs
+            truck_fuel_max_lbs = TRUCK_FUEL_MAX_LBS.get(st.session_state.selected_heli, 420)
+            truck_fuel_weight = (truck_fuel_pct / 100.0) * truck_fuel_max_lbs
+            remaining_weight = gvw - empty_weight - product_weight - truck_fuel_weight
             max_water_gal = max(0, remaining_weight / 8.34)   # water density 8.34 lbs/gal
+
             st.success(f"**Maximum water you can load: {max_water_gal:.0f} gallons**")
+            st.info(f"Current truck fuel weight: {truck_fuel_weight:.0f} lbs")
             st.info(f"Remaining weight available: {remaining_weight:.0f} lbs")
 
         # === Pre-Trip Inspection Checklist (after the new cells) ===
