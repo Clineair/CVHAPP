@@ -159,11 +159,22 @@ AIRCRAFT_DATA = {
     }
 }
 
-# Truck fuel max lbs per Heli (updated per your numbers)
+# Truck Fuel Max lbs (from your previous numbers)
 TRUCK_FUEL_MAX_LBS = {
-    "Heli2": 480,   # 80 gal × 6 lbs/gal
-    "Heli3": 420,   # ← Change this number when you give me Heli3's fuel capacity
-    "Heli4": 420    # 70 gal × 6 lbs/gal
+    "Heli2": 480,
+    "Heli3": 420,
+    "Heli4": 420,
+    "Seed1": 420,     # placeholder – tell me the exact gallons when ready
+    "C8000": 420      # placeholder – tell me the exact gallons when ready
+}
+
+# Heli Fuel Max lbs (from your latest numbers)
+HELI_FUEL_MAX_LBS = {
+    "Heli2": 3082,
+    "Heli3": 3082,
+    "Heli4": 938,
+    "Seed1": 0,       # placeholder – tell me the exact gallons when ready
+    "C8000": 0        # placeholder – tell me the exact gallons when ready
 }
 
 # ────────────────────────────────────────────────
@@ -407,20 +418,23 @@ if st.session_state.current_mode == "Pilot":
         show_risk_assessment()
 
 # ────────────────────────────────────────────────
-# DRIVER MODE – Three Heli buttons + Compute Water BEFORE inspection
+# DRIVER MODE – Five Truck buttons + Compute Water BEFORE inspection
 # ────────────────────────────────────────────────
 if st.session_state.current_mode == "Driver":
-    st.subheader("Select Your Heli")
-    col_h1, col_h2, col_h3 = st.columns(3)
-    with col_h1:
+    st.subheader("Select Your Truck")
+    col1, col2 = st.columns(2)
+    with col1:
         if st.button("Heli2", type="secondary", use_container_width=True):
             st.session_state.selected_heli = "Heli2"
-    with col_h2:
-        if st.button("Heli3", type="secondary", use_container_width=True):
-            st.session_state.selected_heli = "Heli3"
-    with col_h3:
         if st.button("Heli4", type="secondary", use_container_width=True):
             st.session_state.selected_heli = "Heli4"
+        if st.button("Seed1", type="secondary", use_container_width=True):
+            st.session_state.selected_heli = "Seed1"
+    with col2:
+        if st.button("Heli3", type="secondary", use_container_width=True):
+            st.session_state.selected_heli = "Heli3"
+        if st.button("C8000", type="secondary", use_container_width=True):
+            st.session_state.selected_heli = "C8000"
 
     if st.session_state.get("selected_heli"):
         st.subheader(f"Pre-Trip Inspection for {st.session_state.selected_heli}")
@@ -437,14 +451,18 @@ if st.session_state.current_mode == "Driver":
         truck_fuel_pct = st.slider("Truck Fuel % Full", 0, 100, 100)
 
         if st.button("Compute Water", type="primary", use_container_width=True):
-            # Heli-specific truck fuel max lbs
             truck_fuel_max_lbs = TRUCK_FUEL_MAX_LBS.get(st.session_state.selected_heli, 420)
+            heli_fuel_max_lbs = HELI_FUEL_MAX_LBS.get(st.session_state.selected_heli, 420)
+
             truck_fuel_weight = (truck_fuel_pct / 100.0) * truck_fuel_max_lbs
-            remaining_weight = gvw - empty_weight - product_weight - truck_fuel_weight
-            max_water_gal = max(0, remaining_weight / 8.34)   # water density 8.34 lbs/gal
+            heli_fuel_weight = (heli_fuel_pct / 100.0) * heli_fuel_max_lbs
+
+            remaining_weight = gvw - empty_weight - product_weight - truck_fuel_weight - heli_fuel_weight
+            max_water_gal = max(0, remaining_weight / 8.34)
 
             st.success(f"**Maximum water you can load: {max_water_gal:.0f} gallons**")
             st.info(f"Current truck fuel weight: {truck_fuel_weight:.0f} lbs")
+            st.info(f"Current heli fuel weight: {heli_fuel_weight:.0f} lbs")
             st.info(f"Remaining weight available: {remaining_weight:.0f} lbs")
 
         # === Pre-Trip Inspection Checklist (after the new cells) ===
