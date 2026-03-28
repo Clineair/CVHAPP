@@ -454,7 +454,7 @@ if st.session_state.current_mode == "Driver":
                 "photo": photo
             })
 
-            # Email code (same as before)
+            # Email code
             try:
                 msg = MIMEMultipart()
                 msg['From'] = st.secrets["email"]["address"]
@@ -483,7 +483,7 @@ if st.session_state.current_mode == "Driver":
             except Exception as e:
                 st.error(f"Email failed: {e} (check Streamlit Secrets)")
 
-        # Compute Water – only for Heli2
+        # Compute Water for Heli2
         if st.session_state.selected_heli == "Heli2":
             st.markdown("---")
             st.subheader("💧 Compute Water Load")
