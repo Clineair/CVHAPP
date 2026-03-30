@@ -312,6 +312,8 @@ with col2:
     if st.button("🚚 Driver", type="primary", use_container_width=True):
         st.session_state.current_mode = "Driver"
         st.session_state.selected_heli = None
+        st.session_state.last_max_water_gal = 0
+        st.session_state.last_current_weight = 0
 with col3:
     if st.button("🚨 Emergency Checklist", type="primary", use_container_width=True):
         st.session_state.current_mode = "Emergency"
@@ -402,7 +404,7 @@ if st.session_state.current_mode == "Pilot":
         show_risk_assessment()
 
 # ────────────────────────────────────────────────
-# DRIVER MODE – New "New Weight with Water" label next to Current Weight
+# DRIVER MODE – Reset flashing label on every truck button click
 # ────────────────────────────────────────────────
 if st.session_state.current_mode == "Driver":
     st.subheader("Select Your Truck")
@@ -410,15 +412,25 @@ if st.session_state.current_mode == "Driver":
     with col1:
         if st.button("Heli2", type="secondary", use_container_width=True):
             st.session_state.selected_heli = "Heli2"
+            st.session_state.last_max_water_gal = 0
+            st.session_state.last_current_weight = 0
         if st.button("Heli4", type="secondary", use_container_width=True):
             st.session_state.selected_heli = "Heli4"
+            st.session_state.last_max_water_gal = 0
+            st.session_state.last_current_weight = 0
         if st.button("Seed1", type="secondary", use_container_width=True):
             st.session_state.selected_heli = "Seed1"
+            st.session_state.last_max_water_gal = 0
+            st.session_state.last_current_weight = 0
     with col2:
         if st.button("Heli3", type="secondary", use_container_width=True):
             st.session_state.selected_heli = "Heli3"
+            st.session_state.last_max_water_gal = 0
+            st.session_state.last_current_weight = 0
         if st.button("C8000", type="secondary", use_container_width=True):
             st.session_state.selected_heli = "C8000"
+            st.session_state.last_max_water_gal = 0
+            st.session_state.last_current_weight = 0
 
     if st.session_state.get("selected_heli"):
         selected = st.session_state.selected_heli
@@ -440,7 +452,6 @@ if st.session_state.current_mode == "Driver":
         heli_fuel_weight = (heli_fuel_pct / 100.0) * heli_fuel_max
         current_weight = empty_weight + truck_fuel_weight + heli_fuel_weight + product_weight
 
-        # Live Current Weight
         st.metric("**Current Weight**", f"{current_weight:.0f} lbs")
 
         if st.button("Compute Water", type="primary", use_container_width=True):
@@ -450,10 +461,9 @@ if st.session_state.current_mode == "Driver":
             st.session_state.last_max_water_gal = max_water_gal
             st.session_state.last_current_weight = current_weight
             st.success(f"**Maximum water you can load: {max_water_gal:.0f} gallons**")
-            # NEW LABEL EXACTLY AS YOU ASKED
             st.markdown(f"**New Weight with Water = {total_with_water:.0f} lbs.**")
 
-        # Flashing label for Heli2 only (based on NEW total)
+        # Flashing label for Heli2 only (after Compute Water)
         if selected == "Heli2" and st.session_state.get("last_max_water_gal", 0) > 0:
             total_with_water = st.session_state.last_current_weight + (st.session_state.last_max_water_gal * 8.34)
             if total_with_water > 48000:
