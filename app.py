@@ -107,6 +107,10 @@ if 'show_risk' not in st.session_state:
     st.session_state.show_risk = False
 if 'inspections' not in st.session_state:
     st.session_state.inspections = []
+if 'last_max_water_gal' not in st.session_state:
+    st.session_state.last_max_water_gal = 0
+if 'last_current_weight' not in st.session_state:
+    st.session_state.last_current_weight = 0
 
 # ────────────────────────────────────────────────
 # Aircraft Database — Helicopters only
@@ -317,8 +321,6 @@ with col3:
 # ────────────────────────────────────────────────
 if st.session_state.current_mode == "Pilot":
     st.subheader("Pilot Mode – Helicopter Performance & Risk Assessment")
-    # My Fleet, selector, inputs, Calculate, chart, risk button – all identical to previous working version
-    # (Full Pilot code block omitted here for space but is present in the real file you will copy)
 
     # My Fleet
     st.subheader("My Fleet")
@@ -401,18 +403,23 @@ if st.session_state.current_mode == "Pilot":
         show_risk_assessment()
 
 # ────────────────────────────────────────────────
-# DRIVER MODE – Truck-specific + flashing warning for Heli2 only
+# DRIVER MODE – Flashing label after Compute Water (Heli2 only)
 # ────────────────────────────────────────────────
 if st.session_state.current_mode == "Driver":
     st.subheader("Select Your Truck")
     col1, col2 = st.columns(2)
     with col1:
-        if st.button("Heli2", type="secondary", use_container_width=True): st.session_state.selected_heli = "Heli2"
-        if st.button("Heli4", type="secondary", use_container_width=True): st.session_state.selected_heli = "Heli4"
-        if st.button("Seed1", type="secondary", use_container_width=True): st.session_state.selected_heli = "Seed1"
+        if st.button("Heli2", type="secondary", use_container_width=True):
+            st.session_state.selected_heli = "Heli2"
+        if st.button("Heli4", type="secondary", use_container_width=True):
+            st.session_state.selected_heli = "Heli4"
+        if st.button("Seed1", type="secondary", use_container_width=True):
+            st.session_state.selected_heli = "Seed1"
     with col2:
-        if st.button("Heli3", type="secondary", use_container_width=True): st.session_state.selected_heli = "Heli3"
-        if st.button("C8000", type="secondary", use_container_width=True): st.session_state.selected_heli = "C8000"
+        if st.button("Heli3", type="secondary", use_container_width=True):
+            st.session_state.selected_heli = "Heli3"
+        if st.button("C8000", type="secondary", use_container_width=True):
+            st.session_state.selected_heli = "C8000"
 
     if st.session_state.get("selected_heli"):
         selected = st.session_state.selected_heli
@@ -436,28 +443,32 @@ if st.session_state.current_mode == "Driver":
 
         st.metric("**Current Weight**", f"{current_weight:.0f} lbs")
 
-        # FLASHING WARNING FOR HELI2 ONLY
-        if selected == "Heli2" and current_weight > 48000:
-            st.markdown("""
-            <div style="animation: flash 1s infinite; background:#ff4444; color:white; padding:15px; 
-                        text-align:center; font-size:18px; font-weight:bold; border-radius:8px;">
-                ⚠️ Put Drop Axle Down for weight exceeding 48,000 lbs.
-            </div>
-            <style>
-            @keyframes flash {
-                0% { opacity: 1; }
-                50% { opacity: 0.3; }
-                100% { opacity: 1; }
-            }
-            </style>
-            """, unsafe_allow_html=True)
-
         if st.button("Compute Water", type="primary", use_container_width=True):
             remaining = gvw - current_weight
             max_water_gal = max(0, remaining / 8.34)
+            st.session_state.last_max_water_gal = max_water_gal
+            st.session_state.last_current_weight = current_weight
             st.success(f"**Maximum water you can load: {max_water_gal:.0f} gallons**")
 
-        # Pre-Trip Inspection Checklist (unchanged)
+        # Flashing label – ONLY after Compute Water click and ONLY for Heli2
+        if selected == "Heli2" and st.session_state.get("last_max_water_gal", 0) > 0:
+            total_with_water = st.session_state.last_current_weight + (st.session_state.last_max_water_gal * 8.34)
+            if total_with_water > 48000:
+                st.markdown("""
+                <div style="animation: flash 1s infinite; background:#ff4444; color:white; padding:15px; 
+                            text-align:center; font-size:18px; font-weight:bold; border-radius:8px;">
+                    ⚠️ Put Drop Axle Down for weight exceeding 48,000 lbs.
+                </div>
+                <style>
+                @keyframes flash {
+                    0% { opacity: 1; }
+                    50% { opacity: 0.3; }
+                    100% { opacity: 1; }
+                }
+                </style>
+                """, unsafe_allow_html=True)
+
+        # Pre-Trip Inspection Checklist
         st.markdown("---")
         inspection_items = [
             "Tires & Wheels (pressure, tread, damage)",
