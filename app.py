@@ -317,12 +317,11 @@ with col3:
         st.session_state.current_mode = "Emergency"
 
 # ────────────────────────────────────────────────
-# PILOT MODE (full original – unchanged)
+# PILOT MODE (unchanged)
 # ────────────────────────────────────────────────
 if st.session_state.current_mode == "Pilot":
     st.subheader("Pilot Mode – Helicopter Performance & Risk Assessment")
 
-    # My Fleet
     st.subheader("My Fleet")
     if st.session_state.fleet:
         fleet_nicknames = ["— Select a saved aircraft —"] + [e["nickname"] for e in st.session_state.fleet]
@@ -403,23 +402,18 @@ if st.session_state.current_mode == "Pilot":
         show_risk_assessment()
 
 # ────────────────────────────────────────────────
-# DRIVER MODE – Flashing label after Compute Water (Heli2 only)
+# DRIVER MODE – Flashing label next to Current Weight (after Compute Water)
 # ────────────────────────────────────────────────
 if st.session_state.current_mode == "Driver":
     st.subheader("Select Your Truck")
     col1, col2 = st.columns(2)
     with col1:
-        if st.button("Heli2", type="secondary", use_container_width=True):
-            st.session_state.selected_heli = "Heli2"
-        if st.button("Heli4", type="secondary", use_container_width=True):
-            st.session_state.selected_heli = "Heli4"
-        if st.button("Seed1", type="secondary", use_container_width=True):
-            st.session_state.selected_heli = "Seed1"
+        if st.button("Heli2", type="secondary", use_container_width=True): st.session_state.selected_heli = "Heli2"
+        if st.button("Heli4", type="secondary", use_container_width=True): st.session_state.selected_heli = "Heli4"
+        if st.button("Seed1", type="secondary", use_container_width=True): st.session_state.selected_heli = "Seed1"
     with col2:
-        if st.button("Heli3", type="secondary", use_container_width=True):
-            st.session_state.selected_heli = "Heli3"
-        if st.button("C8000", type="secondary", use_container_width=True):
-            st.session_state.selected_heli = "C8000"
+        if st.button("Heli3", type="secondary", use_container_width=True): st.session_state.selected_heli = "Heli3"
+        if st.button("C8000", type="secondary", use_container_width=True): st.session_state.selected_heli = "C8000"
 
     if st.session_state.get("selected_heli"):
         selected = st.session_state.selected_heli
@@ -441,6 +435,7 @@ if st.session_state.current_mode == "Driver":
         heli_fuel_weight = (heli_fuel_pct / 100.0) * heli_fuel_max
         current_weight = empty_weight + truck_fuel_weight + heli_fuel_weight + product_weight
 
+        # Live Current Weight
         st.metric("**Current Weight**", f"{current_weight:.0f} lbs")
 
         if st.button("Compute Water", type="primary", use_container_width=True):
@@ -450,13 +445,14 @@ if st.session_state.current_mode == "Driver":
             st.session_state.last_current_weight = current_weight
             st.success(f"**Maximum water you can load: {max_water_gal:.0f} gallons**")
 
-        # Flashing label – ONLY after Compute Water click and ONLY for Heli2
+        # NEW TOTAL WEIGHT WITH WATER + FLASHING LABEL NEXT TO CURRENT WEIGHT
         if selected == "Heli2" and st.session_state.get("last_max_water_gal", 0) > 0:
             total_with_water = st.session_state.last_current_weight + (st.session_state.last_max_water_gal * 8.34)
+            st.metric("**Total Weight with Water**", f"{total_with_water:.0f} lbs")
             if total_with_water > 48000:
                 st.markdown("""
-                <div style="animation: flash 1s infinite; background:#ff4444; color:white; padding:15px; 
-                            text-align:center; font-size:18px; font-weight:bold; border-radius:8px;">
+                <div style="animation: flash 1s infinite; background:#ff4444; color:white; padding:12px; 
+                            text-align:center; font-size:17px; font-weight:bold; border-radius:8px; display:inline-block; margin-left:20px;">
                     ⚠️ Put Drop Axle Down for weight exceeding 48,000 lbs.
                 </div>
                 <style>
