@@ -404,7 +404,7 @@ if st.session_state.current_mode == "Pilot":
         show_risk_assessment()
 
 # ────────────────────────────────────────────────
-# DRIVER MODE – Reset flashing label on every truck button click
+# DRIVER MODE – Flashing label ONLY when Product > 0 and total > 48k
 # ────────────────────────────────────────────────
 if st.session_state.current_mode == "Driver":
     st.subheader("Select Your Truck")
@@ -463,10 +463,10 @@ if st.session_state.current_mode == "Driver":
             st.success(f"**Maximum water you can load: {max_water_gal:.0f} gallons**")
             st.markdown(f"**New Weight with Water = {total_with_water:.0f} lbs.**")
 
-        # Flashing label for Heli2 only (after Compute Water)
+        # Flashing label ONLY for Heli2 when Product > 0 AND total > 48k
         if selected == "Heli2" and st.session_state.get("last_max_water_gal", 0) > 0:
             total_with_water = st.session_state.last_current_weight + (st.session_state.last_max_water_gal * 8.34)
-            if total_with_water > 48000:
+            if product_weight > 0 and total_with_water > 48000:
                 st.markdown("""
                 <div style="animation: flash 1s infinite; background:#ff4444; color:white; padding:15px; 
                             text-align:center; font-size:18px; font-weight:bold; border-radius:8px;">
