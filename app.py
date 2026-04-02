@@ -160,11 +160,11 @@ AIRCRAFT_DATA = {
     }
 }
 
-# Truck-specific defaults
-TRUCK_FUEL_MAX_LBS = {"Heli2": 480, "Heli3": 420, "Heli4": 420, "Seed1": 420, "C8000": 420}
-HELI_FUEL_MAX_LBS = {"Heli2": 3082, "Heli3": 3082, "Heli4": 938, "Seed1": 0, "C8000": 0}
-DEFAULT_EMPTY_WEIGHT = {"Heli2": 31120, "Heli3": 31120, "Heli4": 31120, "Seed1": 31120, "C8000": 31120}
-DEFAULT_GVW = {"Heli2": 54000, "Heli3": 54000, "Heli4": 54000, "Seed1": 54000, "C8000": 54000}
+# Truck-specific defaults (updated with your new numbers)
+TRUCK_FUEL_MAX_LBS = {"Heli2": 480, "Heli3": 1380, "Heli4": 420, "Seed1": 570, "C8000": 420}
+HELI_FUEL_MAX_LBS = {"Heli2": 3082, "Heli3": 2948, "Heli4": 938, "Seed1": 4020, "C8000": 0}
+DEFAULT_EMPTY_WEIGHT = {"Heli2": 31120, "Heli3": 29960, "Heli4": 31120, "Seed1": 23400, "C8000": 31120}
+DEFAULT_GVW = {"Heli2": 54000, "Heli3": 48000, "Heli4": 54000, "Seed1": 32000, "C8000": 54000}
 
 # ────────────────────────────────────────────────
 # Performance Functions (unchanged)
@@ -404,7 +404,7 @@ if st.session_state.current_mode == "Pilot":
         show_risk_assessment()
 
 # ────────────────────────────────────────────────
-# DRIVER MODE – Flashing label ONLY when Product > 0 and total > 48k
+# DRIVER MODE – New numbers incorporated + flashing label next to Current Weight
 # ────────────────────────────────────────────────
 if st.session_state.current_mode == "Driver":
     st.subheader("Select Your Truck")
@@ -463,7 +463,7 @@ if st.session_state.current_mode == "Driver":
             st.success(f"**Maximum water you can load: {max_water_gal:.0f} gallons**")
             st.markdown(f"**New Weight with Water = {total_with_water:.0f} lbs.**")
 
-        # Flashing label ONLY for Heli2 when Product > 0 AND total > 48k
+        # Flashing label for Heli2 only (after Compute Water)
         if selected == "Heli2" and st.session_state.get("last_max_water_gal", 0) > 0:
             total_with_water = st.session_state.last_current_weight + (st.session_state.last_max_water_gal * 8.34)
             if product_weight > 0 and total_with_water > 48000:
