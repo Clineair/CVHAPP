@@ -160,11 +160,15 @@ AIRCRAFT_DATA = {
     }
 }
 
-# Truck-specific defaults (updated with your latest C8000 numbers)
+# Truck-specific defaults
 TRUCK_FUEL_MAX_LBS = {"Heli2": 480, "Heli3": 1380, "Heli4": 420, "Seed1": 570, "C8000": 600}
 HELI_FUEL_MAX_LBS = {"Heli2": 3082, "Heli3": 2948, "Heli4": 938, "Seed1": 4020, "C8000": 6901}
 DEFAULT_EMPTY_WEIGHT = {"Heli2": 31120, "Heli3": 29960, "Heli4": 31120, "Seed1": 23400, "C8000": 24200}
 DEFAULT_GVW = {"Heli2": 54000, "Heli3": 48000, "Heli4": 54000, "Seed1": 32000, "C8000": 32000}
+
+# Heli2 empty axle weights (tag up, fuels full)
+HELI2_EMPTY_FRONT = 7960
+HELI2_EMPTY_DRIVE = 23160
 
 # ────────────────────────────────────────────────
 # Performance Functions (unchanged)
@@ -404,7 +408,7 @@ if st.session_state.current_mode == "Pilot":
         show_risk_assessment()
 
 # ────────────────────────────────────────────────
-# DRIVER MODE – Updated C8000 numbers + flashing label next to Current Weight
+# DRIVER MODE – Rear Weight for Heli2 + Axle Load Status
 # ────────────────────────────────────────────────
 if st.session_state.current_mode == "Driver":
     st.subheader("Select Your Truck")
@@ -443,6 +447,13 @@ if st.session_state.current_mode == "Driver":
         empty_weight = st.number_input("Empty Weight (lbs)", value=DEFAULT_EMPTY_WEIGHT.get(selected, 31120), step=10)
         gvw = st.number_input("GVW (lbs)", value=DEFAULT_GVW.get(selected, 54000), step=10)
         product_weight = st.number_input("Product Weight (lbs)", value=0, step=10)
+
+        # Rear Weight slider – only for Heli2
+        if selected == "Heli2":
+            rear_weight = st.number_input("Rear Weight (lbs)", value=0, step=10)
+        else:
+            rear_weight = 0
+
         heli_fuel_pct = st.slider("Heli Fuel Tank % Full", 0, 100, 100)
         truck_fuel_pct = st.slider("Truck Fuel % Full", 0, 100, 100)
 
@@ -450,7 +461,7 @@ if st.session_state.current_mode == "Driver":
         heli_fuel_max = HELI_FUEL_MAX_LBS.get(selected, 420)
         truck_fuel_weight = (truck_fuel_pct / 100.0) * truck_fuel_max
         heli_fuel_weight = (heli_fuel_pct / 100.0) * heli_fuel_max
-        current_weight = empty_weight + truck_fuel_weight + heli_fuel_weight + product_weight
+        current_weight = empty_weight + truck_fuel_weight + heli_fuel_weight + product_weight + rear_weight
 
         st.metric("**Current Weight**", f"{current_weight:.0f} lbs")
 
@@ -480,6 +491,14 @@ if st.session_state.current_mode == "Driver":
                 }
                 </style>
                 """, unsafe_allow_html=True)
+
+        # NEW: Axle Load Status for Heli2 using your positions and empty weights
+        if selected == "Heli2":
+            st.subheader("Axle Load Status (Heli2)")
+            st.metric("Front Axle (empty)", f"{HELI2_EMPTY_FRONT} lbs")
+            st.metric("Drive Axles (combined, empty)", f"{HELI2_EMPTY_DRIVE} lbs")
+            st.caption("Positions: Front = 0\", Drive = 291\", Tag = 334\"")
+            st.caption("**Note:** Full live axle load calculation (with product, water, rear, fuels) requires exact load distribution and tag-up/down logic. Reply with any additional axle spacing or test data and I’ll add the complete live calculator.")
 
         # Pre-Trip Inspection Checklist
         st.markdown("---")
