@@ -408,7 +408,7 @@ if st.session_state.current_mode == "Pilot":
         show_risk_assessment()
 
 # ────────────────────────────────────────────────
-# DRIVER MODE – Rear Weight for Heli2 + Axle Load Status
+# DRIVER MODE – Rear Weight for Heli2 + updated Axle Load Status
 # ────────────────────────────────────────────────
 if st.session_state.current_mode == "Driver":
     st.subheader("Select Your Truck")
@@ -492,13 +492,15 @@ if st.session_state.current_mode == "Driver":
                 </style>
                 """, unsafe_allow_html=True)
 
-        # NEW: Axle Load Status for Heli2 using your positions and empty weights
+        # Axle Load Status for Heli2 – using your exact empty weights and new positions
         if selected == "Heli2":
             st.subheader("Axle Load Status (Heli2)")
             st.metric("Front Axle (empty)", f"{HELI2_EMPTY_FRONT} lbs")
-            st.metric("Drive Axles (combined, empty)", f"{HELI2_EMPTY_DRIVE} lbs")
-            st.caption("Positions: Front = 0\", Drive = 291\", Tag = 334\"")
-            st.caption("**Note:** Full live axle load calculation (with product, water, rear, fuels) requires exact load distribution and tag-up/down logic. Reply with any additional axle spacing or test data and I’ll add the complete live calculator.")
+            st.metric("Drive Axle 1 (empty)", f"{HELI2_EMPTY_DRIVE // 2} lbs (approx)")
+            st.metric("Drive Axle 2 (empty)", f"{HELI2_EMPTY_DRIVE // 2} lbs (approx)")
+            st.metric("Tag Axle (empty)", "0 lbs")
+            st.caption("Positions: Front = 0\", Drive1 = 232\", Drive2 = 283\", Tag = 334\"")
+            st.caption("**Note:** Full live axle load calculation (with product, water, rear, fuels) requires exact load distribution and tag-up/down logic. Reply with any additional data and I’ll add the complete live calculator.")
 
         # Pre-Trip Inspection Checklist
         st.markdown("---")
