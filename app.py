@@ -6,7 +6,7 @@ import requests
 from datetime import datetime
 
 # ────────────────────────────────────────────────
-# Page Config & Logo
+# Page Config & CVH Logo
 # ────────────────────────────────────────────────
 st.set_page_config(
     page_title="CVH Employee Tool",
@@ -20,12 +20,33 @@ st.markdown("""
     <link rel="icon" href="https://img.icons8.com/color/48/000000/helicopter.png" type="image/png">
 """, unsafe_allow_html=True)
 
-LOGO_URL = "https://raw.githubusercontent.com/Clineair/AgPilot-app/main/AgPilotApp.png"
+# CVH Logo (flaglogo.png)
+LOGO_URL = "flaglogo.png"
 try:
     st.image(LOGO_URL, width=300)
     st.logo(LOGO_URL, size="medium")
 except Exception:
     st.markdown("### CVH Employee Tool ⌯✈︎")
+
+# ────────────────────────────────────────────────
+# Custom Button Colors (Blue Pilot, Yellow Driver, Red Emergency)
+# ────────────────────────────────────────────────
+st.markdown("""
+<style>
+    .stButton button[data-baseweb="button"][kind="primary"] {
+        background-color: #007BFF !important;  /* Blue for Pilot */
+        color: white !important;
+    }
+    .stButton button[data-baseweb="button"][kind="secondary"] {
+        background-color: #FFC107 !important;  /* Yellow for Driver */
+        color: black !important;
+    }
+    .stButton button[data-baseweb="button"][kind="tertiary"] {
+        background-color: #DC3545 !important;  /* Red for Emergency */
+        color: white !important;
+    }
+</style>
+""", unsafe_allow_html=True)
 
 # ────────────────────────────────────────────────
 # Session State
@@ -44,18 +65,18 @@ if 'show_risk' not in st.session_state:
     st.session_state.show_risk = False
 
 # ────────────────────────────────────────────────
-# Mode Buttons
+# Mode Buttons (colored as requested)
 # ────────────────────────────────────────────────
 col1, col2, col3 = st.columns(3)
 with col1:
-    if st.button("🛩️ Pilot", use_container_width=True, type="primary" if st.session_state.current_mode == "Pilot" else "secondary"):
+    if st.button("🛩️ Pilot", use_container_width=True, type="primary"):
         st.session_state.current_mode = "Pilot"
         st.session_state.selected_heli = None
 with col2:
-    if st.button("🚚 Driver", use_container_width=True, type="primary" if st.session_state.current_mode == "Driver" else "secondary"):
+    if st.button("🚚 Driver", use_container_width=True, type="secondary"):
         st.session_state.current_mode = "Driver"
 with col3:
-    if st.button("🚨 Emergency", use_container_width=True, type="primary" if st.session_state.current_mode == "Emergency" else "secondary"):
+    if st.button("🚨 Emergency", use_container_width=True, type="tertiary"):
         st.session_state.current_mode = "Emergency"
 
 st.markdown("---")
@@ -217,7 +238,7 @@ elif st.session_state.current_mode == "Driver":
         st.success(f"**Maximum water you can load: {max_water_gal:.0f} gallons**")
         st.markdown(f"**New Weight with Water = {new_weight:.0f} lbs**")
 
-    # ── HELI2 ONLY: Physics-correct axle loads (Heli fuel unloads front, loads drives) ──
+    # ── HELI2 ONLY: Physics-correct axle loads (Heli fuel unloads front) ──
     if selected == "Heli2":
         st.subheader("Axle Load Status (Heli2)")
         tag_down = st.checkbox("Tag Axle Down", value=False)
@@ -233,16 +254,13 @@ elif st.session_state.current_mode == "Driver":
             base_drive2 = 11580
             base_tag = 0
 
-        # Fuel effects with position-aware transfer
-        # Truck diesel (forward at 48") loads front
+        # Fuel effects (Heli fuel at 334" aft unloads front, loads drives)
         truck_front_delta = truck_fuel_weight * 0.65
         truck_drive_delta = truck_fuel_weight * 0.35
-
-        # Heli fuel (aft at 334") UNLOADS front, loads drives
-        heli_front_delta = heli_fuel_weight * (-0.20)   # negative = decreases front
+        heli_front_delta = heli_fuel_weight * (-0.20)   # unloads front
         heli_drive_delta = heli_fuel_weight * 0.80
 
-        # Added water/product/rear (rearward distribution)
+        # Added weight from water/product/rear
         added_water = st.session_state.get("last_max_water_gal", 0) * 8.34 if st.session_state.get("last_max_water_gal", 0) > 0 else 0
         extra_weight = added_water + product_weight + rear_weight
         extra_front_delta = extra_weight * 0.22
