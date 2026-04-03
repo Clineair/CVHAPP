@@ -169,7 +169,7 @@ if st.session_state.current_mode == "Pilot":
             st.success("Risk Acceptable")
 
 # ────────────────────────────────────────────────
-# Driver Mode (All 5 trucks + fixed Heli2 axle scaling)
+# Driver Mode (All 5 trucks + physics-correct Heli2 axle loads)
 # ────────────────────────────────────────────────
 elif st.session_state.current_mode == "Driver":
     st.title("🚚 Driver Pre-Trip & Water Load Tool")
@@ -217,7 +217,7 @@ elif st.session_state.current_mode == "Driver":
         st.success(f"**Maximum water you can load: {max_water_gal:.0f} gallons**")
         st.markdown(f"**New Weight with Water = {new_weight:.0f} lbs**")
 
-    # ── HELI2 ONLY: Axle Load Status (fuels now scale correctly) ──
+    # ── HELI2 ONLY: Physics-correct axle loads (Heli fuel unloads front, loads drives) ──
     if selected == "Heli2":
         st.subheader("Axle Load Status (Heli2)")
         tag_down = st.checkbox("Tag Axle Down", value=False)
@@ -227,23 +227,31 @@ elif st.session_state.current_mode == "Driver":
             base_drive1 = 9230
             base_drive2 = 9230
             base_tag = 4700
-            pcts = [0.25, 0.30, 0.30, 0.15]
         else:
             base_front = 7960
             base_drive1 = 11580
             base_drive2 = 11580
             base_tag = 0
-            pcts = [0.30, 0.35, 0.35, 0.00]
 
-        # Added weight = current fuels + water + product + rear
-        added_weight = truck_fuel_weight + heli_fuel_weight
-        if st.session_state.get("last_max_water_gal", 0) > 0:
-            added_weight += (st.session_state.last_max_water_gal * 8.34) + product_weight + rear_weight
+        # Fuel effects with position-aware transfer
+        # Truck diesel (forward at 48") loads front
+        truck_front_delta = truck_fuel_weight * 0.65
+        truck_drive_delta = truck_fuel_weight * 0.35
 
-        front_loaded = base_front + added_weight * pcts[0]
-        drive1_loaded = base_drive1 + added_weight * pcts[1]
-        drive2_loaded = base_drive2 + added_weight * pcts[2]
-        tag_loaded = base_tag + added_weight * pcts[3]
+        # Heli fuel (aft at 334") UNLOADS front, loads drives
+        heli_front_delta = heli_fuel_weight * (-0.20)   # negative = decreases front
+        heli_drive_delta = heli_fuel_weight * 0.80
+
+        # Added water/product/rear (rearward distribution)
+        added_water = st.session_state.get("last_max_water_gal", 0) * 8.34 if st.session_state.get("last_max_water_gal", 0) > 0 else 0
+        extra_weight = added_water + product_weight + rear_weight
+        extra_front_delta = extra_weight * 0.22
+        extra_drive_delta = extra_weight * 0.78
+
+        front_loaded = base_front + truck_front_delta + heli_front_delta + extra_front_delta
+        drive1_loaded = base_drive1 + (truck_drive_delta * 0.5) + (heli_drive_delta * 0.5) + (extra_drive_delta * 0.5)
+        drive2_loaded = base_drive2 + (truck_drive_delta * 0.5) + (heli_drive_delta * 0.5) + (extra_drive_delta * 0.5)
+        tag_loaded = base_tag + (extra_weight * 0.2 if tag_down else 0)
 
         col_a, col_b, col_c, col_d = st.columns(4)
         col_a.metric("Front Axle", f"{front_loaded:.0f} lbs", delta="OK" if front_loaded <= 12000 else "OVER")
