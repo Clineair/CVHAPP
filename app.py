@@ -61,7 +61,7 @@ with col3:
 st.markdown("---")
 
 # ────────────────────────────────────────────────
-# Aircraft Database (R44 + Enstrom 480 only)
+# Aircraft Database (Helicopters only)
 # ────────────────────────────────────────────────
 AIRCRAFT_DATA = {
     "Robinson R44 Raven II": {
@@ -170,7 +170,7 @@ if st.session_state.current_mode == "Pilot":
             st.success("Risk Acceptable")
 
 # ────────────────────────────────────────────────
-# Driver Mode (All 5 trucks + fixed Heli2 axle logic)
+# Driver Mode (All 5 trucks + exact Heli2 axle logic)
 # ────────────────────────────────────────────────
 elif st.session_state.current_mode == "Driver":
     st.title("🚚 Driver Pre-Trip & Water Load Tool")
@@ -218,7 +218,7 @@ elif st.session_state.current_mode == "Driver":
         st.success(f"**Maximum water you can load: {max_water_gal:.0f} gallons**")
         st.markdown(f"**New Weight with Water = {new_weight:.0f} lbs**")
 
-    # ── HELI2 ONLY: FIXED Axle Load Status (includes full fuels + added water) ──
+    # ── HELI2 ONLY: Exact Axle Load Status (your numbers + fuels included) ──
     if selected == "Heli2":
         st.subheader("Axle Load Status (Heli2)")
         tag_down = st.checkbox("Tag Axle Down", value=False)
@@ -266,14 +266,14 @@ elif st.session_state.current_mode == "Driver":
     # Pre-Trip Inspection Checklist
     st.markdown("---")
     st.subheader("Pre-Trip Inspection Checklist")
-    # (Your full inspection checklist with radios, photo upload, submit button goes here)
+    # Paste your full inspection checklist here (radios, photo upload, submit button)
 
 # ────────────────────────────────────────────────
 # Emergency Mode
 # ────────────────────────────────────────────────
 elif st.session_state.current_mode == "Emergency":
     st.title("🚨 Emergency Response Checklist")
-    # (Your full emergency checklist goes here)
+    # Paste your full emergency checklist here
 
 # Feedback
 st.subheader("Your Feedback – Help Improve CVHAPP")
