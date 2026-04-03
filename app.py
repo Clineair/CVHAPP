@@ -20,7 +20,7 @@ st.markdown("""
     <link rel="icon" href="https://img.icons8.com/color/48/000000/helicopter.png" type="image/png">
 """, unsafe_allow_html=True)
 
-# CVH Logo (flaglogo.png)
+# CVH Logo
 LOGO_URL = "flaglogo.png"
 try:
     st.image(LOGO_URL, width=300)
@@ -28,23 +28,12 @@ try:
 except Exception:
     st.markdown("### CVH Employee Tool ⌯✈︎")
 
-# ────────────────────────────────────────────────
-# Custom Button Colors (Blue Pilot, Yellow Driver, Red Emergency)
-# ────────────────────────────────────────────────
+# Button Colors
 st.markdown("""
 <style>
-    .stButton button[data-baseweb="button"][kind="primary"] {
-        background-color: #007BFF !important;  /* Blue for Pilot */
-        color: white !important;
-    }
-    .stButton button[data-baseweb="button"][kind="secondary"] {
-        background-color: #FFC107 !important;  /* Yellow for Driver */
-        color: black !important;
-    }
-    .stButton button[data-baseweb="button"][kind="tertiary"] {
-        background-color: #DC3545 !important;  /* Red for Emergency */
-        color: white !important;
-    }
+    .stButton button[data-baseweb="button"][kind="primary"] { background-color: #007BFF !important; color: white !important; } /* Blue - Pilot */
+    .stButton button[data-baseweb="button"][kind="secondary"] { background-color: #FFC107 !important; color: black !important; } /* Yellow - Driver */
+    .stButton button[data-baseweb="button"][kind="tertiary"] { background-color: #DC3545 !important; color: white !important; } /* Red - Emergency */
 </style>
 """, unsafe_allow_html=True)
 
@@ -65,7 +54,7 @@ if 'show_risk' not in st.session_state:
     st.session_state.show_risk = False
 
 # ────────────────────────────────────────────────
-# Mode Buttons (colored as requested)
+# Mode Buttons
 # ────────────────────────────────────────────────
 col1, col2, col3 = st.columns(3)
 with col1:
@@ -135,7 +124,7 @@ def compute_hover_ceiling(da_ft, weight_lbs, aircraft):
     return max(0, ige), max(0, oge)
 
 # ────────────────────────────────────────────────
-# Pilot Mode (Full)
+# Pilot Mode
 # ────────────────────────────────────────────────
 if st.session_state.current_mode == "Pilot":
     st.title("🛩️ Pilot Performance Calculator")
@@ -190,7 +179,7 @@ if st.session_state.current_mode == "Pilot":
             st.success("Risk Acceptable")
 
 # ────────────────────────────────────────────────
-# Driver Mode (All 5 trucks + physics-correct Heli2 axle loads)
+# Driver Mode (All 5 trucks + Heli2 axle loads that ALWAYS sum exactly to total weight)
 # ────────────────────────────────────────────────
 elif st.session_state.current_mode == "Driver":
     st.title("🚚 Driver Pre-Trip & Water Load Tool")
@@ -238,7 +227,7 @@ elif st.session_state.current_mode == "Driver":
         st.success(f"**Maximum water you can load: {max_water_gal:.0f} gallons**")
         st.markdown(f"**New Weight with Water = {new_weight:.0f} lbs**")
 
-    # ── HELI2 ONLY: Physics-correct axle loads (Heli fuel unloads front) ──
+    # ── HELI2 ONLY: Axle loads that ALWAYS sum exactly to total weight ──
     if selected == "Heli2":
         st.subheader("Axle Load Status (Heli2)")
         tag_down = st.checkbox("Tag Axle Down", value=False)
@@ -254,10 +243,10 @@ elif st.session_state.current_mode == "Driver":
             base_drive2 = 11580
             base_tag = 0
 
-        # Fuel effects (Heli fuel at 334" aft unloads front, loads drives)
+        # Fuel deltas (Heli fuel at 334" unloads front, loads drives)
         truck_front_delta = truck_fuel_weight * 0.65
         truck_drive_delta = truck_fuel_weight * 0.35
-        heli_front_delta = heli_fuel_weight * (-0.20)   # unloads front
+        heli_front_delta = heli_fuel_weight * (-0.20)
         heli_drive_delta = heli_fuel_weight * 0.80
 
         # Added weight from water/product/rear
@@ -266,10 +255,21 @@ elif st.session_state.current_mode == "Driver":
         extra_front_delta = extra_weight * 0.22
         extra_drive_delta = extra_weight * 0.78
 
+        # Raw loaded axles
         front_loaded = base_front + truck_front_delta + heli_front_delta + extra_front_delta
         drive1_loaded = base_drive1 + (truck_drive_delta * 0.5) + (heli_drive_delta * 0.5) + (extra_drive_delta * 0.5)
         drive2_loaded = base_drive2 + (truck_drive_delta * 0.5) + (heli_drive_delta * 0.5) + (extra_drive_delta * 0.5)
         tag_loaded = base_tag + (extra_weight * 0.2 if tag_down else 0)
+
+        # NORMALIZE so they always sum exactly to total weight
+        total_axle_sum = front_loaded + drive1_loaded + drive2_loaded + tag_loaded
+        total_weight = current_weight + added_water
+        if total_axle_sum > 0:
+            scale = total_weight / total_axle_sum
+            front_loaded *= scale
+            drive1_loaded *= scale
+            drive2_loaded *= scale
+            tag_loaded *= scale
 
         col_a, col_b, col_c, col_d = st.columns(4)
         col_a.metric("Front Axle", f"{front_loaded:.0f} lbs", delta="OK" if front_loaded <= 12000 else "OVER")
