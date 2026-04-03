@@ -97,7 +97,7 @@ AIRCRAFT_DATA = {
 }
 
 # ────────────────────────────────────────────────
-# Performance Helpers
+# Performance Helpers (Pilot mode)
 # ────────────────────────────────────────────────
 def calculate_density_altitude(pressure_alt_ft, oat_c):
     isa_temp_c = 15 - (2 * pressure_alt_ft / 1000)
@@ -218,7 +218,7 @@ elif st.session_state.current_mode == "Driver":
         st.success(f"**Maximum water you can load: {max_water_gal:.0f} gallons**")
         st.markdown(f"**New Weight with Water = {new_weight:.0f} lbs**")
 
-    # ── HELI2 ONLY: FIXED Axle Load Status ──
+    # ── HELI2 ONLY: FIXED Axle Load Status (includes full fuels + added water) ──
     if selected == "Heli2":
         st.subheader("Axle Load Status (Heli2)")
         tag_down = st.checkbox("Tag Axle Down", value=False)
@@ -237,10 +237,10 @@ elif st.session_state.current_mode == "Driver":
             drive1_empty = 11580
             drive2_empty = 11580
             tag_empty = 0
-            front_pct = 0.30   # redistributed
+            front_pct = 0.30
             drive1_pct = 0.35
             drive2_pct = 0.35
-            tag_pct = 0.00     # FORCED TO ZERO
+            tag_pct = 0.00   # TAG ALWAYS 0 WHEN UP
 
         if st.session_state.get("last_max_water_gal", 0) > 0:
             added_weight = (st.session_state.last_max_water_gal * 8.34) + product_weight + rear_weight
@@ -263,17 +263,17 @@ elif st.session_state.current_mode == "Driver":
         if st.session_state.get("last_max_water_gal", 0) > 0 and current_weight + (st.session_state.last_max_water_gal * 8.34) > 48000 and product_weight > 0:
             st.markdown("""<div style="animation: flash 1s infinite; background:#ff4444; color:white; padding:15px; text-align:center; font-size:18px; font-weight:bold; border-radius:8px;">⚠️ Put Drop Axle Down for weight exceeding 48,000 lbs.</div><style>@keyframes flash {0% {opacity:1;} 50% {opacity:0.3;} 100% {opacity:1;}}</style>""", unsafe_allow_html=True)
 
-    # Pre-Trip Inspection Checklist (your full checklist goes here)
+    # Pre-Trip Inspection Checklist
     st.markdown("---")
     st.subheader("Pre-Trip Inspection Checklist")
-    # ← Paste your full inspection checklist (radios, photo upload, submit) here
+    # (Your full inspection checklist with radios, photo upload, submit button goes here)
 
 # ────────────────────────────────────────────────
 # Emergency Mode
 # ────────────────────────────────────────────────
 elif st.session_state.current_mode == "Emergency":
     st.title("🚨 Emergency Response Checklist")
-    # ← Paste your full emergency checklist here
+    # (Your full emergency checklist goes here)
 
 # Feedback
 st.subheader("Your Feedback – Help Improve CVHAPP")
