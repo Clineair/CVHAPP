@@ -61,13 +61,12 @@ with col3:
 st.markdown("---")
 
 # ────────────────────────────────────────────────
-# Aircraft Database (only helicopters)
+# Aircraft Database (R44 + Enstrom 480 only)
 # ────────────────────────────────────────────────
 AIRCRAFT_DATA = {
     "Robinson R44 Raven II": {
         "name": "Robinson R44 Raven II",
         "base_climb_rate_fpm": 1200,
-        "base_stall_flaps_down_mph": 0,
         "best_climb_speed_mph": 60,
         "base_empty_weight_lbs": 1500,
         "base_fuel_capacity_gal": 30,
@@ -77,14 +76,12 @@ AIRCRAFT_DATA = {
         "max_takeoff_weight_lbs": 2500,
         "max_landing_weight_lbs": 2500,
         "glide_ratio": 4.0,
-        "description": "Spray helicopter",
         "hover_ceiling_ige_max_gw": 11000,
         "hover_ceiling_oge_max_gw": 8500
     },
     "Enstrom 480B": {
         "name": "Enstrom 480B",
         "base_climb_rate_fpm": 1200,
-        "base_stall_flaps_down_mph": 0,
         "best_climb_speed_mph": 60,
         "base_empty_weight_lbs": 1800,
         "base_fuel_capacity_gal": 95,
@@ -94,19 +91,17 @@ AIRCRAFT_DATA = {
         "max_takeoff_weight_lbs": 2850,
         "max_landing_weight_lbs": 2850,
         "glide_ratio": 4.0,
-        "description": "Spray helicopter",
         "hover_ceiling_ige_max_gw": 12000,
         "hover_ceiling_oge_max_gw": 9000
     }
 }
 
 # ────────────────────────────────────────────────
-# Performance Functions
+# Performance Helpers
 # ────────────────────────────────────────────────
 def calculate_density_altitude(pressure_alt_ft, oat_c):
     isa_temp_c = 15 - (2 * pressure_alt_ft / 1000)
-    da = pressure_alt_ft + (120 * (oat_c - isa_temp_c))
-    return da
+    return pressure_alt_ft + (120 * (oat_c - isa_temp_c))
 
 def compute_climb_rate(alt, oat_c, weight_lbs, aircraft):
     base = AIRCRAFT_DATA[aircraft]["base_climb_rate_fpm"]
@@ -118,8 +113,6 @@ def compute_hover_ceiling(da_ft, weight_lbs, aircraft):
     oge = data["hover_ceiling_oge_max_gw"] - (da_ft / 1000 * 800) - ((weight_lbs - 2000) / 100 * 150)
     return max(0, ige), max(0, oge)
 
-# (All other performance functions like takeoff, landing, stall, glide, weight balance are in the full original version you had – they are unchanged and included in the complete file)
-
 # ────────────────────────────────────────────────
 # Pilot Mode (Full)
 # ────────────────────────────────────────────────
@@ -127,21 +120,57 @@ if st.session_state.current_mode == "Pilot":
     st.title("🛩️ Pilot Performance Calculator")
     selected_aircraft = st.selectbox("Select Aircraft", list(AIRCRAFT_DATA.keys()))
     aircraft_data = AIRCRAFT_DATA[selected_aircraft]
-    
-    # All inputs, density altitude, weight balance, results, climb chart, FRAT risk assessment, etc.
-    # (Full Pilot code from your previous working version is here – density altitude, climb chart, hover ceilings, etc.)
+
+    pressure_alt = st.number_input("Pressure Altitude (ft)", value=0, step=100)
+    oat_c = st.number_input("Outside Air Temperature (°C)", value=15, step=1)
+    pilot_weight = st.number_input("Pilot Weight (lbs)", value=200, step=10)
+    fuel_gal = st.number_input("Fuel (gal)", value=30, step=5)
+    hopper_gal = st.number_input("Hopper / Spray (gal)", value=83, step=5)
+
+    da_ft = calculate_density_altitude(pressure_alt, oat_c)
+    st.metric("Density Altitude", f"{da_ft:.0f} ft")
+
+    fuel_weight = fuel_gal * aircraft_data["fuel_weight_per_gal"]
+    hopper_weight = hopper_gal * aircraft_data["hopper_weight_per_gal"]
+    total_weight = aircraft_data["base_empty_weight_lbs"] + pilot_weight + fuel_weight + hopper_weight
+    st.metric("Total Weight", f"{total_weight:.0f} lbs")
+
+    st.subheader("Performance Results")
+    climb_rate = compute_climb_rate(pressure_alt, oat_c, total_weight, selected_aircraft)
+    ige, oge = compute_hover_ceiling(da_ft, total_weight, selected_aircraft)
+    st.metric("Climb Rate", f"{climb_rate:.0f} fpm")
+    st.metric("IGE Hover Ceiling", f"{ige:.0f} ft")
+    st.metric("OGE Hover Ceiling", f"{oge:.0f} ft")
+
     st.subheader("Rate of Climb vs Pressure Altitude")
-    # ... full matplotlib chart ...
-    
-    # FRAT Risk Assessment (with inverted sliders as you requested)
+    altitudes = np.linspace(0, 12000, 60)
+    climb_rates = [compute_climb_rate(alt, oat_c, total_weight, selected_aircraft) for alt in altitudes]
+    fig, ax = plt.subplots(figsize=(10, 5))
+    ax.plot(altitudes, climb_rates, color='darkgreen', linewidth=2.5)
+    ax.set_xlabel("Pressure Altitude (ft)")
+    ax.set_ylabel("Rate of Climb (fpm)")
+    ax.grid(True)
+    st.pyplot(fig)
+
+    # FRAT
     if st.button("Flight Risk Assessment Tool (FRAT)", type="secondary"):
         st.session_state.show_risk = not st.session_state.get("show_risk", False)
     if st.session_state.get("show_risk", False):
-        # Full FRAT with 10→0 sliders, risk gauge, mitigation
-        pass  # (Full FRAT block from your previous version is included)
+        st.subheader("Flight Risk Assessment Tool (FRAT)")
+        risk_score = 0
+        risk_score += 10 - st.slider("Mission Pressure", 0, 10, 5)
+        risk_score += 10 - st.slider("Fatigue Level", 0, 10, 5)
+        risk_score += 10 - st.slider("Weather Conditions", 0, 10, 5)
+        risk_score += 10 - st.slider("Aircraft Status", 0, 10, 5)
+        risk_score += 10 - st.slider("Personal Factors", 0, 10, 5)
+        st.metric("Total Risk Score", f"{risk_score}/50")
+        if risk_score > 30:
+            st.error("HIGH RISK — Consider mitigation or cancel flight")
+        else:
+            st.success("Risk Acceptable")
 
 # ────────────────────────────────────────────────
-# Driver Mode (Full with your latest Heli2 data)
+# Driver Mode (All 5 trucks + fixed Heli2 axle logic)
 # ────────────────────────────────────────────────
 elif st.session_state.current_mode == "Driver":
     st.title("🚚 Driver Pre-Trip & Water Load Tool")
@@ -189,7 +218,7 @@ elif st.session_state.current_mode == "Driver":
         st.success(f"**Maximum water you can load: {max_water_gal:.0f} gallons**")
         st.markdown(f"**New Weight with Water = {new_weight:.0f} lbs**")
 
-    # Axle Load Status - Heli2 only (your exact numbers)
+    # ── HELI2 ONLY: FIXED Axle Load Status ──
     if selected == "Heli2":
         st.subheader("Axle Load Status (Heli2)")
         tag_down = st.checkbox("Tag Axle Down", value=False)
@@ -199,18 +228,26 @@ elif st.session_state.current_mode == "Driver":
             drive1_empty = 9230
             drive2_empty = 9230
             tag_empty = 4700
+            front_pct = 0.25
+            drive1_pct = 0.30
+            drive2_pct = 0.30
+            tag_pct = 0.15
         else:
             front_empty = 7960
             drive1_empty = 11580
             drive2_empty = 11580
             tag_empty = 0
+            front_pct = 0.30   # redistributed
+            drive1_pct = 0.35
+            drive2_pct = 0.35
+            tag_pct = 0.00     # FORCED TO ZERO
 
         if st.session_state.get("last_max_water_gal", 0) > 0:
             added_weight = (st.session_state.last_max_water_gal * 8.34) + product_weight + rear_weight
-            front_loaded = front_empty + added_weight * 0.25
-            drive1_loaded = drive1_empty + added_weight * 0.35
-            drive2_loaded = drive2_empty + added_weight * 0.30
-            tag_loaded = tag_empty + added_weight * 0.10
+            front_loaded = front_empty + added_weight * front_pct
+            drive1_loaded = drive1_empty + added_weight * drive1_pct
+            drive2_loaded = drive2_empty + added_weight * drive2_pct
+            tag_loaded = tag_empty + added_weight * tag_pct
         else:
             front_loaded = front_empty
             drive1_loaded = drive1_empty
@@ -226,19 +263,19 @@ elif st.session_state.current_mode == "Driver":
         if st.session_state.get("last_max_water_gal", 0) > 0 and current_weight + (st.session_state.last_max_water_gal * 8.34) > 48000 and product_weight > 0:
             st.markdown("""<div style="animation: flash 1s infinite; background:#ff4444; color:white; padding:15px; text-align:center; font-size:18px; font-weight:bold; border-radius:8px;">⚠️ Put Drop Axle Down for weight exceeding 48,000 lbs.</div><style>@keyframes flash {0% {opacity:1;} 50% {opacity:0.3;} 100% {opacity:1;}}</style>""", unsafe_allow_html=True)
 
-    # Full Pre-Trip Inspection Checklist
+    # Pre-Trip Inspection Checklist (your full checklist goes here)
     st.markdown("---")
     st.subheader("Pre-Trip Inspection Checklist")
-    # (Your full checklist with all radios, photo upload, submit button is here)
+    # ← Paste your full inspection checklist (radios, photo upload, submit) here
 
 # ────────────────────────────────────────────────
-# Emergency Mode (full)
+# Emergency Mode
 # ────────────────────────────────────────────────
 elif st.session_state.current_mode == "Emergency":
     st.title("🚨 Emergency Response Checklist")
-    # (Full emergency checklist you had before is here)
+    # ← Paste your full emergency checklist here
 
-# Feedback, Legal button, etc. at bottom (full)
+# Feedback
 st.subheader("Your Feedback – Help Improve CVHAPP")
 rating = st.feedback("stars")
 comment = st.text_area("Any suggestions send screenshot to cvh@centralvalleyheli.com", height=120)
