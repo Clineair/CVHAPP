@@ -152,7 +152,7 @@ if st.session_state.current_mode == "Pilot":
     st.metric("IGE Hover Ceiling", f"{ige:.0f} ft")
     st.metric("OGE Hover Ceiling", f"{oge:.0f} ft")
 
-      if st.button("Flight Risk Assessment Tool (FRAT)", type="secondary"):
+    if st.button("Flight Risk Assessment Tool (FRAT)", type="secondary"):
         st.session_state.show_risk = not st.session_state.get("show_risk", False)
     if st.session_state.get("show_risk", False):
         st.subheader("Flight Risk Assessment Tool (FRAT)")
