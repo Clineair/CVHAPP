@@ -152,17 +152,7 @@ if st.session_state.current_mode == "Pilot":
     st.metric("IGE Hover Ceiling", f"{ige:.0f} ft")
     st.metric("OGE Hover Ceiling", f"{oge:.0f} ft")
 
-    st.subheader("Rate of Climb vs Pressure Altitude")
-    altitudes = np.linspace(0, 12000, 60)
-    climb_rates = [compute_climb_rate(alt, oat_c, total_weight, selected_aircraft) for alt in altitudes]
-    fig, ax = plt.subplots(figsize=(10, 5))
-    ax.plot(altitudes, climb_rates, color='darkgreen', linewidth=2.5)
-    ax.set_xlabel("Pressure Altitude (ft)")
-    ax.set_ylabel("Rate of Climb (fpm)")
-    ax.grid(True)
-    st.pyplot(fig)
-
-    if st.button("Flight Risk Assessment Tool (FRAT)", type="secondary"):
+      if st.button("Flight Risk Assessment Tool (FRAT)", type="secondary"):
         st.session_state.show_risk = not st.session_state.get("show_risk", False)
     if st.session_state.get("show_risk", False):
         st.subheader("Flight Risk Assessment Tool (FRAT)")
@@ -296,7 +286,7 @@ elif st.session_state.current_mode == "Emergency":
 st.subheader("Your Feedback – Help Improve CVHAPP")
 rating = st.feedback("stars")
 comment = st.text_area("Any suggestions send screenshot to cvh@centralvalleyheli.com", height=120)
-if st.button("Safe flying & have a Blessed day ⌯✈︎"):
+if st.button(""):
     if rating is not None:
         stars = rating + 1
         st.success(f"Thank you! You rated **{stars} stars**.")
