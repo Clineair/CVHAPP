@@ -89,21 +89,28 @@ AIRCRAFT_DATA = {
         "hover_ceiling_ige_max_gw": 11000,
         "hover_ceiling_oge_max_gw": 8500
     },
-    "Enstrom 480B": {
-        "name": "Enstrom 480B",
-        "base_climb_rate_fpm": 1200,
+    "Enstrom 480": {
+        "name": "Enstrom 480",
+        "base_takeoff_ground_roll_ft": 0,
+        "base_takeoff_to_50ft_ft": 0,
+        "base_landing_ground_roll_ft": 0,
+        "base_landing_to_50ft_ft": 0,
+        "base_climb_rate_fpm": 1100,
+        "base_stall_flaps_down_mph": 0,
         "best_climb_speed_mph": 60,
-        "base_empty_weight_lbs": 1800,
+        "base_empty_weight_lbs": 1750,
         "base_fuel_capacity_gal": 95,
         "fuel_weight_per_gal": 6.7,
         "hopper_capacity_gal": 100,
-        "hopper_weight_per_gal": 8.34,
-        "max_takeoff_weight_lbs": 2850,
-        "max_landing_weight_lbs": 2850,
+        "hopper_weight_per_gal": 8.3,
+        "max_takeoff_weight_lbs": 2800,
+        "max_landing_weight_lbs": 2800,
         "glide_ratio": 4.0,
-        "hover_ceiling_ige_max_gw": 12000,
-        "hover_ceiling_oge_max_gw": 9000
+        "description": "Turbine light utility helicopter (spray capable)",
+        "hover_ceiling_ige_max_gw": 11000,
+        "hover_ceiling_oge_max_gw": 8500
     }
+
 }
 
 # ────────────────────────────────────────────────
