@@ -282,13 +282,5 @@ elif st.session_state.current_mode == "Emergency":
     st.title("🚨 Emergency Response Checklist")
     # ← Paste your full emergency checklist here
 
-# Feedback
-st.subheader("Your Feedback – Help Improve CVHAPP")
-rating = st.feedback("stars")
-comment = st.text_area("Any suggestions send screenshot to cvh@centralvalleyheli.com", height=120)
-if st.button(""):
-    if rating is not None:
-        stars = rating + 1
-        st.success(f"Thank you! You rated **{stars} stars**.")
 
 st.caption("**Safe flying & have a Blessed day** ⌯✈︎")
