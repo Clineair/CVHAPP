@@ -283,11 +283,41 @@ elif st.session_state.current_mode == "Driver":
     # ← Paste your full inspection checklist here
 
 # ────────────────────────────────────────────────
-# Emergency Mode
+# EMERGENCY CHECKLIST
 # ────────────────────────────────────────────────
-elif st.session_state.current_mode == "Emergency":
-    st.title("🚨 Emergency Response Checklist")
-    # ← Paste your full emergency checklist here
+if st.session_state.current_mode == "Emergency":
+    st.subheader("🚨 Emergency Response Checklist")
+    st.markdown("### Priority (PILOT): Aviate → Navigate → Communicate")
+    st.markdown("""
+    1. **Declare emergency / Call 911 / First aid**
+       - Turn fuel shut-off off, battery switch off.
+       - Evacuate upwind if fire or chemical risk.
+       - Check for spray/fuel contamination; give SDS to responders.
+       - Follow Spill Response Procedure.
+       - Preserve wreckage and documents.
 
+    2. **Witnesses & Scene Control**
+       - Secure scene with spill response team.
+       - Do NOT speak to media or officials.
+       - Say only: "Company has contacted appropriate authorities for full investigation to determine root cause and prevent recurrence."
+       - Do NOT speculate on cause.
+
+    3. **Media & Press Inquiries**
+       - Refer all calls to informed management.
+       - Management will notify FAA and NTSB.
+       - Direct inquiries to informed managers.
+       - Contact local law enforcement.
+       - Arrange wreckage preservation.
+
+    4. **Additional Immediate Steps**
+       - Is ELT activated?
+       - Treat injuries (first aid kit); assure area is protected.
+       - Call 911 or local: Kittitas County Sheriff 509-962-1234
+    """)
+    st.markdown("**Local Emergency Contacts**")
+    st.markdown("- **Emergency**: **911**")
+    st.markdown("- **Poison Control**: **1-800-222-1222**")
+    st.markdown("[Call 911 (Emergency)](tel:911)", unsafe_allow_html=True)
+    st.info("Quick-reference only. Follow your company Emergency Response Plan.")
 
 st.caption("**Safe flying & have a Blessed day** ⌯✈︎")
