@@ -81,7 +81,7 @@ def show_risk_assessment():
     weather_notams = st.slider("NOTAMs/TFRs/airspace restrictions", min_value=0, max_value=10, value=3, step=1)
     total_risk += weather_notams
     st.markdown("**Operations / Flight Plan**")
-    flight_complexity = st.slider("Flight complexity (obstructions/towers/wires/tracklines/birds)", min_value=0, max_value=10, value=4, step=1)
+    flight_complexity = st.slider("Flight complexity (obstructions/towers/wires/slacklines/birds)", min_value=0, max_value=10, value=4, step=1)
     total_risk += flight_complexity
     alternate_plan = st.slider("Alternate/emergency options planned", min_value=0, max_value=10, value=2, step=1)
     total_risk += alternate_plan
