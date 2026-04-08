@@ -91,12 +91,7 @@ AIRCRAFT_DATA = {
     },
     "Enstrom 480": {
         "name": "Enstrom 480",
-        "base_takeoff_ground_roll_ft": 0,
-        "base_takeoff_to_50ft_ft": 0,
-        "base_landing_ground_roll_ft": 0,
-        "base_landing_to_50ft_ft": 0,
         "base_climb_rate_fpm": 1100,
-        "base_stall_flaps_down_mph": 0,
         "best_climb_speed_mph": 60,
         "base_empty_weight_lbs": 1750,
         "base_fuel_capacity_gal": 95,
@@ -106,11 +101,9 @@ AIRCRAFT_DATA = {
         "max_takeoff_weight_lbs": 2800,
         "max_landing_weight_lbs": 2800,
         "glide_ratio": 4.0,
-        "description": "Turbine light utility helicopter (spray capable)",
         "hover_ceiling_ige_max_gw": 11000,
         "hover_ceiling_oge_max_gw": 8500
     }
-
 }
 
 # ────────────────────────────────────────────────
@@ -131,7 +124,7 @@ def compute_hover_ceiling(da_ft, weight_lbs, aircraft):
     return max(0, ige), max(0, oge)
 
 # ────────────────────────────────────────────────
-# Pilot Mode
+# Mode Logic (clean if-elif structure)
 # ────────────────────────────────────────────────
 if st.session_state.current_mode == "Pilot":
     st.title("🛩️ Pilot Performance Calculator")
@@ -158,77 +151,33 @@ if st.session_state.current_mode == "Pilot":
     st.metric("Climb Rate", f"{climb_rate:.0f} fpm")
     st.metric("IGE Hover Ceiling", f"{ige:.0f} ft")
     st.metric("OGE Hover Ceiling", f"{oge:.0f} ft")
-# ────────────────────────────────────────────────
-# Risk Assessment – FRAT button + expanders stay open
-# ────────────────────────────────────────────────
-def show_risk_assessment():
-    st.subheader("FRAT")
-    st.caption("Score each factor 0–10 (higher = more risk).")
-    total_risk = 0
-    st.markdown("**Daily Pilot Factors**")
-    pilot_exp = st.slider("Recent experience/currency (hours last 30 days)", min_value=0, max_value=10, value=5, step=1)
-    total_risk += pilot_exp
-    pilot_fatigue = st.slider("Fatigue/sleep last 24 hours", min_value=0, max_value=10, value=5, step=1)
-    total_risk += pilot_fatigue
-    pilot_health = st.slider("Physical/mental health today", min_value=0, max_value=10, value=2, step=1)
-    total_risk += pilot_health
-    st.markdown("**Aircraft Factors**")
-    ac_maintenance = st.slider("Maintenance status/known squawks", min_value=0, max_value=10, value=3, step=1)
-    total_risk += ac_maintenance
-    ac_fuel = st.slider("Fuel planning/reserves", min_value=0, max_value=10, value=2, step=1)
-    total_risk += ac_fuel
-    ac_weight = st.slider("Weight & balance/CG within limits", min_value=0, max_value=10, value=2, step=1)
-    total_risk += ac_weight
-    st.markdown("**Environment / Weather**")
-    weather_ceiling = st.slider("Ceiling/visibility (VFR/IFR conditions)", min_value=0, max_value=10, value=4, step=1)
-    total_risk += weather_ceiling
-    weather_turb = st.slider("Turbulence/icing/wind forecast", min_value=0, max_value=10, value=3, step=1)
-    total_risk += weather_turb
-    weather_notams = st.slider("NOTAMs/TFRs/airspace restrictions", min_value=0, max_value=10, value=3, step=1)
-    total_risk += weather_notams
-    st.markdown("**Operations / Flight Plan**")
-    flight_complexity = st.slider("Flight complexity (obstructions/towers/wires/tracklines/birds)", min_value=0, max_value=10, value=4, step=1)
-    total_risk += flight_complexity
-    alternate_plan = st.slider("Alternate/emergency options planned", min_value=0, max_value=10, value=2, step=1)
-    total_risk += alternate_plan
-    night_ops = st.slider("Night or low-light operations", min_value=0, max_value=10, value=0, step=1)
-    total_risk += night_ops
-    st.markdown("**External Pressures**")
-    get_there_itis = st.slider("Get-there-itis/schedule pressure", min_value=0, max_value=10, value=2, step=1)
-    total_risk += get_there_itis
-    customer_pressure = st.slider("Customer/family/operational pressure", min_value=0, max_value=10, value=2, step=1)
-    total_risk += customer_pressure
-    st.markdown("---")
-    risk_percent = (total_risk / 100) * 100
-    if total_risk <= 30:
-        level = "Low Risk"
-        color = "#4CAF50"
-        emoji = "🟢"
-    elif total_risk <= 60:
-        level = "Medium Risk"
-        color = "#FF9800"
-        emoji = "🟡"
-    else:
-        level = "High Risk"
-        color = "#F44336"
-        emoji = "🔴"
-    gauge_html = f"""
-    <div style="text-align:center; margin: 30px 0;">
-        <div style="width: 220px; height: 220px; border-radius: 50%; background: conic-gradient({color} {risk_percent}%, #e0e0e0 {risk_percent}% 100%); display: flex; align-items: center; justify-content: center; margin: 0 auto; position: relative; box-shadow: 0 6px 20px rgba(0,0,0,0.2);">
-            <div style="width: 170px; height: 170px; background: white; border-radius: 50%; display: flex; flex-direction: column; align-items: center; justify-content: center; box-shadow: inset 0 4px 10px rgba(0,0,0,0.1);">
-                <div style="font-size: 48px; font-weight: bold; color: {color};">{risk_percent:.0f}%</div>
-                <div style="font-size: 18px; color: #555;">{level}</div>
-            </div>
-        </div>
-        <div style="margin-top: 15px; font-size: 22px; font-weight: bold; color: {color};">{emoji} {level}</div>
-    </div>
-    """
-    st.markdown(gauge_html, unsafe_allow_html=True)
-    col_m, col_a = st.columns(2)
 
-# ────────────────────────────────────────────────
-# Driver Mode (All 5 trucks + Heli2 axle loads that ALWAYS sum exactly to total weight)
-# ────────────────────────────────────────────────
+    st.subheader("Rate of Climb vs Pressure Altitude")
+    altitudes = np.linspace(0, 12000, 60)
+    climb_rates = [compute_climb_rate(alt, oat_c, total_weight, selected_aircraft) for alt in altitudes]
+    fig, ax = plt.subplots(figsize=(10, 5))
+    ax.plot(altitudes, climb_rates, color='darkgreen', linewidth=2.5)
+    ax.set_xlabel("Pressure Altitude (ft)")
+    ax.set_ylabel("Rate of Climb (fpm)")
+    ax.grid(True)
+    st.pyplot(fig)
+
+    if st.button("Flight Risk Assessment Tool (FRAT)", type="secondary"):
+        st.session_state.show_risk = not st.session_state.get("show_risk", False)
+    if st.session_state.get("show_risk", False):
+        st.subheader("Flight Risk Assessment Tool (FRAT)")
+        risk_score = 0
+        risk_score += 10 - st.slider("Mission Pressure", 0, 10, 5)
+        risk_score += 10 - st.slider("Fatigue Level", 0, 10, 5)
+        risk_score += 10 - st.slider("Weather Conditions", 0, 10, 5)
+        risk_score += 10 - st.slider("Aircraft Status", 0, 10, 5)
+        risk_score += 10 - st.slider("Personal Factors", 0, 10, 5)
+        st.metric("Total Risk Score", f"{risk_score}/50")
+        if risk_score > 30:
+            st.error("HIGH RISK — Consider mitigation or cancel flight")
+        else:
+            st.success("Risk Acceptable")
+
 elif st.session_state.current_mode == "Driver":
     st.title("🚚 Driver Pre-Trip & Water Load Tool")
     
@@ -246,7 +195,7 @@ elif st.session_state.current_mode == "Driver":
 
     DEFAULTS = {
         "Heli2": {"empty": 31120, "gvw": 54000, "truck_fuel_max": 603, "heli_fuel_max": 2948},
-        "Heli3": {"empty": 25335, "gvw": 48000, "truck_fuel_max": 1380, "heli_fuel_max": 2948},
+        "Heli3": {"empty": 29960, "gvw": 48000, "truck_fuel_max": 1380, "heli_fuel_max": 2948},
         "Heli4": {"empty": 31120, "gvw": 54000, "truck_fuel_max": 420, "heli_fuel_max": 938},
         "Seed1": {"empty": 23400, "gvw": 32000, "truck_fuel_max": 570, "heli_fuel_max": 4020},
         "C8000": {"empty": 24200, "gvw": 32000, "truck_fuel_max": 600, "heli_fuel_max": 6900}
@@ -291,19 +240,18 @@ elif st.session_state.current_mode == "Driver":
             base_drive2 = 11580
             base_tag = 0
 
-        # Fuel deltas (Heli fuel at 334" unloads front, loads drives)
+        # Fuel deltas
         truck_front_delta = truck_fuel_weight * 0.65
         truck_drive_delta = truck_fuel_weight * 0.35
         heli_front_delta = heli_fuel_weight * (-0.20)
         heli_drive_delta = heli_fuel_weight * 0.80
 
-        # Added weight from water/product/rear
+        # Added weight
         added_water = st.session_state.get("last_max_water_gal", 0) * 8.34 if st.session_state.get("last_max_water_gal", 0) > 0 else 0
         extra_weight = added_water + product_weight + rear_weight
         extra_front_delta = extra_weight * 0.22
         extra_drive_delta = extra_weight * 0.78
 
-        # Raw loaded axles
         front_loaded = base_front + truck_front_delta + heli_front_delta + extra_front_delta
         drive1_loaded = base_drive1 + (truck_drive_delta * 0.5) + (heli_drive_delta * 0.5) + (extra_drive_delta * 0.5)
         drive2_loaded = base_drive2 + (truck_drive_delta * 0.5) + (heli_drive_delta * 0.5) + (extra_drive_delta * 0.5)
@@ -333,11 +281,8 @@ elif st.session_state.current_mode == "Driver":
     st.subheader("Pre-Trip Inspection Checklist")
     # ← Paste your full inspection checklist here
 
-# ────────────────────────────────────────────────
-# EMERGENCY CHECKLIST
-# ────────────────────────────────────────────────
-if st.session_state.current_mode == "Emergency":
-    st.subheader("🚨 Emergency Response Checklist")
+elif st.session_state.current_mode == "Emergency":
+    st.title("🚨 Emergency Response Checklist")
     st.markdown("### Priority (PILOT): Aviate → Navigate → Communicate")
     st.markdown("""
     1. **Declare emergency / Call 911 / First aid**
@@ -346,20 +291,17 @@ if st.session_state.current_mode == "Emergency":
        - Check for spray/fuel contamination; give SDS to responders.
        - Follow Spill Response Procedure.
        - Preserve wreckage and documents.
-
     2. **Witnesses & Scene Control**
        - Secure scene with spill response team.
        - Do NOT speak to media or officials.
        - Say only: "Company has contacted appropriate authorities for full investigation to determine root cause and prevent recurrence."
        - Do NOT speculate on cause.
-
     3. **Media & Press Inquiries**
        - Refer all calls to informed management.
        - Management will notify FAA and NTSB.
        - Direct inquiries to informed managers.
        - Contact local law enforcement.
        - Arrange wreckage preservation.
-
     4. **Additional Immediate Steps**
        - Is ELT activated?
        - Treat injuries (first aid kit); assure area is protected.
@@ -370,5 +312,14 @@ if st.session_state.current_mode == "Emergency":
     st.markdown("- **Poison Control**: **1-800-222-1222**")
     st.markdown("[Call 911 (Emergency)](tel:911)", unsafe_allow_html=True)
     st.info("Quick-reference only. Follow your company Emergency Response Plan.")
+
+# Feedback
+st.subheader("Your Feedback – Help Improve CVHAPP")
+rating = st.feedback("stars")
+comment = st.text_area("Any suggestions send screenshot to cvh@centralvalleyheli.com", height=120)
+if st.button("Safe flying & have a Blessed day ⌯✈︎"):
+    if rating is not None:
+        stars = rating + 1
+        st.success(f"Thank you! You rated **{stars} stars**.")
 
 st.caption("**Safe flying & have a Blessed day** ⌯✈︎")
