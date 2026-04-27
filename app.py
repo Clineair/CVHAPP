@@ -4,6 +4,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import requests
 from datetime import datetime
+
 # ────────────────────────────────────────────────
 # Page Config & CVH Logo
 # ────────────────────────────────────────────────
@@ -17,6 +18,7 @@ st.markdown("""
     <meta name="theme-color" content="#4CAF50">
     <link rel="icon" href="https://img.icons8.com/color/48/000000/helicopter.png" type="image/png">
 """, unsafe_allow_html=True)
+
 # CVH Logo
 LOGO_URL = "flaglogo.png"
 try:
@@ -24,6 +26,7 @@ try:
     st.logo(LOGO_URL, size="medium")
 except Exception:
     st.markdown("### CVH Employee Tool ⌯✈︎")
+
 # Button Colors
 st.markdown("""
 <style>
@@ -32,6 +35,7 @@ st.markdown("""
     .stButton button[data-baseweb="button"][kind="tertiary"] { background-color: #DC3545 !important; color: white !important; } /* Red - Emergency */
 </style>
 """, unsafe_allow_html=True)
+
 # ────────────────────────────────────────────────
 # Session State
 # ────────────────────────────────────────────────
@@ -49,8 +53,9 @@ if 'show_risk' not in st.session_state:
     st.session_state.show_risk = False
 if 'completed_checklists' not in st.session_state:
     st.session_state.completed_checklists = []
+
 # ────────────────────────────────────────────────
-# Risk Assessment – FRAT function (exactly as you pasted, now at top level)
+# Risk Assessment – FRAT function
 # ────────────────────────────────────────────────
 def show_risk_assessment():
     st.subheader("FRAT")
@@ -115,6 +120,7 @@ def show_risk_assessment():
     </div>
     """
     st.markdown(gauge_html, unsafe_allow_html=True)
+
 # ────────────────────────────────────────────────
 # Mode Buttons
 # ────────────────────────────────────────────────
@@ -130,6 +136,7 @@ with col3:
     if st.button("🚨 Emergency", use_container_width=True, type="tertiary"):
         st.session_state.current_mode = "Emergency"
 st.markdown("---")
+
 # ────────────────────────────────────────────────
 # Aircraft Database (Helicopters only)
 # ────────────────────────────────────────────────
@@ -171,20 +178,24 @@ AIRCRAFT_DATA = {
         "hover_ceiling_oge_max_gw": 8500
     }
 }
+
 # ────────────────────────────────────────────────
 # Performance Helpers
 # ────────────────────────────────────────────────
 def calculate_density_altitude(pressure_alt_ft, oat_c):
     isa_temp_c = 15 - (2 * pressure_alt_ft / 1000)
     return pressure_alt_ft + (120 * (oat_c - isa_temp_c))
+
 def compute_climb_rate(alt, oat_c, weight_lbs, aircraft):
     base = AIRCRAFT_DATA[aircraft]["base_climb_rate_fpm"]
     return base * (1 - alt / 10000) * (1 - (weight_lbs - 2000) / 1000)
+
 def compute_hover_ceiling(da_ft, weight_lbs, aircraft):
     data = AIRCRAFT_DATA[aircraft]
     ige = data["hover_ceiling_ige_max_gw"] - (da_ft / 1000 * 500) - ((weight_lbs - 2000) / 100 * 100)
     oge = data["hover_ceiling_oge_max_gw"] - (da_ft / 1000 * 800) - ((weight_lbs - 2000) / 100 * 150)
     return max(0, ige), max(0, oge)
+
 # ────────────────────────────────────────────────
 # Pilot Mode
 # ────────────────────────────────────────────────
@@ -210,6 +221,7 @@ if st.session_state.current_mode == "Pilot":
     st.metric("IGE Hover Ceiling", f"{ige:.0f} ft")
     st.metric("OGE Hover Ceiling", f"{oge:.0f} ft")
     show_risk_assessment()
+
 # ────────────────────────────────────────────────
 # Driver Mode
 # ────────────────────────────────────────────────
@@ -223,6 +235,7 @@ elif st.session_state.current_mode == "Driver":
         st.session_state.last_max_water_gal = 0
         st.session_state.last_current_weight = 0
         st.session_state.last_selected = selected
+
     st.markdown("---")
     st.subheader("💧 Compute Water Load")
     DEFAULTS = {
@@ -251,11 +264,11 @@ elif st.session_state.current_mode == "Driver":
         st.session_state.last_current_weight = current_weight
         st.success(f"**Maximum water you can load: {max_water_gal:.0f} gallons**")
         st.markdown(f"**New Weight with Water = {new_weight:.0f} lbs**")
-    # ── HELI2 ONLY: Axle loads that ALWAYS sum exactly to total weight ──
+
+    # Heli2 Axle Logic (unchanged from your version)
     if selected == "Heli2":
         st.subheader("Axle Load Status (Heli2)")
         tag_down = st.checkbox("Tag Axle Down", value=False)
-       
         if tag_down:
             base_front = 9240
             base_drive1 = 9230
@@ -293,56 +306,177 @@ elif st.session_state.current_mode == "Driver":
         col_d.metric("Tag Axle", f"{tag_loaded:.0f} lbs", delta="OK" if tag_loaded <= 6000 else "OVER")
         if st.session_state.get("last_max_water_gal", 0) > 0 and current_weight + (st.session_state.last_max_water_gal * 8.34) > 48000 and product_weight > 0:
             st.markdown("""<div style="animation: flash 1s infinite; background:#ff4444; color:white; padding:15px; text-align:center; font-size:18px; font-weight:bold; border-radius:8px;">⚠️ Put Drop Axle Down for weight exceeding 48,000 lbs.</div><style>@keyframes flash {0% {opacity:1;} 50% {opacity:0.3;} 100% {opacity:1;}}</style>""", unsafe_allow_html=True)
+
     # ────────────────────────────────────────────────
-    # NEW: Saved Job Type Checklists Menu
+    # YOUR EXACT CHECKLISTS
     # ────────────────────────────────────────────────
     st.markdown("---")
     st.subheader("📋 Saved Job Type Checklists")
     checklist_type = st.selectbox(
-        "Select Checklist",
+        "Select Job Type Checklist",
         ["Forestry", "Mt. Vernon", "Seeding", "Local Spraying", "BNSF"],
-        help="Load a pre-defined checklist for this specific job type"
+        help="Load your pre-defined checklist for this job"
     )
+
     with st.expander(f"✅ {checklist_type} Checklist", expanded=True):
-        if checklist_type == "Forestry":
-            st.checkbox("Verify spray gear and nozzles for forestry application")
-            st.checkbox("Confirm drop height and swath width for forestry")
-            st.checkbox("Check chemical mix and rate for forestry")
-            st.checkbox("Confirm wind conditions and no drift risk")
-            st.checkbox("Check for sensitive areas / buffers in forestry zone")
+        if checklist_type == "BNSF":
+            st.checkbox("Fuel: Aircraft / Vehicle / 2-Gal Fuel Can for Pump (1 per truck) – Full")
+            st.checkbox("Oil: Aircraft & Vehicle – 4 qt. ea.")
+            st.checkbox("Fuel Filters: Aircraft & Vehicle – 1 each")
+            st.checkbox("Portable Tool Box – Full")
+            st.checkbox("Torque Wrenches – 2")
+            st.checkbox("Radios w headsets & Chargers – 3")
+            st.checkbox("Six-Outlet Surge Protector – 1")
+            st.checkbox("Covers for Aircraft: Bubble / Head / Tail Rotor – 3")
+            st.checkbox("Wheels for Aircraft – 2")
+            st.checkbox("Hearing Protection – 2")
+            st.checkbox("Gloves: Chemical & Work / Mix Coats – 4 each")
+            st.checkbox("Tire chains / per Helitruck – 1 set")
+            st.checkbox("Battery Start Pack (24 volt) – 1")
+            st.checkbox("Jumper Cables – 1")
+            st.checkbox("Jump Box (12 volt) – 1")
+            st.checkbox("Battery Charger (12 volt) – 1")
+            st.checkbox("Grease Gun & Grease (480 t/r Aeroshell) – 1 each")
+            st.checkbox("Prist & White Cloth Rags – 1 & 1 pack")
+            st.checkbox("Paper Towels – 1 Roll")
+            st.checkbox("Dry Brake & Load Hoses & suction screen / per truck – 1 each")
+            st.checkbox("Chemical suction hose and meter – 1")
+            st.checkbox("iPad / Phones chargers & mounts – 1 each")
+            st.checkbox("Pilot Gel Cushions – 2")
+            st.checkbox("Driver's Log Book / EZ ELD – 1 each")
+            st.checkbox("Spill Kit per truck / coveralls / eyewash / soap – Full")
+            st.checkbox("Extra Spray Nozzle Parts / Fittings – All")
+            st.checkbox("Extra Pull Rope & Spark Plug for Pumps – 1 each")
+            st.checkbox("Load Secured Properly – All")
+            st.checkbox("Pre-Check Vehicles: Lights/Wipers/Heat/Horn/Tires-Air Pressure – All")
+            st.checkbox("Fire Extinguisher: HeliTruck & Aircraft – 2 each & 1")
+            st.checkbox("Triangles / per truck – 1 set")
+            st.checkbox("Ice Scraper – 1")
+            st.checkbox("Battery Drill / Driver – 1")
+            st.checkbox("Di-electrical grease (Check Jet Fuel electrical connections) – 1")
+            st.checkbox("PPE / Hard hat, Safety Glasses, Safety Vest, Safety Toe Boots")
+
         elif checklist_type == "Mt. Vernon":
-            st.checkbox("Verify Mt. Vernon specific permits and restrictions")
-            st.checkbox("Confirm load and mix for Mt. Vernon job")
-            st.checkbox("Check local weather for Mt. Vernon area")
-            st.checkbox("Confirm no drift into residential or crop areas")
-            st.checkbox("Verify altitude and swath for Mt. Vernon")
+            st.checkbox("Fuel: Aircraft / Vehicle / 2-Gal Fuel Can for Pump – Full")
+            st.checkbox("Oil: Aircraft & Vehicle – 4 qt. ea.")
+            st.checkbox("Fuel Filters: Aircraft & Vehicle – 1 each")
+            st.checkbox("Portable Tool Box – Full")
+            st.checkbox("Torque Wrenches – 2")
+            st.checkbox("Radios & Chargers – 2")
+            st.checkbox("Six-Outlet Surge Protector – 1")
+            st.checkbox("Covers for Aircraft: Bubble / Head / Tail Rotor – 3")
+            st.checkbox("Wheels for Aircraft – 2")
+            st.checkbox("Hearing Protection – 2")
+            st.checkbox("Gloves: Chemical & Work – 1 each")
+            st.checkbox("Battery Start Pack (24 volt) – 1")
+            st.checkbox("Jumper Cables – 1")
+            st.checkbox("Jump Box (12 volt) – 1")
+            st.checkbox("Battery Charger (12 volt) – 1")
+            st.checkbox("Grease Gun & Grease (480 t/r Aeroshell) – 1 each")
+            st.checkbox("Plexus & White Cloth Rags – 1 & 6")
+            st.checkbox("Paper Towels – 1 Roll")
+            st.checkbox("Extra Fuel Tank & Filter (As Needed) – 1 each")
+            st.checkbox("Drinking Water – 12")
+            st.checkbox("Fill Tanker with Water & Chemical as Required – Full")
+            st.checkbox("Dry Brake / Load Hoses – 1 & 2")
+            st.checkbox("Cell Phones & Chargers – 1 each")
+            st.checkbox("Satellite Phone (Charge Day Before Travel) – 1")
+            st.checkbox("Pilot Gel Cushions – 2")
+            st.checkbox("Red Devil Heater / Propane Bottle Half to Full – 1 each")
+            st.checkbox("Driver's Log Book – 1")
+            st.checkbox("Spill Kit – Full")
+            st.checkbox("Extra Spray Nozzle Parts – All")
+            st.checkbox("Extra Pull Rope & Spark Plug for Pumps – 1 each")
+            st.checkbox("Load Secured Properly – All")
+            st.checkbox("Pre-Check Vehicles: Lights/Wipers/Heat/Horn/Tires-Air Pressure – All")
+            st.checkbox("G.P.S. (Tom/Tom or Garmin) – 1")
+            st.checkbox("Winter Chains – 2")
+            st.checkbox("Fire Extinguisher: HeliTruck & Aircraft – 2 & 1")
+            st.checkbox("Triangles – 1 set")
+            st.checkbox("Ice Scraper – 1")
+            st.checkbox("Drill – 1")
+            st.checkbox("Di-electrical grease (Check Jet Fuel electrical connections) – 1")
+            st.checkbox("Temp Gun – 1")
+            st.checkbox("Wind Meter – 1")
+
+        elif checklist_type == "Forestry":
+            st.checkbox("Fuel: Aircraft / Vehicle / 2-Gal Fuel Can for Pump (1 per truck) – Full")
+            st.checkbox("Oil: Aircraft & Vehicle – 4 qt. ea.")
+            st.checkbox("Fuel Filters: Aircraft & Vehicle – 1 each")
+            st.checkbox("Portable Tool Box – Full")
+            st.checkbox("Torque Wrenches – 2")
+            st.checkbox("Radios w headsets & Chargers – 3")
+            st.checkbox("Six-Outlet Surge Protector – 1")
+            st.checkbox("Covers for Aircraft: Bubble / Head / Tail Rotor – 3")
+            st.checkbox("Wheels for Aircraft – 2")
+            st.checkbox("Hearing Protection – 2")
+            st.checkbox("Gloves: Chemical & Work / Mix Coats – 4 each")
+            st.checkbox("Tire chains / per Helitruck – 1 set")
+            st.checkbox("Battery Start Pack (24 volt) – 1")
+            st.checkbox("Jumper Cables – 1")
+            st.checkbox("Jump Box (12 volt) – 1")
+            st.checkbox("Battery Charger (12 volt) – 1")
+            st.checkbox("Grease Gun & Grease (480 t/r Aeroshell) – 1 each")
+            st.checkbox("Plexus & White Cloth Rags – 1 & 1 pack")
+            st.checkbox("Paper Towels – 1 Roll")
+            st.checkbox("Drinking Water – 12")
+            st.checkbox("Dry Brake & Load Hoses & suction screen / per truck – 1 each")
+            st.checkbox("Cell Phones & Chargers – 1 each")
+            st.checkbox("Pilot Gel Cushions – 2")
+            st.checkbox("Driver's Log Book – 1 each")
+            st.checkbox("Spill Kit per truck – Full")
+            st.checkbox("Extra Spray Nozzle Parts – All")
+            st.checkbox("Extra Pull Rope & Spark Plug for Pumps – 1 each")
+            st.checkbox("Load Secured Properly – All")
+            st.checkbox("Pre-Check Vehicles: Lights/Wipers/Heat/Horn/Tires-Air Pressure – All")
+            st.checkbox("State Gazetteer – 1")
+            st.checkbox("G.P.S. (Tom/Tom or Garmin) – 1")
+            st.checkbox("Fire Extinguisher: HeliTruck & Aircraft – 2 each & 1")
+            st.checkbox("Triangles / per truck – 1 set")
+            st.checkbox("Ice Scraper – 1")
+            st.checkbox("Drill – 1")
+            st.checkbox("Di-electrical grease (Check Jet Fuel electrical connections) – 1")
+
         elif checklist_type == "Seeding":
             st.checkbox("Check seed hopper calibration and rate")
             st.checkbox("Verify seed type and quantity")
             st.checkbox("Confirm wind conditions for seeding")
             st.checkbox("Check altitude and coverage for seeding")
             st.checkbox("Verify no drift into non-target areas")
+            st.checkbox("Load Secured Properly – All")
+            st.checkbox("Pre-Check Vehicles – All")
+            st.checkbox("Fire Extinguisher – Checked")
+            st.checkbox("Spill Kit – Full")
+
         elif checklist_type == "Local Spraying":
             st.checkbox("Verify local spraying permits")
             st.checkbox("Confirm spray mixture and rate for local job")
             st.checkbox("Check for buffer zones and no-drift requirements")
             st.checkbox("Confirm wind speed and direction")
             st.checkbox("Check for nearby sensitive crops or areas")
-        elif checklist_type == "BNSF":
-            st.checkbox("Confirm proximity to BNSF rail line")
-            st.checkbox("Verify no spraying over or near railroad tracks")
-            st.checkbox("Check BNSF specific safety protocols")
-            st.checkbox("Confirm altitude and swath width for BNSF area")
-            st.checkbox("Verify no drift risk to rail corridor")
-        if st.button("Mark Checklist as Completed"):
+            st.checkbox("Load Secured Properly – All")
+            st.checkbox("Pre-Check Vehicles – All")
+            st.checkbox("Fire Extinguisher – Checked")
+            st.checkbox("Spill Kit – Full")
+
+        # Mark as completed
+        if st.button(f"✅ Mark {checklist_type} Checklist as Completed"):
             st.success(f"✅ {checklist_type} Checklist completed and logged!")
             if 'completed_checklists' not in st.session_state:
                 st.session_state.completed_checklists = []
             st.session_state.completed_checklists.append(f"{checklist_type} – {datetime.now().strftime('%Y-%m-%d %H:%M')}")
-    # Pre-Trip Inspection Checklist (your original section continues here)
+
+    # Show completed checklists
+    if st.session_state.get('completed_checklists'):
+        st.subheader("Completed Checklists")
+        for item in st.session_state.completed_checklists:
+            st.success(item)
+
+    # Pre-Trip Inspection Checklist (your original section)
     st.markdown("---")
     st.subheader("Pre-Trip Inspection Checklist")
-    # ← Paste your full inspection checklist here
+    # ← Paste your full inspection checklist here if you have one
+
 # ────────────────────────────────────────────────
 # EMERGENCY CHECKLIST
 # ────────────────────────────────────────────────
@@ -377,4 +511,5 @@ elif st.session_state.current_mode == "Emergency":
     st.markdown("- **Poison Control**: **1-800-222-1222**")
     st.markdown("[Call 911 (Emergency)](tel:911)", unsafe_allow_html=True)
     st.info("Quick-reference only. Follow your company Emergency Response Plan.")
+
 st.caption("**Safe flying & have a Blessed day** ⌯✈︎")
