@@ -307,7 +307,7 @@ elif st.session_state.current_mode == "Driver":
             st.markdown("""<div style="animation: flash 1s infinite; background:#ff4444; color:white; padding:15px; text-align:center; font-size:18px; font-weight:bold; border-radius:8px;">⚠️ Put Drop Axle Down for weight exceeding 48,000 lbs.</div><style>@keyframes flash {0% {opacity:1;} 50% {opacity:0.3;} 100% {opacity:1;}}</style>""", unsafe_allow_html=True)
 
     # ────────────────────────────────────────────────
-    # YOUR CHECKLISTS (including new Survey Check List)
+    # CHECKLISTS – ALL WORKING (including Survey)
     # ────────────────────────────────────────────────
     st.markdown("---")
     st.subheader("📋 Saved Job Type Checklists")
@@ -318,6 +318,7 @@ elif st.session_state.current_mode == "Driver":
     )
 
     with st.expander(f"✅ {checklist_type} Checklist", expanded=True):
+        
         if checklist_type == "Survey":
             st.checkbox("Fuel for Aircraft/Vehicle – Full")
             st.checkbox("Fuel Filter / Aircraft tanks & Vehicle – 1 each")
@@ -343,18 +344,123 @@ elif st.session_state.current_mode == "Driver":
             st.checkbox("Ladder – 1")
             st.checkbox("50' Extension Cord – 1")
 
-        # (All your other checklists – Forestry, Mt. Vernon, etc. – remain exactly as before)
+        elif checklist_type == "Forestry":
+            st.checkbox("Fuel: Aircraft / Vehicle / 2-Gal Fuel Can for Pump (1 per truck) – Full")
+            st.checkbox("Oil: Aircraft & Vehicle – 4 qt. ea.")
+            st.checkbox("Fuel Filters: Aircraft & Vehicle – 1 each")
+            st.checkbox("Portable Tool Box – Full")
+            st.checkbox("Torque Wrenches – 2")
+            st.checkbox("Radios w headsets & Chargers – 3")
+            st.checkbox("Six-Outlet Surge Protector – 1")
+            st.checkbox("Covers for Aircraft: Bubble / Head / Tail Rotor – 3")
+            st.checkbox("Wheels for Aircraft – 2")
+            st.checkbox("Hearing Protection – 2")
+            st.checkbox("Gloves: Chemical & Work / Mix Coats – 4 each")
+            st.checkbox("Tire chains / per Helitruck – 1 set")
+            st.checkbox("Battery Start Pack (24 volt) – 1")
+            st.checkbox("Jumper Cables – 1")
+            st.checkbox("Jump Box (12 volt) – 1")
+            st.checkbox("Battery Charger (12 volt) – 1")
+            st.checkbox("Grease Gun & Grease (480 t/r Aeroshell) – 1 each")
+            st.checkbox("Plexus & White Cloth Rags – 1 & 1 pack")
+            st.checkbox("Paper Towels – 1 Roll")
+            st.checkbox("Drinking Water – 12")
+            st.checkbox("Dry Brake & Load Hoses & suction screen / per truck – 1 each")
+            st.checkbox("Cell Phones & Chargers – 1 each")
+            st.checkbox("Pilot Gel Cushions – 2")
+            st.checkbox("Driver's Log Book – 1 each")
+            st.checkbox("Spill Kit per truck – Full")
+            st.checkbox("Extra Spray Nozzle Parts – All")
+            st.checkbox("Extra Pull Rope & Spark Plug for Pumps – 1 each")
+            st.checkbox("Load Secured Properly – All")
+            st.checkbox("Pre-Check Vehicles: Lights/Wipers/Heat/Horn/Tires-Air Pressure – All")
+            st.checkbox("State Gazetteer – 1")
+            st.checkbox("G.P.S. (Tom/Tom or Garmin) – 1")
+            st.checkbox("Fire Extinguisher: HeliTruck & Aircraft – 2 each & 1")
+            st.checkbox("Triangles / per truck – 1 set")
+            st.checkbox("Ice Scraper – 1")
+            st.checkbox("Drill – 1")
+            st.checkbox("Di-electrical grease (Check Jet Fuel electrical connections) – 1")
 
+        elif checklist_type == "Mt. Vernon":
+            st.checkbox("Fuel: Aircraft / Vehicle / 2-Gal Fuel Can for Pump – Full")
+            st.checkbox("Oil: Aircraft & Vehicle – 4 qt. ea.")
+            st.checkbox("Fuel Filters: Aircraft & Vehicle – 1 each")
+            st.checkbox("Portable Tool Box – Full")
+            st.checkbox("Torque Wrenches – 2")
+            st.checkbox("Radios & Chargers – 2")
+            st.checkbox("Six-Outlet Surge Protector – 1")
+            st.checkbox("Covers for Aircraft: Bubble / Head / Tail Rotor – 3")
+            st.checkbox("Wheels for Aircraft – 2")
+            st.checkbox("Hearing Protection – 2")
+            st.checkbox("Gloves: Chemical & Work – 1 each")
+            st.checkbox("Battery Start Pack (24 volt) – 1")
+            st.checkbox("Jumper Cables – 1")
+            st.checkbox("Jump Box (12 volt) – 1")
+            st.checkbox("Battery Charger (12 volt) – 1")
+            st.checkbox("Grease Gun & Grease (480 t/r Aeroshell) – 1 each")
+            st.checkbox("Plexus & White Cloth Rags – 1 & 6")
+            st.checkbox("Paper Towels – 1 Roll")
+            st.checkbox("Extra Fuel Tank & Filter (As Needed) – 1 each")
+            st.checkbox("Drinking Water – 12")
+            st.checkbox("Fill Tanker with Water & Chemical as Required – Full")
+            st.checkbox("Dry Brake / Load Hoses – 1 & 2")
+            st.checkbox("Cell Phones & Chargers – 1 each")
+            st.checkbox("Satellite Phone (Charge Day Before Travel) – 1")
+            st.checkbox("Pilot Gel Cushions – 2")
+            st.checkbox("Red Devil Heater / Propane Bottle Half to Full – 1 each")
+            st.checkbox("Driver's Log Book – 1")
+            st.checkbox("Spill Kit – Full")
+            st.checkbox("Extra Spray Nozzle Parts – All")
+            st.checkbox("Extra Pull Rope & Spark Plug for Pumps – 1 each")
+            st.checkbox("Load Secured Properly – All")
+            st.checkbox("Pre-Check Vehicles: Lights/Wipers/Heat/Horn/Tires-Air Pressure – All")
+            st.checkbox("G.P.S. (Tom/Tom or Garmin) – 1")
+            st.checkbox("Winter Chains – 2")
+            st.checkbox("Fire Extinguisher: HeliTruck & Aircraft – 2 & 1")
+            st.checkbox("Triangles – 1 set")
+            st.checkbox("Ice Scraper – 1")
+            st.checkbox("Drill – 1")
+            st.checkbox("Di-electrical grease (Check Jet Fuel electrical connections) – 1")
+            st.checkbox("Temp Gun – 1")
+            st.checkbox("Wind Meter – 1")
+
+        elif checklist_type == "BNSF":
+            st.checkbox("Confirm proximity to BNSF rail line")
+            st.checkbox("Verify no spraying over or near railroad tracks")
+            st.checkbox("Check BNSF specific safety protocols")
+            st.checkbox("Confirm altitude and swath width for BNSF area")
+            st.checkbox("Verify no drift risk to rail corridor")
+            st.checkbox("Load Secured Properly – All")
+            st.checkbox("Pre-Check Vehicles – All")
+            st.checkbox("Fire Extinguisher – Checked")
+            st.checkbox("Spill Kit – Full")
+
+        elif checklist_type in ["Seeding", "Local Spraying"]:
+            st.checkbox("Load Secured Properly – All")
+            st.checkbox("Pre-Check Vehicles – All")
+            st.checkbox("Fire Extinguisher – Checked")
+            st.checkbox("Spill Kit – Full")
+            if checklist_type == "Seeding":
+                st.checkbox("Check seed hopper calibration and rate")
+                st.checkbox("Verify seed type and quantity")
+            else:
+                st.checkbox("Verify local spraying permits")
+                st.checkbox("Confirm spray mixture and rate for local job")
+                st.checkbox("Check for buffer zones and no-drift requirements")
+
+        # Mark as completed button (works for all checklists)
         if st.button(f"✅ Mark {checklist_type} Checklist as Completed"):
             st.success(f"✅ {checklist_type} Checklist completed and logged!")
             if 'completed_checklists' not in st.session_state:
                 st.session_state.completed_checklists = []
             st.session_state.completed_checklists.append(f"{checklist_type} – {datetime.now().strftime('%Y-%m-%d %H:%M')}")
 
+    # Show completed checklists
     if st.session_state.get('completed_checklists'):
         st.subheader("Completed Checklists")
         for item in st.session_state.completed_checklists:
-            st.success(item)
+            st.success(item) 
 
 # ────────────────────────────────────────────────
 # EMERGENCY CHECKLIST
