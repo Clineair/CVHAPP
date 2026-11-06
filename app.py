@@ -262,18 +262,9 @@ def show_risk_assessment(part, config, da_hint=None, default_aircraft_idx=0):
         level, color, emoji = "Medium Risk", "#FF9800", "🟡"
     else:
         level, color, emoji = "High Risk", "#F44336", "🔴"
-    gauge_html = f"""
-    <div style="text-align:center; margin: 30px 0;">
-        <div style="width: 220px; height: 220px; border-radius: 50%; background: conic-gradient({color} {risk_percent}%, #e0e0e0 {risk_percent}% 100%); display: flex; align-items: center; justify-content: center; margin: 0 auto; position: relative; box-shadow: 0 6px 20px rgba(0,0,0,0.2);">
-            <div style="width: 170px; height: 170px; background: white; border-radius: 50%; display: flex; flex-direction: column; align-items: center; justify-content: center; box-shadow: inset 0 4px 10px rgba(0,0,0,0.1);">
-                <div style="font-size: 48px; font-weight: bold; color: {color};">{risk_percent:.0f}%</div>
-                <div style="font-size: 18px; color: #555;">{level}</div>
-            </div>
-        </div>
-        <div style="margin-top: 15px; font-size: 22px; font-weight: bold; color: {color};">{emoji} {level} – {total_risk} / {frat_max}</div>
-    </div>
-    """
-    st.markdown(gauge_html, unsafe_allow_html=True)
+    st.markdown(f"### {emoji} {total_risk} — {level}")
+    st.caption(f"Low 0–{cut['low_max']} · Medium {cut['low_max'] + 1}–{cut['med_max']} "
+               f"· High {cut['med_max'] + 1}+")
 
     st.markdown("**Decision & Sign-off**")
     mitigations, approver, approved = "", "", False
