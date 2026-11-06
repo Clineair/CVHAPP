@@ -3,3 +3,6 @@ pillow
 numpy
 matplotlib
 requests
+gspread
+pandas
+google-auth
