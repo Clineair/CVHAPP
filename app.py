@@ -221,7 +221,9 @@ def show_risk_assessment(part, config, da_hint=None, default_aircraft_idx=0):
     with h2:
         pilot = st.selectbox("Pilot", PILOTS, key="frat_pilot")
     with h3:
-        aircraft = st.selectbox("Aircraft", FRAT_AIRCRAFT, index=default_aircraft_idx, key=f"frat_aircraft_{default_aircraft_idx}")
+        aircraft = FRAT_AIRCRAFT[default_aircraft_idx]
+        st.text_input("Aircraft (from configuration)", value=aircraft, disabled=True,
+                      key=f"frat_aircraft_display_{default_aircraft_idx}")
     route_job = st.text_input("Route or job", key="frat_route")
     st.caption(f"Operation: **{part}**" + (f" · Passengers: **{pax}** (from configuration)" if part == "Part 135" else ""))
 
@@ -382,7 +384,10 @@ AIRCRAFT_DATA = {
         "name": "Robinson R44 Raven II",
         "base_climb_rate_fpm": 1200,
         "best_climb_speed_mph": 60,
-        "base_empty_weight_lbs": 1500,
+        "registration": "N893PC",
+        # User-supplied aircraft-specific weights (lb); spray weight includes dry gear.
+        "base_empty_weight_lbs": 1596,
+        "spray_empty_weight_lbs": 1772,
         "base_fuel_capacity_gal": 30,
         "fuel_weight_per_gal": 6.0,
         "hopper_capacity_gal": 83,
@@ -402,7 +407,10 @@ AIRCRAFT_DATA = {
         "base_climb_rate_fpm": 1100,
         "base_stall_flaps_down_mph": 0,
         "best_climb_speed_mph": 60,
-        "base_empty_weight_lbs": 1750,
+        "registration": "N480ML",
+        # User-supplied aircraft-specific weights (lb); spray weight includes dry gear.
+        "base_empty_weight_lbs": 1822,
+        "spray_empty_weight_lbs": 2013,
         "base_fuel_capacity_gal": 95,
         "fuel_weight_per_gal": 6.7,
         "hopper_capacity_gal": 100,
@@ -415,6 +423,17 @@ AIRCRAFT_DATA = {
         "hover_ceiling_oge_max_gw": 8500
     }
 }
+
+def aircraft_empty_weight(aircraft_data, part):
+    """Part 137 includes dry spray equipment once; liquid is a separate payload."""
+    field = "spray_empty_weight_lbs" if part == "Part 137" else "base_empty_weight_lbs"
+    return aircraft_data[field]
+
+
+def aircraft_total_weight(aircraft_data, part, pilot_weight, fuel_gal, payload_weight):
+    return (aircraft_empty_weight(aircraft_data, part) + pilot_weight
+            + fuel_gal * aircraft_data["fuel_weight_per_gal"] + payload_weight)
+
 
 # ────────────────────────────────────────────────
 # Performance Helpers
@@ -444,9 +463,20 @@ if st.session_state.current_mode == "Pilot":
     if sel:
         st.session_state.far_part = sel
     part = st.session_state.far_part
-    selected_aircraft = st.selectbox("Select Aircraft", list(AIRCRAFT_DATA.keys()))
+    selected_aircraft = st.selectbox("Select Aircraft", list(AIRCRAFT_DATA.keys()),
+        format_func=lambda name: f"{AIRCRAFT_DATA[name]['registration']} – {name}")
     aircraft_data = AIRCRAFT_DATA[selected_aircraft]
     st.subheader(f"Aircraft Configuration – {part}")
+    empty_weight = aircraft_empty_weight(aircraft_data, part)
+    empty_label = "Aircraft empty weight with spray gear" if part == "Part 137" else "Aircraft empty weight"
+    st.metric(f"{aircraft_data['registration']} — {empty_label}", f"{empty_weight:,} lbs")
+    st.caption("Empty weight used below excludes pilot, usable fuel and liquid spray load. "
+               "Part 137 includes dry spray gear; it is not added again. "
+               "This weight calculation does not establish CG compliance or operating authorization; "
+               "use current aircraft W&B and approved manuals.")
+    if part == "Part 135" and aircraft_data["registration"] == "N480ML":
+        st.warning("N480ML is not approved for CVH Part 135 operations. "
+                   "Displaying a weight calculation does not authorize this operation.")
     pressure_alt = st.number_input("Pressure Altitude (ft)", value=0, step=100)
     oat_c = st.number_input("Outside Air Temperature (°C)", value=15, step=1)
     pilot_weight = st.number_input("Pilot Weight (lbs)", value=200, step=10)
@@ -492,8 +522,7 @@ if st.session_state.current_mode == "Pilot":
         config.update({"hook_equip_weight": hook_equip, "ext_load_weight": ext_load, "longline_ft": longline, "hook_limit": hook_limit})
     da_ft = calculate_density_altitude(pressure_alt, oat_c)
     st.metric("Density Altitude", f"{da_ft:.0f} ft")
-    fuel_weight = fuel_gal * aircraft_data["fuel_weight_per_gal"]
-    total_weight = aircraft_data["base_empty_weight_lbs"] + pilot_weight + fuel_weight + payload_weight
+    total_weight = aircraft_total_weight(aircraft_data, part, pilot_weight, fuel_gal, payload_weight)
     st.metric("Total Internal Weight" if part == "Part 133" else "Total Weight", f"{total_weight:.0f} lbs")
     max_gw = aircraft_data["max_takeoff_weight_lbs"]
     if total_weight > max_gw:
