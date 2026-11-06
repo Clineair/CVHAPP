@@ -15,17 +15,18 @@ class RawRiskDisplayTests(unittest.TestCase):
         for part, score, category in cases:
             with self.subTest(part=part, score=score):
                 at.segmented_control[0].set_value(part).run()
-                remaining = score
+                remaining = max(0, score - len(at.slider))
                 for slider in at.slider:
-                    value = min(10, remaining)
+                    value = (1 + min(9, remaining)) if score else 0
                     slider.set_value(value)
-                    remaining -= value
+                    remaining -= max(0, value - 1)
                 self.assertEqual(remaining, 0)
                 at.run()
                 self.assertFalse(list(at.exception))
                 current = [m.value for m in at.markdown if m.value.startswith("### ") and "Risk" in m.value]
                 self.assertEqual(len(current), 1)
-                self.assertIn(f"{score} — {category}", current[0])
+                display_category = category if score else "Risk review incomplete"
+                self.assertIn(f"{score} — {display_category}", current[0])
                 self.assertNotIn("%", current[0])
                 self.assertNotIn("/", current[0])
                 self.assertFalse(any("conic-gradient" in m.value for m in at.markdown))

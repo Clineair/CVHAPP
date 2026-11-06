@@ -227,8 +227,8 @@ def show_risk_assessment(part, config, da_hint=None, default_aircraft_idx=0):
     route_job = st.text_input("Route or job", key="frat_route")
     st.caption(f"Operation: **{part}**" + (f" · Passengers: **{pax}** (from configuration)" if part == "Part 135" else ""))
 
-    st.caption("Risk factors start at 0. Review every factor and adjust for this flight; "
-               "a zero score alone is not a completed assessment or flight release.")
+    st.caption("0 = not assessed. Review every factor and select 1–10 for this flight. "
+               "Every factor must be greater than 0 before completing or saving the assessment.")
     factors = CORE_FACTORS + PART_FACTORS[part]
     scores = {}
     section = None
@@ -239,8 +239,13 @@ def show_risk_assessment(part, config, da_hint=None, default_aircraft_idx=0):
         if key == "da_performance" and da_hint is not None:
             st.caption(f"ℹ️ Density altitude from calculator: {da_hint:.0f} ft")
         if key == "passengers" and pax == 0:
-            st.caption("No passengers entered – score 0 unless special considerations apply.")
+            st.caption("No passengers entered. Review this factor before selecting a score.")
         scores[key] = st.slider(label, min_value=0, max_value=10, value=default, step=1, key=f"frat_{part}_{key}")
+    unassessed = [label for key, _, label, _ in factors if scores[key] == 0]
+    if unassessed:
+        st.warning("NOT RELEASED — risk review incomplete. 0 = not assessed. "
+                   "Review these factors and select 1–10:\n\n"
+                   + "\n".join(f"- {label}" for label in unassessed))
     total_risk = sum(scores.values())
     frat_max = 10 * len(factors)
 
@@ -264,7 +269,10 @@ def show_risk_assessment(part, config, da_hint=None, default_aircraft_idx=0):
         level, color, emoji = "Medium Risk", "#FF9800", "🟡"
     else:
         level, color, emoji = "High Risk", "#F44336", "🔴"
-    st.markdown(f"### {emoji} {total_risk} — {level}")
+    if unassessed:
+        st.markdown(f"### ⚠️ {total_risk} — Risk review incomplete")
+    else:
+        st.markdown(f"### {emoji} {total_risk} — {level}")
     st.caption(f"Low 0–{cut['low_max']} · Medium {cut['low_max'] + 1}–{cut['med_max']} "
                f"· High {cut['med_max'] + 1}+")
 
@@ -303,6 +311,11 @@ def show_risk_assessment(part, config, da_hint=None, default_aircraft_idx=0):
             reasons.append("Signature must match selected pilot")
         decision = "INCOMPLETE" if reasons else "GO"
 
+    if unassessed:
+        reasons.append("Review every zero risk factor and select 1–10 before completing or saving")
+        if decision != "NO-GO":
+            decision = "INCOMPLETE"
+
     if decision == "GO":
         st.markdown(f"""<div style="background:#4CAF50; color:white; padding:18px; text-align:center; font-size:26px; font-weight:bold; border-radius:8px;">✅ GO – {part} – {level} accepted</div>""", unsafe_allow_html=True)
     elif decision == "NO-GO":
@@ -310,11 +323,11 @@ def show_risk_assessment(part, config, da_hint=None, default_aircraft_idx=0):
     else:
         st.markdown(f"""<div style="background:#FFC107; color:black; padding:18px; text-align:center; font-size:20px; font-weight:bold; border-radius:8px;">⚠️ NOT RELEASED – {'; '.join(reasons)}</div>""", unsafe_allow_html=True)
 
-    st.caption("NO-GO assessments should also be saved – they are part of the safety record.")
+    st.caption("Fully reviewed NO-GO assessments should also be saved – they are part of the safety record.")
     signoff_complete = pilot_accepts and sig_name == pilot
     if not signoff_complete:
         st.caption("Select the matching pilot signature and check the attestation before saving, including NO-GO records.")
-    if st.button("💾 Save Assessment", type="primary", use_container_width=True, disabled=(decision == "INCOMPLETE" or not signoff_complete), key=f"frat_{part}_save"):
+    if st.button("💾 Save Assessment", type="primary", use_container_width=True, disabled=(bool(unassessed) or decision == "INCOMPLETE" or not signoff_complete), key=f"frat_{part}_save"):
         record = {
             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "date": frat_date.isoformat(), "part": part, "pilot": pilot,
