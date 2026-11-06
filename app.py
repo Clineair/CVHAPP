@@ -89,42 +89,42 @@ MAX_PAX = {"Robinson R44 Raven II": 3, "Enstrom 480": 4}
 
 # (key, section, label, default)
 CORE_FACTORS = [
-    ("pilot_exp", "Daily Pilot Factors", "Recent experience/currency (hours last 30 days – per flight log)", 5),
-    ("pilot_fatigue", "Daily Pilot Factors", "Fatigue/sleep last 24 hours", 5),
-    ("pilot_health", "Daily Pilot Factors", "Physical/mental health today", 2),
-    ("ac_maintenance", "Aircraft Factors", "Maintenance status/known squawks", 3),
-    ("ac_fuel", "Aircraft Factors", "Fuel planning/reserves", 2),
-    ("ac_weight", "Aircraft Factors", "Weight & balance/CG within limits", 2),
-    ("da_performance", "Aircraft Factors", "Density altitude / performance margin (hover OGE/IGE)", 2),
-    ("weather_ceiling", "Environment / Weather", "Ceiling/visibility (VFR/IFR conditions)", 4),
-    ("weather_turb", "Environment / Weather", "Turbulence/icing/wind forecast", 3),
-    ("weather_notams", "Environment / Weather", "NOTAMs/TFRs/airspace restrictions", 3),
-    ("terrain", "Environment / Weather", "Terrain / unfamiliar area", 2),
-    ("flight_complexity", "Operations / Flight Plan", "Flight complexity (obstructions/towers/wires/slacklines/birds)", 4),
-    ("alternate_plan", "Operations / Flight Plan", "Alternate/emergency options planned", 2),
+    ("pilot_exp", "Daily Pilot Factors", "Recent experience/currency (hours last 30 days – per flight log)", 0),
+    ("pilot_fatigue", "Daily Pilot Factors", "Fatigue/sleep last 24 hours", 0),
+    ("pilot_health", "Daily Pilot Factors", "Physical/mental health today", 0),
+    ("ac_maintenance", "Aircraft Factors", "Maintenance status/known squawks", 0),
+    ("ac_fuel", "Aircraft Factors", "Fuel planning/reserves", 0),
+    ("ac_weight", "Aircraft Factors", "Weight & balance/CG within limits", 0),
+    ("da_performance", "Aircraft Factors", "Density altitude / performance margin (hover OGE/IGE)", 0),
+    ("weather_ceiling", "Environment / Weather", "Ceiling/visibility (VFR/IFR conditions)", 0),
+    ("weather_turb", "Environment / Weather", "Turbulence/icing/wind forecast", 0),
+    ("weather_notams", "Environment / Weather", "NOTAMs/TFRs/airspace restrictions", 0),
+    ("terrain", "Environment / Weather", "Terrain / unfamiliar area", 0),
+    ("flight_complexity", "Operations / Flight Plan", "Flight complexity (obstructions/towers/wires/slacklines/birds)", 0),
+    ("alternate_plan", "Operations / Flight Plan", "Alternate/emergency options planned", 0),
     ("night_ops", "Operations / Flight Plan", "Night or low-light operations", 0),
-    ("get_there_itis", "External Pressures", "Get-there-itis/schedule pressure", 2),
-    ("customer_pressure", "External Pressures", "Customer/family/operational pressure", 2),
+    ("get_there_itis", "External Pressures", "Get-there-itis/schedule pressure", 0),
+    ("customer_pressure", "External Pressures", "Customer/family/operational pressure", 0),
 ]
 PART_FACTORS = {
     "Part 91": [],
     "Part 135": [
-        ("landing_zone", "Part 135 Factors", "Landing zone (unimproved / unfamiliar / confined)", 2),
+        ("landing_zone", "Part 135 Factors", "Landing zone (unimproved / unfamiliar / confined)", 0),
         ("passengers", "Part 135 Factors", "Passengers (number, weights, special needs)", 0),
     ],
     "Part 137": [
-        ("ag_wires_field", "Part 137 Factors", "Wires/slacklines/towers in and around the field", 3),
-        ("ag_drift_wind", "Part 137 Factors", "Drift / wind / temperature inversion", 2),
-        ("ag_chemical", "Part 137 Factors", "Chemical hazard / label restrictions", 2),
-        ("ag_sensitive", "Part 137 Factors", "Sensitive areas / buffers (homes, schools, water, organic crops, bees)", 2),
-        ("ag_ferry", "Part 137 Factors", "Ferry distance to field", 1),
+        ("ag_wires_field", "Part 137 Factors", "Wires/slacklines/towers in and around the field", 0),
+        ("ag_drift_wind", "Part 137 Factors", "Drift / wind / temperature inversion", 0),
+        ("ag_chemical", "Part 137 Factors", "Chemical hazard / label restrictions", 0),
+        ("ag_sensitive", "Part 137 Factors", "Sensitive areas / buffers (homes, schools, water, organic crops, bees)", 0),
+        ("ag_ferry", "Part 137 Factors", "Ferry distance to field", 0),
     ],
     "Part 133": [
-        ("ext_load_char", "Part 133 Factors", "Load characteristics (shape / oscillation risk)", 3),
-        ("ext_site", "Part 133 Factors", "Pickup/setdown site (confined, rotor-wash debris)", 2),
-        ("ext_ground_crew", "Part 133 Factors", "Ground crew experience and communications", 2),
-        ("ext_wires_path", "Part 133 Factors", "Wires along load path", 2),
-        ("ext_populated", "Part 133 Factors", "Populated area along route", 1),
+        ("ext_load_char", "Part 133 Factors", "Load characteristics (shape / oscillation risk)", 0),
+        ("ext_site", "Part 133 Factors", "Pickup/setdown site (confined, rotor-wash debris)", 0),
+        ("ext_ground_crew", "Part 133 Factors", "Ground crew experience and communications", 0),
+        ("ext_wires_path", "Part 133 Factors", "Wires along load path", 0),
+        ("ext_populated", "Part 133 Factors", "Populated area along route", 0),
     ],
 }
 PART_STOPS = {
@@ -227,6 +227,8 @@ def show_risk_assessment(part, config, da_hint=None, default_aircraft_idx=0):
     route_job = st.text_input("Route or job", key="frat_route")
     st.caption(f"Operation: **{part}**" + (f" · Passengers: **{pax}** (from configuration)" if part == "Part 135" else ""))
 
+    st.caption("Risk factors start at 0. Review every factor and adjust for this flight; "
+               "a zero score alone is not a completed assessment or flight release.")
     factors = CORE_FACTORS + PART_FACTORS[part]
     scores = {}
     section = None
