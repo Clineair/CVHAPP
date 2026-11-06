@@ -326,7 +326,8 @@ def show_risk_assessment(part, config, da_hint=None, default_aircraft_idx=0):
             st.success(f"Assessment saved to {where}.")
         except Exception as e:
             st.error(PAPER_BACKUP)
-            st.caption("Check Streamlit Secrets, live Sheet sharing, connectivity and worksheet headers. Verify the last row before retrying to avoid duplicates.")
+            st.caption(f"Save error: {type(e).__name__}: {e}")
+            st.caption("Check Streamlit Secrets (CVHAPP app, not the test app), live Sheet sharing, connectivity and worksheet headers. Verify the last row before retrying to avoid duplicates.")
 
 def show_frat_history():
     st.subheader("FRAT History")
@@ -778,4 +779,3 @@ elif st.session_state.current_mode == "Emergency":
     st.info("Quick-reference only. Follow your company Emergency Response Plan.")
 
 st.caption("**Safe flying & have a Blessed day** ⌯✈︎")
-
