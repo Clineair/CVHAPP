@@ -117,6 +117,7 @@ class StreamlitTests(unittest.TestCase):
                     for slider in at.slider:
                         slider.set_value(1)
                     next(r for r in at.radio if "No" in r.options).set_value("No")
+                    at.selectbox(key="frat_pilot").select("Ronald A Cline")
                     at.selectbox(key="frat_sig").select("Ronald A Cline")
                     at.checkbox(key=f"frat_{part}_accept").check().run()
                     at.button(key=f"frat_{part}_save").click().run()
