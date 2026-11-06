@@ -8,6 +8,11 @@ from streamlit.testing.v1 import AppTest
 from test_aircraft_weights import TREE, offline_app
 
 
+def widget_key(at, name):
+    generation = at.session_state["assessment_generation"] if "assessment_generation" in at.session_state else 0
+    return f"{name}__assessment_{generation}" if generation else name
+
+
 class SessionState(dict):
     __setattr__ = dict.__setitem__
 
@@ -31,18 +36,18 @@ class AssessmentResetTests(unittest.TestCase):
         scope = {"st": SimpleNamespace(session_state=state)}
         exec(compile(ast.Module(body=nodes, type_ignores=[]), "reset_callback", "exec"), scope)
         scope["reset_pilot_assessment"]()
-        self.assertEqual(state, {**kept, "pilot_reset_pending": False})
+        self.assertEqual(state, {**kept, "pilot_reset_pending": False, "assessment_generation": 1})
 
     def test_confirm_cancel_defaults_and_no_saved_record_changes_all_modes(self):
         for part in ["Part 91", "Part 133", "Part 135", "Part 137"]:
             with self.subTest(part=part):
                 at = AppTest.from_string(offline_app(), default_timeout=30).run()
                 at.segmented_control[0].set_value(part).run()
-                at.selectbox(key="pilot_config_aircraft").select("Enstrom 480").run()
-                at.selectbox(key="frat_pilot").select("Anthony Root")
-                at.selectbox(key="frat_sig").select("Anthony Root")
-                at.date_input(key="frat_date").set_value(date(2020, 1, 1))
-                at.text_input(key="frat_route").set_value("Unsaved flight")
+                at.selectbox(key=widget_key(at, "pilot_config_aircraft")).select("Enstrom 480").run()
+                at.selectbox(key=widget_key(at, "frat_pilot")).select("Anthony Root")
+                at.selectbox(key=widget_key(at, "frat_sig")).select("Anthony Root")
+                at.date_input(key=widget_key(at, "frat_date")).set_value(date(2020, 1, 1))
+                at.text_input(key=widget_key(at, "frat_route")).set_value("Unsaved flight")
                 for i, slider in enumerate(at.slider):
                     slider.set_value(10 if i < 3 else 1)  # medium risk for all FAR modes
                 for radio in at.radio:
@@ -50,46 +55,46 @@ class AssessmentResetTests(unittest.TestCase):
                         radio.set_value("Yes")
                 for field in at.number_input:
                     field.set_value(1.0 if isinstance(field.value, float) else 1)
-                at.checkbox(key=f"frat_{part}_accept").check().run()
-                at.text_area(key=f"frat_{part}_mitigations").set_value("Unsaved mitigation")
-                at.selectbox(key=f"frat_{part}_approver").select("Carl Mulvaney").run()
-                at.checkbox(key=f"frat_{part}_ron_unreachable").check()
-                at.checkbox(key=f"frat_{part}_approved").check().run()
+                at.checkbox(key=widget_key(at, f"frat_{part}_accept")).check().run()
+                at.text_area(key=widget_key(at, f"frat_{part}_mitigations")).set_value("Unsaved mitigation")
+                at.selectbox(key=widget_key(at, f"frat_{part}_approver")).select("Carl Mulvaney").run()
+                at.checkbox(key=widget_key(at, f"frat_{part}_ron_unreachable")).check()
+                at.checkbox(key=widget_key(at, f"frat_{part}_approved")).check().run()
                 at.session_state["_test_rows"] = [["saved"], ["record"]]
                 at.session_state["last_current_weight"] = 12345
                 at.session_state["completed_checklists"] = ["kept"]
                 # Normal rerun preserves entries; requesting reset cannot discard them.
                 at.run()
                 at.button(key="pilot_reset_request").click().run()
-                self.assertEqual(at.text_input(key="frat_route").value, "Unsaved flight")
+                self.assertEqual(at.text_input(key=widget_key(at, "frat_route")).value, "Unsaved flight")
                 at.button(key="pilot_reset_cancel").click().run()
-                self.assertEqual(at.selectbox(key="frat_pilot").value, "Anthony Root")
+                self.assertEqual(at.selectbox(key=widget_key(at, "frat_pilot")).value, "Anthony Root")
                 self.assertEqual(at.slider[0].value, 10)
-                self.assertEqual(at.text_area(key=f"frat_{part}_mitigations").value, "Unsaved mitigation")
-                self.assertTrue(at.checkbox(key=f"frat_{part}_approved").value)
+                self.assertEqual(at.text_area(key=widget_key(at, f"frat_{part}_mitigations")).value, "Unsaved mitigation")
+                self.assertTrue(at.checkbox(key=widget_key(at, f"frat_{part}_approved")).value)
                 at.button(key="pilot_reset_request").click().run()
                 at.button(key="pilot_reset_confirm").click().run()
                 self.assertFalse(list(at.exception))
                 self.assertFalse(at.session_state["pilot_reset_pending"])
                 self.assertEqual(at.segmented_control[0].value, "Part 135")
-                self.assertEqual(at.selectbox(key="pilot_config_aircraft").value, "Robinson R44 Raven II")
-                self.assertIsNone(at.selectbox(key="frat_pilot").value)
-                self.assertIsNone(at.selectbox(key="frat_sig").value)
-                self.assertEqual(at.text_input(key="frat_route").value, "")
-                self.assertEqual(at.date_input(key="frat_date").value,
+                self.assertEqual(at.selectbox(key=widget_key(at, "pilot_config_aircraft")).value, "Robinson R44 Raven II")
+                self.assertIsNone(at.selectbox(key=widget_key(at, "frat_pilot")).value)
+                self.assertIsNone(at.selectbox(key=widget_key(at, "frat_sig")).value)
+                self.assertEqual(at.text_input(key=widget_key(at, "frat_route")).value, "")
+                self.assertEqual(at.date_input(key=widget_key(at, "frat_date")).value,
                                  datetime.now(ZoneInfo("America/Los_Angeles")).date())
                 self.assertTrue(all(s.value == 0 for s in at.slider))
                 self.assertTrue(all(r.value is None for r in at.radio if "Yes" in r.options))
-                self.assertFalse(at.checkbox(key="frat_Part 135_accept").value)
-                self.assertEqual(at.text_area(key="frat_Part 135_mitigations").value, "")
-                self.assertTrue(at.button(key="frat_Part 135_save").disabled)
+                self.assertFalse(at.checkbox(key=widget_key(at, "frat_Part 135_accept")).value)
+                self.assertEqual(at.text_area(key=widget_key(at, "frat_Part 135_mitigations")).value, "")
+                self.assertTrue(at.button(key=widget_key(at, "frat_Part 135_save")).disabled)
                 self.assertTrue(any("NOT RELEASED" in m.value for m in at.markdown))
                 defaults = {"pilot_config_pressure_alt": 0, "pilot_config_oat_c": 15,
                             "pilot_config_pilot_weight": 200, "pilot_config_fuel_gal": 30,
                             "pilot_config_pax_count": 0, "pilot_config_pax_weight": 0,
                             "pilot_config_baggage": 0}
                 for key, expected in defaults.items():
-                    self.assertEqual(at.number_input(key=key).value, expected)
+                    self.assertEqual(at.number_input(key=widget_key(at, key)).value, expected)
                 self.assertEqual(at.session_state["_test_rows"], [["saved"], ["record"]])
                 self.assertEqual(at.session_state["last_current_weight"], 12345)
                 self.assertEqual(at.session_state["completed_checklists"], ["kept"])
@@ -99,17 +104,71 @@ class AssessmentResetTests(unittest.TestCase):
                     at.segmented_control[0].set_value(next_part).run()
                     self.assertTrue(all(s.value == 0 for s in at.slider))
                     self.assertTrue(all(r.value is None for r in at.radio if "Yes" in r.options))
-                    self.assertFalse(at.checkbox(key=f"frat_{next_part}_accept").value)
+                    self.assertFalse(at.checkbox(key=widget_key(at, f"frat_{next_part}_accept")).value)
                     for field in at.number_input:
-                        if field.key not in defaults:
-                            self.assertEqual(field.value, 8.34 if field.key == "pilot_config_density" else 0)
+                        base_key = field.key.split("__assessment_")[0]
+                        if base_key not in defaults:
+                            self.assertEqual(field.value, 8.34 if base_key == "pilot_config_density" else 0)
                 # Positive review after reset still has blank approver and incomplete gates.
                 for i, slider in enumerate(at.slider):
                     slider.set_value(10 if i < 3 else 1)
                 at.run()
-                self.assertIsNone(at.selectbox(key="frat_Part 135_approver").value)
-                self.assertFalse(at.checkbox(key="frat_Part 135_approved").value)
-                self.assertTrue(at.button(key="frat_Part 135_save").disabled)
+                self.assertIsNone(at.selectbox(key=widget_key(at, "frat_Part 135_approver")).value)
+                self.assertFalse(at.checkbox(key=widget_key(at, "frat_Part 135_approved")).value)
+                self.assertTrue(at.button(key=widget_key(at, "frat_Part 135_save")).disabled)
+
+
+class ResetWidgetIdentityTests(unittest.TestCase):
+    def test_two_resets_remount_widgets_and_reject_old_identity_state(self):
+        at = AppTest.from_string(offline_app(), default_timeout=30).run()
+        at.session_state["_test_rows"] = [["saved"], ["keep"]]
+        seen_ids = set()
+        for part, pilot, route in [("Part 137", "Ronald A Cline", "TEST ROUTE - UI check"),
+                                   ("Part 133", "Anthony Root", "Second unsaved flight")]:
+            at.segmented_control[0].set_value(part).run()
+            old_pilot_key = widget_key(at, "frat_pilot")
+            old_route_key = widget_key(at, "frat_route")
+            old_slider_key = at.slider[0].key
+            at.selectbox(key=old_pilot_key).select(pilot)
+            at.text_input(key=old_route_key).set_value(route)
+            at.slider(key=old_slider_key).set_value(2).run()
+            old_ids = {at.selectbox(key=old_pilot_key).id,
+                       at.text_input(key=old_route_key).id, at.slider(key=old_slider_key).id}
+            seen_ids.update(old_ids)
+            at.button(key="pilot_reset_request").click().run()
+            at.button(key="pilot_reset_cancel").click().run()
+            self.assertEqual(at.selectbox(key=old_pilot_key).value, pilot)
+            self.assertEqual(at.text_input(key=old_route_key).value, route)
+            self.assertEqual(at.slider(key=old_slider_key).value, 2)
+            at.button(key="pilot_reset_request").click().run()
+            at.button(key="pilot_reset_confirm").click().run()
+            new_pilot_key = widget_key(at, "frat_pilot")
+            new_route_key = widget_key(at, "frat_route")
+            self.assertNotEqual(new_pilot_key, old_pilot_key)
+            self.assertNotEqual(new_route_key, old_route_key)
+            new_ids = {at.selectbox(key=new_pilot_key).id,
+                       at.text_input(key=new_route_key).id, at.slider[0].id}
+            self.assertFalse(new_ids & seen_ids)
+            seen_ids.update(new_ids)
+            # Assert rendered widget values, not only backend aggregate/session values.
+            for _ in range(2):
+                self.assertIsNone(at.selectbox(key=new_pilot_key).value)
+                self.assertEqual(at.text_input(key=new_route_key).value, "")
+                self.assertTrue(all(s.value == 0 for s in at.slider))
+                self.assertTrue(any("0 — Risk review incomplete" in m.value for m in at.markdown))
+                self.assertTrue(at.button(key=widget_key(at, "frat_Part 135_save")).disabled)
+                at.run()
+            # Old-key state arriving later cannot be recaptured by the new widgets.
+            at.session_state[old_pilot_key] = pilot
+            at.session_state[old_route_key] = route
+            at.session_state[old_slider_key] = 2
+            at.run()
+            self.assertIsNone(at.selectbox(key=new_pilot_key).value)
+            self.assertEqual(at.text_input(key=new_route_key).value, "")
+            self.assertTrue(all(s.value == 0 for s in at.slider))
+            self.assertFalse(list(at.exception))
+            self.assertEqual(at.session_state["_test_rows"], [["saved"], ["keep"]])
+        self.assertEqual(at.session_state["assessment_generation"], 2)
 
 
 if __name__ == "__main__":
