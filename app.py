@@ -55,59 +55,200 @@ if 'completed_checklists' not in st.session_state:
     st.session_state.completed_checklists = []
 
 # ────────────────────────────────────────────────
-# Risk Assessment – FRAT function
+# FRAT Record Storage (Google Sheets via service account; Appendix C paper backup on outage)
 # ────────────────────────────────────────────────
-def show_risk_assessment():
-    st.subheader("FRAT")
-    st.caption("Score each factor 0–10 (higher = more risk).")
-    total_risk = 0
-    st.markdown("**Daily Pilot Factors**")
-    pilot_exp = st.slider("Recent experience/currency (hours last 30 days)", min_value=0, max_value=10, value=5, step=1)
-    total_risk += pilot_exp
-    pilot_fatigue = st.slider("Fatigue/sleep last 24 hours", min_value=0, max_value=10, value=5, step=1)
-    total_risk += pilot_fatigue
-    pilot_health = st.slider("Physical/mental health today", min_value=0, max_value=10, value=2, step=1)
-    total_risk += pilot_health
-    st.markdown("**Aircraft Factors**")
-    ac_maintenance = st.slider("Maintenance status/known squawks", min_value=0, max_value=10, value=3, step=1)
-    total_risk += ac_maintenance
-    ac_fuel = st.slider("Fuel planning/reserves", min_value=0, max_value=10, value=2, step=1)
-    total_risk += ac_fuel
-    ac_weight = st.slider("Weight & balance/CG within limits", min_value=0, max_value=10, value=2, step=1)
-    total_risk += ac_weight
-    st.markdown("**Environment / Weather**")
-    weather_ceiling = st.slider("Ceiling/visibility (VFR/IFR conditions)", min_value=0, max_value=10, value=4, step=1)
-    total_risk += weather_ceiling
-    weather_turb = st.slider("Turbulence/icing/wind forecast", min_value=0, max_value=10, value=3, step=1)
-    total_risk += weather_turb
-    weather_notams = st.slider("NOTAMs/TFRs/airspace restrictions", min_value=0, max_value=10, value=3, step=1)
-    total_risk += weather_notams
-    st.markdown("**Operations / Flight Plan**")
-    flight_complexity = st.slider("Flight complexity (obstructions/towers/wires/slacklines/birds)", min_value=0, max_value=10, value=4, step=1)
-    total_risk += flight_complexity
-    alternate_plan = st.slider("Alternate/emergency options planned", min_value=0, max_value=10, value=2, step=1)
-    total_risk += alternate_plan
-    night_ops = st.slider("Night or low-light operations", min_value=0, max_value=10, value=0, step=1)
-    total_risk += night_ops
-    st.markdown("**External Pressures**")
-    get_there_itis = st.slider("Get-there-itis/schedule pressure", min_value=0, max_value=10, value=2, step=1)
-    total_risk += get_there_itis
-    customer_pressure = st.slider("Customer/family/operational pressure", min_value=0, max_value=10, value=2, step=1)
-    total_risk += customer_pressure
+import pandas as pd
+
+FRAT_SHEET_NAME = "CVH FRAT Log"
+PILOTS = ["Ronald A Cline", "Anthony Root"]
+ACCOUNTABLE_EXEC = "Ronald A Cline"
+DIRECTOR_MAINTENANCE = "Carl Mulvaney"
+APPROVERS = [ACCOUNTABLE_EXEC, DIRECTOR_MAINTENANCE]
+PAPER_BACKUP = (
+    "Google Sheets save could not be confirmed. Use the Appendix C paper Hazard Log "
+    "backup (Manual Sec 3.8): complete the paper assessment, mitigations, pilot sign-off "
+    "and any required Medium-risk acceptance BEFORE departure. The Safety Manager "
+    "transfers the paper record to Sheets later, checking for duplicates. "
+    "No local CSV backup was saved. A NO-GO remains NO-GO."
+)
+FRAT_AIRCRAFT = ["N893PC – Robinson R44 Raven II (SN 14940)", "N480ML – Enstrom 480 Turbine (SN 5032)"]
+PARTS = ["Part 91", "Part 135", "Part 137", "Part 133"]
+# Max passengers by aircraft for Part 135 – CONFIRM WITH RON
+MAX_PAX = {"Robinson R44 Raven II": 3, "Enstrom 480": 4}
+
+# (key, section, label, default)
+CORE_FACTORS = [
+    ("pilot_exp", "Daily Pilot Factors", "Recent experience/currency (hours last 30 days – per flight log)", 5),
+    ("pilot_fatigue", "Daily Pilot Factors", "Fatigue/sleep last 24 hours", 5),
+    ("pilot_health", "Daily Pilot Factors", "Physical/mental health today", 2),
+    ("ac_maintenance", "Aircraft Factors", "Maintenance status/known squawks", 3),
+    ("ac_fuel", "Aircraft Factors", "Fuel planning/reserves", 2),
+    ("ac_weight", "Aircraft Factors", "Weight & balance/CG within limits", 2),
+    ("da_performance", "Aircraft Factors", "Density altitude / performance margin (hover OGE/IGE)", 2),
+    ("weather_ceiling", "Environment / Weather", "Ceiling/visibility (VFR/IFR conditions)", 4),
+    ("weather_turb", "Environment / Weather", "Turbulence/icing/wind forecast", 3),
+    ("weather_notams", "Environment / Weather", "NOTAMs/TFRs/airspace restrictions", 3),
+    ("terrain", "Environment / Weather", "Terrain / unfamiliar area", 2),
+    ("flight_complexity", "Operations / Flight Plan", "Flight complexity (obstructions/towers/wires/slacklines/birds)", 4),
+    ("alternate_plan", "Operations / Flight Plan", "Alternate/emergency options planned", 2),
+    ("night_ops", "Operations / Flight Plan", "Night or low-light operations", 0),
+    ("get_there_itis", "External Pressures", "Get-there-itis/schedule pressure", 2),
+    ("customer_pressure", "External Pressures", "Customer/family/operational pressure", 2),
+]
+PART_FACTORS = {
+    "Part 91": [],
+    "Part 135": [
+        ("landing_zone", "Part 135 Factors", "Landing zone (unimproved / unfamiliar / confined)", 2),
+        ("passengers", "Part 135 Factors", "Passengers (number, weights, special needs)", 0),
+    ],
+    "Part 137": [
+        ("ag_wires_field", "Part 137 Factors", "Wires/slacklines/towers in and around the field", 3),
+        ("ag_drift_wind", "Part 137 Factors", "Drift / wind / temperature inversion", 2),
+        ("ag_chemical", "Part 137 Factors", "Chemical hazard / label restrictions", 2),
+        ("ag_sensitive", "Part 137 Factors", "Sensitive areas / buffers (homes, schools, water, organic crops, bees)", 2),
+        ("ag_ferry", "Part 137 Factors", "Ferry distance to field", 1),
+    ],
+    "Part 133": [
+        ("ext_load_char", "Part 133 Factors", "Load characteristics (shape / oscillation risk)", 3),
+        ("ext_site", "Part 133 Factors", "Pickup/setdown site (confined, rotor-wash debris)", 2),
+        ("ext_ground_crew", "Part 133 Factors", "Ground crew experience and communications", 2),
+        ("ext_wires_path", "Part 133 Factors", "Wires along load path", 2),
+        ("ext_populated", "Part 133 Factors", "Populated area along route", 1),
+    ],
+}
+PART_STOPS = {
+    "Part 91": [
+        ("stop_airworthy", "Aircraft airworthy with no open grounding squawks"),
+        ("stop_vfr_wx", "Weather within VFR minimums (§91.155) for the route"),
+        ("stop_wb", "Weight & balance within limits"),
+        ("stop_pilot_fit", "Pilot fit to fly (IMSAFE)"),
+    ],
+    "Part 135": [
+        ("stop_duty", "Within duty and rest limits per today's duty log (§135.267)"),
+        ("stop_wx", "Weather at or above company minimums for the route (§135.203/§135.205)"),
+        ("stop_airworthy", "Aircraft airworthy with no open grounding squawks"),
+        ("stop_wb_perf", "Weight & balance and performance within limits for the landing zones"),
+        ("stop_pax_brief", "Passengers will receive the required briefing (§135.117)"),
+    ],
+    "Part 137": [
+        ("stop_label", "Product label and application rates verified"),
+        ("stop_mix_ppe", "Mixing/loading procedures and PPE in place"),
+        ("stop_area_clear", "No unauthorized persons in treatment area; required notifications done"),
+        ("stop_ag_wx", "Weather/wind within label and company limits"),
+        ("stop_airworthy", "Aircraft airworthy with no open grounding squawks"),
+    ],
+    "Part 133": [
+        ("stop_hook_limit", "Load within hook / RFM limits"),
+        ("stop_hook_test", "Cargo hook and release (electrical and manual) tested"),
+        ("stop_crew_brief", "Ground crew briefed – hand signals / radio"),
+        ("stop_route", "Route avoids congested areas or is approved"),
+        ("stop_airworthy", "Aircraft airworthy with no open grounding squawks"),
+    ],
+}
+# Raw-total cutoffs per part (Ron to decide rescaling): Low <= low_max, Medium <= med_max, else High
+RISK_CUTOFFS = {p: {"low_max": 30, "med_max": 60} for p in PARTS}
+
+CONFIG_FIELDS = ["pilot_weight", "fuel_gal", "pax_count", "pax_weight", "baggage_weight",
+                 "hopper_gal", "product_density", "ext_load_weight", "longline_ft", "hook_equip_weight",
+                 "hook_limit", "density_altitude", "internal_weight", "max_gross"]
+
+def _unique(seq):
+    out = []
+    for s in seq:
+        if s not in out:
+            out.append(s)
+    return out
+
+ALL_FACTOR_KEYS = _unique([f[0] for f in CORE_FACTORS] + [f[0] for p in PARTS for f in PART_FACTORS[p]])
+ALL_STOP_KEYS = _unique([s[0] for p in PARTS for s in PART_STOPS[p]])
+FRAT_COLUMNS = (["timestamp", "date", "part", "pilot", "aircraft", "route_job"] + CONFIG_FIELDS
+                + ALL_FACTOR_KEYS + ALL_STOP_KEYS
+                + ["total", "max_total", "percent", "risk_level", "mitigations", "approver",
+                   "approved", "pilot_signature", "decision", "ron_unreachable", "pilot_attests"])
+
+def _gsheets_worksheet():
+    """Open the production worksheet; configuration and network failures propagate."""
+    if "gcp_service_account" not in st.secrets:
+        raise RuntimeError("Google Sheets service account is not configured")
+    import gspread
+    gc = gspread.service_account_from_dict(dict(st.secrets["gcp_service_account"]))
+    sheet_id = st.secrets.get("frat_sheet_id")
+    sheet = (gc.open_by_key(sheet_id) if sheet_id else
+             gc.open(st.secrets.get("frat_sheet_name") or FRAT_SHEET_NAME))
+    return sheet.sheet1
+
+
+def save_frat_record(record):
+    """Append only to Google Sheets. Never silently fall back to a local file."""
+    ws = _gsheets_worksheet()
+    header = ws.row_values(1)
+    if not header:
+        ws.append_row(FRAT_COLUMNS, value_input_option="RAW")
+    elif header != FRAT_COLUMNS:
+        raise RuntimeError("FRAT worksheet headers do not match this app; check the live sheet")
+    ws.append_row([str(record.get(c, "")) for c in FRAT_COLUMNS], value_input_option="RAW")
+    return "Google Sheets (live FRAT log)"
+
+
+def load_frat_records():
+    """Read Sheets only; the history UI reports unavailable configuration or service."""
+    ws = _gsheets_worksheet()
+    return pd.DataFrame(ws.get_all_records())
+
+# ────────────────────────────────────────────────
+# Risk Assessment – FRAT function (per FAR part; Part 5 §5.51–5.55, records §5.97)
+# ────────────────────────────────────────────────
+def show_risk_assessment(part, config, da_hint=None, default_aircraft_idx=0):
+    st.subheader(f"FRAT – {part}")
+    st.caption("Complete before every flight. Score each factor 0–10 (higher = more risk). Records kept 5 years.")
+    pax = int(config.get("pax_count") or 0)
+
+    st.markdown("**Flight Information**")
+    h1, h2, h3 = st.columns(3)
+    with h1:
+        frat_date = st.date_input("Date", value=datetime.now().date(), key="frat_date")
+    with h2:
+        pilot = st.selectbox("Pilot", PILOTS, key="frat_pilot")
+    with h3:
+        aircraft = st.selectbox("Aircraft", FRAT_AIRCRAFT, index=default_aircraft_idx, key=f"frat_aircraft_{default_aircraft_idx}")
+    route_job = st.text_input("Route or job", key="frat_route")
+    st.caption(f"Operation: **{part}**" + (f" · Passengers: **{pax}** (from configuration)" if part == "Part 135" else ""))
+
+    factors = CORE_FACTORS + PART_FACTORS[part]
+    scores = {}
+    section = None
+    for key, sec, label, default in factors:
+        if sec != section:
+            st.markdown(f"**{sec}**")
+            section = sec
+        if key == "da_performance" and da_hint is not None:
+            st.caption(f"ℹ️ Density altitude from calculator: {da_hint:.0f} ft")
+        if key == "passengers" and pax == 0:
+            st.caption("No passengers entered – score 0 unless special considerations apply.")
+        scores[key] = st.slider(label, min_value=0, max_value=10, value=default, step=1, key=f"frat_{part}_{key}")
+    total_risk = sum(scores.values())
+    frat_max = 10 * len(factors)
+
+    st.markdown("**Stop Items** – any *No* is a NO-GO regardless of score")
+    stops = {}
+    for key, label in PART_STOPS[part]:
+        if key == "stop_pax_brief" and pax == 0:
+            stops[key] = "N/A"
+            continue
+        ans = st.radio(label, ["Yes", "No"], index=None, horizontal=True, key=f"frat_{part}_{key}")
+        stops[key] = ans if ans else ""
+    stop_failed = any(v == "No" for v in stops.values())
+    stops_incomplete = any(v == "" for v in stops.values())
+
     st.markdown("---")
-    risk_percent = (total_risk / 100) * 100
-    if total_risk <= 30:
-        level = "Low Risk"
-        color = "#4CAF50"
-        emoji = "🟢"
-    elif total_risk <= 60:
-        level = "Medium Risk"
-        color = "#FF9800"
-        emoji = "🟡"
+    risk_percent = total_risk / frat_max * 100
+    cut = RISK_CUTOFFS[part]
+    if total_risk <= cut["low_max"]:
+        level, color, emoji = "Low Risk", "#4CAF50", "🟢"
+    elif total_risk <= cut["med_max"]:
+        level, color, emoji = "Medium Risk", "#FF9800", "🟡"
     else:
-        level = "High Risk"
-        color = "#F44336"
-        emoji = "🔴"
+        level, color, emoji = "High Risk", "#F44336", "🔴"
     gauge_html = f"""
     <div style="text-align:center; margin: 30px 0;">
         <div style="width: 220px; height: 220px; border-radius: 50%; background: conic-gradient({color} {risk_percent}%, #e0e0e0 {risk_percent}% 100%); display: flex; align-items: center; justify-content: center; margin: 0 auto; position: relative; box-shadow: 0 6px 20px rgba(0,0,0,0.2);">
@@ -116,11 +257,92 @@ def show_risk_assessment():
                 <div style="font-size: 18px; color: #555;">{level}</div>
             </div>
         </div>
-        <div style="margin-top: 15px; font-size: 22px; font-weight: bold; color: {color};">{emoji} {level}</div>
+        <div style="margin-top: 15px; font-size: 22px; font-weight: bold; color: {color};">{emoji} {level} – {total_risk} / {frat_max}</div>
     </div>
     """
     st.markdown(gauge_html, unsafe_allow_html=True)
 
+    st.markdown("**Decision & Sign-off**")
+    mitigations, approver, approved = "", "", False
+    ron_unreachable = False
+    if level == "Medium Risk" and not stop_failed:
+        mitigations = st.text_area("Mitigations (required for Medium risk)", key=f"frat_{part}_mitigations")
+        approver = st.selectbox("Medium-risk approver", APPROVERS, key=f"frat_{part}_approver")
+        if approver == DIRECTOR_MAINTENANCE:
+            ron_unreachable = st.checkbox("Ron could not be reached (required for Carl to approve)", key=f"frat_{part}_ron_unreachable")
+        approved = st.checkbox(f"{approver} approves this flight with the mitigations above", key=f"frat_{part}_approved")
+    elif level == "Low Risk" and not stop_failed:
+        mitigations = st.text_area("Mitigations (optional)", key=f"frat_{part}_mitigations")
+    sig_name = st.selectbox("Pilot signature", PILOTS, index=None, placeholder="Select name", key="frat_sig")
+    pilot_accepts = st.checkbox("I have completed this assessment accurately and accept the risk for this flight", key=f"frat_{part}_accept")
+
+    reasons = []
+    if stop_failed:
+        decision, reasons = "NO-GO", ["Stop item answered No"]
+    elif level == "High Risk":
+        decision, reasons = "NO-GO", ["High risk cannot be accepted – re-plan or cancel"]
+    else:
+        if stops_incomplete:
+            reasons.append("Answer all stop items")
+        if level == "Medium Risk":
+            if not mitigations.strip():
+                reasons.append("Enter mitigations")
+            if not (approved and approver in APPROVERS):
+                reasons.append("Medium-risk approval required")
+            if approver == DIRECTOR_MAINTENANCE and not ron_unreachable:
+                reasons.append("Confirm Ron could not be reached before Carl approves")
+        if not (pilot_accepts and (sig_name or "").strip()):
+            reasons.append("Pilot signature and acceptance required")
+        if (sig_name or "").strip() and (sig_name or "").strip().lower() != pilot.lower():
+            reasons.append("Signature must match selected pilot")
+        decision = "INCOMPLETE" if reasons else "GO"
+
+    if decision == "GO":
+        st.markdown(f"""<div style="background:#4CAF50; color:white; padding:18px; text-align:center; font-size:26px; font-weight:bold; border-radius:8px;">✅ GO – {part} – {level} accepted</div>""", unsafe_allow_html=True)
+    elif decision == "NO-GO":
+        st.markdown(f"""<div style="background:#F44336; color:white; padding:18px; text-align:center; font-size:26px; font-weight:bold; border-radius:8px;">⛔ NO-GO – {'; '.join(reasons)}</div>""", unsafe_allow_html=True)
+    else:
+        st.markdown(f"""<div style="background:#FFC107; color:black; padding:18px; text-align:center; font-size:20px; font-weight:bold; border-radius:8px;">⚠️ NOT RELEASED – {'; '.join(reasons)}</div>""", unsafe_allow_html=True)
+
+    st.caption("NO-GO assessments should also be saved – they are part of the safety record.")
+    signoff_complete = pilot_accepts and sig_name == pilot
+    if not signoff_complete:
+        st.caption("Select the matching pilot signature and check the attestation before saving, including NO-GO records.")
+    if st.button("💾 Save Assessment", type="primary", use_container_width=True, disabled=(decision == "INCOMPLETE" or not signoff_complete), key=f"frat_{part}_save"):
+        record = {
+            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "date": frat_date.isoformat(), "part": part, "pilot": pilot,
+            "aircraft": aircraft.split(" – ")[0], "route_job": route_job,
+            **{k: v for k, v in config.items() if k in CONFIG_FIELDS},
+            **scores, **stops,
+            "total": total_risk, "max_total": frat_max, "percent": f"{risk_percent:.0f}",
+            "risk_level": level, "mitigations": mitigations, "approver": approver if approved else "",
+            "approved": "Yes" if approved else "No", "pilot_signature": sig_name, "decision": decision,
+            "ron_unreachable": "Yes" if ron_unreachable else "No",
+            "pilot_attests": "Yes" if pilot_accepts else "No",
+        }
+        try:
+            where = save_frat_record(record)
+            st.success(f"Assessment saved to {where}.")
+        except Exception as e:
+            st.error(PAPER_BACKUP)
+            st.caption("Check Streamlit Secrets, live Sheet sharing, connectivity and worksheet headers. Verify the last row before retrying to avoid duplicates.")
+
+def show_frat_history():
+    st.subheader("FRAT History")
+    try:
+        df = load_frat_records()
+    except Exception as e:
+        st.error(f"Could not load records: {e}")
+        return
+    if df.empty:
+        st.info("No assessments saved yet.")
+        return
+    part_filter = st.multiselect("Filter by part", PARTS, default=PARTS, key="hist_part_filter")
+    if "part" in df.columns:
+        df = df[df["part"].isin(part_filter)]
+    st.dataframe(df.iloc[::-1], use_container_width=True, hide_index=True)
+    st.download_button("⬇️ Download CSV", df.to_csv(index=False).encode(), file_name=f"cvh_frat_log_{datetime.now():%Y%m%d}.csv", mime="text/csv")
 # ────────────────────────────────────────────────
 # Mode Buttons
 # ────────────────────────────────────────────────
@@ -201,26 +423,91 @@ def compute_hover_ceiling(da_ft, weight_lbs, aircraft):
 # ────────────────────────────────────────────────
 if st.session_state.current_mode == "Pilot":
     st.title("🛩️ Pilot Performance Calculator")
+    if "far_part" not in st.session_state:
+        st.session_state.far_part = "Part 135"
+    sel = st.segmented_control("Operation (FAR Part)", PARTS, default=st.session_state.far_part, key="far_part_ctrl")
+    if sel:
+        st.session_state.far_part = sel
+    part = st.session_state.far_part
     selected_aircraft = st.selectbox("Select Aircraft", list(AIRCRAFT_DATA.keys()))
     aircraft_data = AIRCRAFT_DATA[selected_aircraft]
+    st.subheader(f"Aircraft Configuration – {part}")
     pressure_alt = st.number_input("Pressure Altitude (ft)", value=0, step=100)
     oat_c = st.number_input("Outside Air Temperature (°C)", value=15, step=1)
     pilot_weight = st.number_input("Pilot Weight (lbs)", value=200, step=10)
     fuel_gal = st.number_input("Fuel (gal)", value=30, step=5)
-    hopper_gal = st.number_input("Hopper / Spray (gal)", value=83, step=5)
+    config = {"pilot_weight": pilot_weight, "fuel_gal": fuel_gal}
+    payload_weight = 0
+    hook_limit = None
+    ext_total = 0
+    if part == "Part 91":
+        pax_bag = st.number_input("Passenger/baggage weight (optional, lbs)", value=0, step=10, min_value=0)
+        payload_weight = pax_bag
+        config["pax_weight"] = pax_bag
+    elif part == "Part 135":
+        max_pax = MAX_PAX[selected_aircraft]
+        st.caption(f"Max passengers for {selected_aircraft}: {max_pax} (confirm with Ron)")
+        pax_count = st.number_input("Number of passengers", min_value=0, max_value=max_pax, value=0, step=1)
+        pax_mode = st.radio("Passenger weights", ["Total", "Individual"], horizontal=True)
+        if pax_mode == "Individual" and pax_count > 0:
+            pcols = st.columns(int(pax_count))
+            pax_weight = sum(pcols[i].number_input(f"Pax {i+1} (lbs)", value=170, step=5, min_value=0, key=f"pax_w_{i}") for i in range(int(pax_count)))
+        else:
+            pax_weight = st.number_input("Total passenger weight (lbs)", value=0, step=10, min_value=0)
+        baggage = st.number_input("Baggage weight (lbs)", value=0, step=5, min_value=0)
+        payload_weight = pax_weight + baggage
+        config.update({"pax_count": pax_count, "pax_weight": pax_weight, "baggage_weight": baggage})
+    elif part == "Part 137":
+        st.info("Part 137: no non-crew passengers may be carried (§137.35/§137.41 – crew members essential to the operation only).")
+        hopper_gal = st.number_input("Hopper / Spray load (gal)", value=0, step=5, min_value=0)
+        density = st.number_input("Product density (lb/gal)", value=8.34, step=0.01, format="%.2f")
+        payload_weight = hopper_gal * density
+        st.caption(f"Hopper load weight: {payload_weight:.0f} lbs (hopper capacity {aircraft_data['hopper_capacity_gal']} gal)")
+        if hopper_gal > aircraft_data["hopper_capacity_gal"]:
+            st.warning("Hopper load exceeds listed hopper capacity.")
+        config.update({"hopper_gal": hopper_gal, "product_density": density})
+    elif part == "Part 133":
+        st.info("Part 133: no passengers. External load weight is limited by the RFM cargo hook limit – enter it from the RFM/supplement.")
+        hook_equip = st.number_input("Hook/equipment weight carried internally (lbs)", value=0, step=5, min_value=0)
+        ext_load = st.number_input("External load weight (lbs)", value=0, step=10, min_value=0)
+        longline = st.number_input("Longline length (ft)", value=0, step=10, min_value=0)
+        hook_limit = st.number_input("Hook limit (lbs) [confirm hook limit from RFM]", value=0, step=10, min_value=0)
+        payload_weight = hook_equip
+        ext_total = ext_load
+        config.update({"hook_equip_weight": hook_equip, "ext_load_weight": ext_load, "longline_ft": longline, "hook_limit": hook_limit})
     da_ft = calculate_density_altitude(pressure_alt, oat_c)
     st.metric("Density Altitude", f"{da_ft:.0f} ft")
     fuel_weight = fuel_gal * aircraft_data["fuel_weight_per_gal"]
-    hopper_weight = hopper_gal * aircraft_data["hopper_weight_per_gal"]
-    total_weight = aircraft_data["base_empty_weight_lbs"] + pilot_weight + fuel_weight + hopper_weight
-    st.metric("Total Weight", f"{total_weight:.0f} lbs")
+    total_weight = aircraft_data["base_empty_weight_lbs"] + pilot_weight + fuel_weight + payload_weight
+    st.metric("Total Internal Weight" if part == "Part 133" else "Total Weight", f"{total_weight:.0f} lbs")
+    max_gw = aircraft_data["max_takeoff_weight_lbs"]
+    if total_weight > max_gw:
+        st.error(f"⚠️ OVER MAX GROSS WEIGHT: {total_weight:.0f} lbs exceeds {max_gw} lbs by {total_weight - max_gw:.0f} lbs. Reduce fuel or load.")
+    else:
+        st.caption(f"Max gross weight {max_gw} lbs – margin {max_gw - total_weight:.0f} lbs")
+    if part == "Part 133":
+        if not hook_limit:
+            st.warning("Enter the hook limit from the RFM [confirm hook limit] to check the external load.")
+        elif ext_total > hook_limit:
+            st.error(f"⚠️ EXTERNAL LOAD {ext_total:.0f} lbs EXCEEDS HOOK LIMIT {hook_limit:.0f} lbs.")
+        else:
+            st.caption(f"External load {ext_total:.0f} lbs within hook limit {hook_limit:.0f} lbs")
+    config.update({"density_altitude": round(da_ft), "internal_weight": round(total_weight), "max_gross": max_gw})
     st.subheader("Performance Results")
-    climb_rate = compute_climb_rate(pressure_alt, oat_c, total_weight, selected_aircraft)
-    ige, oge = compute_hover_ceiling(da_ft, total_weight, selected_aircraft)
+    perf_weight = total_weight + ext_total
+    if part == "Part 133":
+        st.caption("Performance below includes the external load.")
+    climb_rate = compute_climb_rate(pressure_alt, oat_c, perf_weight, selected_aircraft)
+    ige, oge = compute_hover_ceiling(da_ft, perf_weight, selected_aircraft)
     st.metric("Climb Rate", f"{climb_rate:.0f} fpm")
     st.metric("IGE Hover Ceiling", f"{ige:.0f} ft")
     st.metric("OGE Hover Ceiling", f"{oge:.0f} ft")
-    show_risk_assessment()
+    frat_tab, hist_tab = st.tabs(["📋 FRAT", "🗂️ FRAT History"])
+    with frat_tab:
+        show_risk_assessment(part, config, da_hint=da_ft, default_aircraft_idx=0 if selected_aircraft.startswith("Robinson") else 1)
+    with hist_tab:
+        show_frat_history()
+
 
 # ────────────────────────────────────────────────
 # Driver Mode
@@ -491,3 +778,4 @@ elif st.session_state.current_mode == "Emergency":
     st.info("Quick-reference only. Follow your company Emergency Response Plan.")
 
 st.caption("**Safe flying & have a Blessed day** ⌯✈︎")
+
