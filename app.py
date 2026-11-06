@@ -4,6 +4,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import requests
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 # ────────────────────────────────────────────────
 # Page Config & CVH Logo
@@ -209,6 +210,23 @@ def load_frat_records():
 # ────────────────────────────────────────────────
 # Risk Assessment – FRAT function (per FAR part; Part 5 §5.51–5.55, records §5.97)
 # ────────────────────────────────────────────────
+def request_assessment_reset():
+    st.session_state.pilot_reset_pending = True
+
+
+def cancel_assessment_reset():
+    st.session_state.pilot_reset_pending = False
+
+
+def reset_pilot_assessment():
+    """Clear only unsaved Pilot assessment state, never history/configuration."""
+    for key in list(st.session_state):
+        if (key.startswith(("frat_", "pilot_config_", "pax_w_"))
+                or key in ("far_part", "far_part_ctrl")):
+            del st.session_state[key]
+    st.session_state.pilot_reset_pending = False
+
+
 def show_risk_assessment(part, config, da_hint=None, default_aircraft_idx=0):
     st.subheader(f"FRAT – {part}")
     st.caption("Complete before every flight. Score each factor 0–10 (higher = more risk). Records kept 5 years.")
@@ -217,9 +235,9 @@ def show_risk_assessment(part, config, da_hint=None, default_aircraft_idx=0):
     st.markdown("**Flight Information**")
     h1, h2, h3 = st.columns(3)
     with h1:
-        frat_date = st.date_input("Date", value=datetime.now().date(), key="frat_date")
+        frat_date = st.date_input("Date", value=datetime.now(ZoneInfo("America/Los_Angeles")).date(), key="frat_date")
     with h2:
-        pilot = st.selectbox("Pilot", PILOTS, key="frat_pilot")
+        pilot = st.selectbox("Pilot", PILOTS, index=None, placeholder="Select pilot", key="frat_pilot")
     with h3:
         aircraft = FRAT_AIRCRAFT[default_aircraft_idx]
         st.text_input("Aircraft (from configuration)", value=aircraft, disabled=True,
@@ -281,10 +299,10 @@ def show_risk_assessment(part, config, da_hint=None, default_aircraft_idx=0):
     ron_unreachable = False
     if level == "Medium Risk" and not stop_failed:
         mitigations = st.text_area("Mitigations (required for Medium risk)", key=f"frat_{part}_mitigations")
-        approver = st.selectbox("Medium-risk approver", APPROVERS, key=f"frat_{part}_approver")
+        approver = st.selectbox("Medium-risk approver", APPROVERS, index=None, placeholder="Select approver", key=f"frat_{part}_approver")
         if approver == DIRECTOR_MAINTENANCE:
             ron_unreachable = st.checkbox("Ron could not be reached (required for Carl to approve)", key=f"frat_{part}_ron_unreachable")
-        approved = st.checkbox(f"{approver} approves this flight with the mitigations above", key=f"frat_{part}_approved")
+        approved = st.checkbox(f"{approver or 'Selected approver'} approves this flight with the mitigations above", key=f"frat_{part}_approved")
     elif level == "Low Risk" and not stop_failed:
         mitigations = st.text_area("Mitigations (optional)", key=f"frat_{part}_mitigations")
     sig_name = st.selectbox("Pilot signature", PILOTS, index=None, placeholder="Select name", key="frat_sig")
@@ -296,6 +314,8 @@ def show_risk_assessment(part, config, da_hint=None, default_aircraft_idx=0):
     elif level == "High Risk":
         decision, reasons = "NO-GO", ["High risk cannot be accepted – re-plan or cancel"]
     else:
+        if not pilot:
+            reasons.append("Select pilot")
         if stops_incomplete:
             reasons.append("Answer all stop items")
         if level == "Medium Risk":
@@ -307,7 +327,7 @@ def show_risk_assessment(part, config, da_hint=None, default_aircraft_idx=0):
                 reasons.append("Confirm Ron could not be reached before Carl approves")
         if not (pilot_accepts and (sig_name or "").strip()):
             reasons.append("Pilot signature and acceptance required")
-        if (sig_name or "").strip() and (sig_name or "").strip().lower() != pilot.lower():
+        if (sig_name or "").strip() and (sig_name or "").strip().lower() != (pilot or "").lower():
             reasons.append("Signature must match selected pilot")
         decision = "INCOMPLETE" if reasons else "GO"
 
@@ -324,7 +344,7 @@ def show_risk_assessment(part, config, da_hint=None, default_aircraft_idx=0):
         st.markdown(f"""<div style="background:#FFC107; color:black; padding:18px; text-align:center; font-size:20px; font-weight:bold; border-radius:8px;">⚠️ NOT RELEASED – {'; '.join(reasons)}</div>""", unsafe_allow_html=True)
 
     st.caption("Fully reviewed NO-GO assessments should also be saved – they are part of the safety record.")
-    signoff_complete = pilot_accepts and sig_name == pilot
+    signoff_complete = bool(pilot and pilot_accepts and sig_name == pilot)
     if not signoff_complete:
         st.caption("Select the matching pilot signature and check the attestation before saving, including NO-GO records.")
     if st.button("💾 Save Assessment", type="primary", use_container_width=True, disabled=(bool(unassessed) or decision == "INCOMPLETE" or not signoff_complete), key=f"frat_{part}_save"):
@@ -463,6 +483,18 @@ def compute_hover_ceiling(da_ft, weight_lbs, aircraft):
 # ────────────────────────────────────────────────
 if st.session_state.current_mode == "Pilot":
     st.title("🛩️ Pilot Performance Calculator")
+    st.button("Reset / New Assessment", key="pilot_reset_request", on_click=request_assessment_reset)
+    st.caption("Clears unsaved assessment only; saved records are kept.")
+    if st.session_state.get("pilot_reset_pending", False):
+        st.warning("Discard the current unsaved Pilot assessment and start a new one?")
+        st.caption("Resets to N893PC / Part 135 with no pilot selected; flight inputs return to "
+                   "their defaults (pilot weight 200 lb, fuel 30 gal, altitude 0 ft, OAT 15°C, "
+                   "zero passengers/load). Review all defaults for the new flight.")
+        confirm_col, cancel_col = st.columns(2)
+        with confirm_col:
+            st.button("Confirm reset", key="pilot_reset_confirm", on_click=reset_pilot_assessment)
+        with cancel_col:
+            st.button("Cancel", key="pilot_reset_cancel", on_click=cancel_assessment_reset)
     if "far_part" not in st.session_state:
         st.session_state.far_part = "Part 135"
     sel = st.segmented_control("Operation (FAR Part)", PARTS, default=st.session_state.far_part, key="far_part_ctrl")
@@ -470,7 +502,7 @@ if st.session_state.current_mode == "Pilot":
         st.session_state.far_part = sel
     part = st.session_state.far_part
     selected_aircraft = st.selectbox("Select Aircraft", list(AIRCRAFT_DATA.keys()),
-        format_func=lambda name: f"{AIRCRAFT_DATA[name]['registration']} – {name}")
+        key="pilot_config_aircraft", format_func=lambda name: f"{AIRCRAFT_DATA[name]['registration']} – {name}")
     aircraft_data = AIRCRAFT_DATA[selected_aircraft]
     st.subheader(f"Aircraft Configuration – {part}")
     empty_weight = aircraft_empty_weight(aircraft_data, part)
@@ -483,35 +515,35 @@ if st.session_state.current_mode == "Pilot":
     if part == "Part 135" and aircraft_data["registration"] == "N480ML":
         st.warning("N480ML is not approved for CVH Part 135 operations. "
                    "Displaying a weight calculation does not authorize this operation.")
-    pressure_alt = st.number_input("Pressure Altitude (ft)", value=0, step=100)
-    oat_c = st.number_input("Outside Air Temperature (°C)", value=15, step=1)
-    pilot_weight = st.number_input("Pilot Weight (lbs)", value=200, step=10)
-    fuel_gal = st.number_input("Fuel (gal)", value=30, step=5)
+    pressure_alt = st.number_input("Pressure Altitude (ft)", key="pilot_config_pressure_alt", value=0, step=100)
+    oat_c = st.number_input("Outside Air Temperature (°C)", key="pilot_config_oat_c", value=15, step=1)
+    pilot_weight = st.number_input("Pilot Weight (lbs)", key="pilot_config_pilot_weight", value=200, step=10)
+    fuel_gal = st.number_input("Fuel (gal)", key="pilot_config_fuel_gal", value=30, step=5)
     config = {"pilot_weight": pilot_weight, "fuel_gal": fuel_gal}
     payload_weight = 0
     hook_limit = None
     ext_total = 0
     if part == "Part 91":
-        pax_bag = st.number_input("Passenger/baggage weight (optional, lbs)", value=0, step=10, min_value=0)
+        pax_bag = st.number_input("Passenger/baggage weight (optional, lbs)", key="pilot_config_pax_bag", value=0, step=10, min_value=0)
         payload_weight = pax_bag
         config["pax_weight"] = pax_bag
     elif part == "Part 135":
         max_pax = MAX_PAX[selected_aircraft]
         st.caption(f"Max passengers for {selected_aircraft}: {max_pax} (confirm with Ron)")
-        pax_count = st.number_input("Number of passengers", min_value=0, max_value=max_pax, value=0, step=1)
-        pax_mode = st.radio("Passenger weights", ["Total", "Individual"], horizontal=True)
+        pax_count = st.number_input("Number of passengers", key="pilot_config_pax_count", min_value=0, max_value=max_pax, value=0, step=1)
+        pax_mode = st.radio("Passenger weights", key="pilot_config_pax_mode", options=["Total", "Individual"], horizontal=True)
         if pax_mode == "Individual" and pax_count > 0:
             pcols = st.columns(int(pax_count))
             pax_weight = sum(pcols[i].number_input(f"Pax {i+1} (lbs)", value=170, step=5, min_value=0, key=f"pax_w_{i}") for i in range(int(pax_count)))
         else:
-            pax_weight = st.number_input("Total passenger weight (lbs)", value=0, step=10, min_value=0)
-        baggage = st.number_input("Baggage weight (lbs)", value=0, step=5, min_value=0)
+            pax_weight = st.number_input("Total passenger weight (lbs)", key="pilot_config_pax_weight", value=0, step=10, min_value=0)
+        baggage = st.number_input("Baggage weight (lbs)", key="pilot_config_baggage", value=0, step=5, min_value=0)
         payload_weight = pax_weight + baggage
         config.update({"pax_count": pax_count, "pax_weight": pax_weight, "baggage_weight": baggage})
     elif part == "Part 137":
         st.info("Part 137: no non-crew passengers may be carried (§137.35/§137.41 – crew members essential to the operation only).")
-        hopper_gal = st.number_input("Hopper / Spray load (gal)", value=0, step=5, min_value=0)
-        density = st.number_input("Product density (lb/gal)", value=8.34, step=0.01, format="%.2f")
+        hopper_gal = st.number_input("Hopper / Spray load (gal)", key="pilot_config_hopper_gal", value=0, step=5, min_value=0)
+        density = st.number_input("Product density (lb/gal)", key="pilot_config_density", value=8.34, step=0.01, format="%.2f")
         payload_weight = hopper_gal * density
         st.caption(f"Hopper load weight: {payload_weight:.0f} lbs (hopper capacity {aircraft_data['hopper_capacity_gal']} gal)")
         if hopper_gal > aircraft_data["hopper_capacity_gal"]:
@@ -519,10 +551,10 @@ if st.session_state.current_mode == "Pilot":
         config.update({"hopper_gal": hopper_gal, "product_density": density})
     elif part == "Part 133":
         st.info("Part 133: no passengers. External load weight is limited by the RFM cargo hook limit – enter it from the RFM/supplement.")
-        hook_equip = st.number_input("Hook/equipment weight carried internally (lbs)", value=0, step=5, min_value=0)
-        ext_load = st.number_input("External load weight (lbs)", value=0, step=10, min_value=0)
-        longline = st.number_input("Longline length (ft)", value=0, step=10, min_value=0)
-        hook_limit = st.number_input("Hook limit (lbs) [confirm hook limit from RFM]", value=0, step=10, min_value=0)
+        hook_equip = st.number_input("Hook/equipment weight carried internally (lbs)", key="pilot_config_hook_equip", value=0, step=5, min_value=0)
+        ext_load = st.number_input("External load weight (lbs)", key="pilot_config_ext_load", value=0, step=10, min_value=0)
+        longline = st.number_input("Longline length (ft)", key="pilot_config_longline", value=0, step=10, min_value=0)
+        hook_limit = st.number_input("Hook limit (lbs) [confirm hook limit from RFM]", key="pilot_config_hook_limit", value=0, step=10, min_value=0)
         payload_weight = hook_equip
         ext_total = ext_load
         config.update({"hook_equip_weight": hook_equip, "ext_load_weight": ext_load, "longline_ft": longline, "hook_limit": hook_limit})

@@ -28,6 +28,7 @@ class UnassessedRiskGateTests(unittest.TestCase):
                 for radio in at.radio:
                     if "Yes" in radio.options:
                         radio.set_value("Yes")
+                at.selectbox(key="frat_pilot").select("Ronald A Cline")
                 at.selectbox(key="frat_sig").select("Ronald A Cline")
                 at.checkbox(key=f"frat_{part}_accept").check().run()
                 self.assertTrue(at.button(key=f"frat_{part}_save").disabled)
@@ -37,6 +38,7 @@ class UnassessedRiskGateTests(unittest.TestCase):
                 for i, slider in enumerate(at.slider):
                     slider.set_value([10, 10, 10, 9][i] if i < 4 else (0 if slider.key == last_key else 1))
                 at.run()
+                at.selectbox(key=f"frat_{part}_approver").select("Ronald A Cline")
                 at.text_area(key=f"frat_{part}_mitigations").set_value("Offline test mitigation")
                 at.checkbox(key=f"frat_{part}_approved").check().run()
                 self.assertGreater(sum(s.value for s in at.slider), 30)
