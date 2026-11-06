@@ -60,6 +60,17 @@ if 'completed_checklists' not in st.session_state:
 import pandas as pd
 
 FRAT_SHEET_NAME = "CVH FRAT Log"
+
+def frat_sheet_url():
+    """Public edit link for the live FRAT log (from secrets or default id)."""
+    sid = None
+    try:
+        sid = st.secrets.get("frat_sheet_id")
+    except Exception:
+        sid = None
+    sid = sid or "1lLDnTMbyZ0JPs8m9I41MX6KsTMCZX8Gl7mVGN92M4E4"
+    return f"https://docs.google.com/spreadsheets/d/{sid}/edit"
+
 PILOTS = ["Ronald A Cline", "Anthony Root"]
 ACCOUNTABLE_EXEC = "Ronald A Cline"
 DIRECTOR_MAINTENANCE = "Carl Mulvaney"
@@ -329,8 +340,11 @@ def show_risk_assessment(part, config, da_hint=None, default_aircraft_idx=0):
             st.caption(f"Save error: {type(e).__name__}: {e}")
             st.caption("Check Streamlit Secrets (CVHAPP app, not the test app), live Sheet sharing, connectivity and worksheet headers. Verify the last row before retrying to avoid duplicates.")
 
+    st.link_button("📄 Open FRAT Google Sheet", frat_sheet_url(), use_container_width=True)
+
 def show_frat_history():
     st.subheader("FRAT History")
+    st.link_button("📄 Open FRAT Google Sheet", frat_sheet_url(), use_container_width=True)
     try:
         df = load_frat_records()
     except Exception as e:
