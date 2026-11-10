@@ -293,6 +293,7 @@ AIRCRAFT_MAINT_COLUMNS = [
 # grease_offsets uses a separate N480ML Maint tab so Aircraft Maint headers stay unchanged.
 # Ron wrote 25, 50, 25, 100 — the second 25 is treated as 75.
 GREASE_CHECKPOINT_OFFSETS = (25, 50, 75, 100)
+GREASE_AMBER_HOURS = 2
 N480ML_MAINT_SHEET_TITLE = "N480ML Maint"
 AIRCRAFT_MAINT_PROFILES = {
     "N893PC": {
@@ -306,6 +307,7 @@ AIRCRAFT_MAINT_PROFILES = {
         "id": "N480ML",
         "hundred_hr_interval": 100,
         "amber_hours": 10,
+        "grease_amber_hours": GREASE_AMBER_HOURS,
         "grease_offsets": GREASE_CHECKPOINT_OFFSETS,
         "sheet_title": "N480ML Maint",
     },
@@ -1802,6 +1804,15 @@ def grease_due_hobbs(grease_hobbs, offset):
     return next_hobbs(grease_hobbs, offset)
 
 
+def grease_amber_hours(profile=None):
+    """Grease checkpoints turn amber within 2 hours, not the 10-hour 100 Hr window."""
+    raw = (profile or {}).get("grease_amber_hours", GREASE_AMBER_HOURS)
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return float(GREASE_AMBER_HOURS)
+
+
 def format_grease_hobbs_date(hobbs, when):
     """Store 'Hobbs / YYYY-MM-DD' in the checkpoint Hobbs/Date column."""
     if hasattr(when, "strftime"):
@@ -2013,7 +2024,7 @@ def show_n480ml_annual_page(profile, spreadsheet=None):
                 st.markdown(grease_done_markup(label, latest, offset), unsafe_allow_html=True)
                 continue
             due = grease_due_hobbs(grease_hobbs, offset)
-            _kind, markup = hobbs_status_markup(label, due, current, amber_hours)
+            _kind, markup = hobbs_status_markup(label, due, current, grease_amber_hours(profile))
             st.markdown(markup, unsafe_allow_html=True)
             st.checkbox("Greased", key="n480_latest_greased_" + str(int(offset)) + "_" + aid)
             st.text_input("Initials", key="n480_latest_initials_" + str(int(offset)) + "_" + aid)
@@ -2071,7 +2082,7 @@ def show_n480ml_annual_page(profile, spreadsheet=None):
     for offset in offsets:
         label = grease_checkpoint_label(offset)
         due = grease_due_hobbs(current_grease, offset)
-        _kind, markup = hobbs_status_markup(label, due, current_hobbs_val, amber_hours)
+        _kind, markup = hobbs_status_markup(label, due, current_hobbs_val, grease_amber_hours(profile))
         st.markdown(markup, unsafe_allow_html=True)
         st.checkbox("Greased", key="n480_greased_" + str(int(offset)) + "_" + aid)
         st.text_input("Initials", key="n480_initials_" + str(int(offset)) + "_" + aid)
@@ -2150,9 +2161,146 @@ def show_n480ml_annual_page(profile, spreadsheet=None):
                     st.markdown(grease_done_markup(label, item, offset), unsafe_allow_html=True)
                 else:
                     due = grease_due_hobbs(item.get("Grease Hobbs"), offset)
-                    st.markdown("**" + label + " due:** " + (format_hobbs(due) or "—"))
+                    _kind, markup = hobbs_status_markup(label, due, item.get("Hobbs"), grease_amber_hours(profile))
+                    st.markdown(markup, unsafe_allow_html=True)
             if _cell(item.get("Entered By")):
                 st.markdown("**Entered By:** " + _cell(item.get("Entered By")))
+
+
+
+def load_aircraft_maint_records_readonly(spreadsheet=None, aircraft_id=None):
+    """Read the Aircraft Maint tab without creating or changing it."""
+    ws = _worksheet_or_none(spreadsheet or _gsheets_spreadsheet(), AIRCRAFT_MAINT_SHEET_TITLE)
+    if ws is None:
+        return []
+    header = [_cell(c) for c in ws.row_values(1)]
+    if not header:
+        return []
+    records = records_from_worksheet(ws, AIRCRAFT_MAINT_COLUMNS)
+    if aircraft_id:
+        wanted = _cell(aircraft_id)
+        records = [r for r in records if _cell(r.get("Aircraft")) == wanted]
+    return records
+
+
+def load_n480ml_maint_records_readonly(spreadsheet=None):
+    """Read the N480ML Maint tab without creating or changing it."""
+    ws = _worksheet_or_none(spreadsheet or _gsheets_spreadsheet(), N480ML_MAINT_SHEET_TITLE)
+    if ws is None:
+        return []
+    header = [_cell(c) for c in ws.row_values(1)]
+    if not header:
+        return []
+    records = records_from_worksheet(ws, n480ml_maint_columns())
+    return [r for r in records if _cell(r.get("Aircraft")) in {"", "N480ML"}]
+
+
+def combine_maint_status(*kinds):
+    """Worst of expired, soon, and ok. None if nothing can be scored."""
+    rank = {"expired": 3, "soon": 2, "ok": 1}
+    worst = None
+    worst_rank = 0
+    for kind in kinds:
+        value = rank.get(kind, 0)
+        if value > worst_rank:
+            worst_rank = value
+            worst = kind
+    return worst
+
+
+def n893pc_annual_status(record, today=None, profile=None):
+    """Roll up N893PC 100 Hr, oil, and annual-date flags."""
+    if not record:
+        return None
+    profile = profile or aircraft_maint_profile("N893PC") or {}
+    amber = profile.get("amber_hours", 10)
+    current = record.get("Hobbs")
+    return combine_maint_status(
+        hobbs_flag(current, record.get("Next 100 Hr"), amber),
+        hobbs_flag(current, record.get("Next Oil Change"), amber),
+        date_flag(parse_equipment_date(record.get("Annual Due Date")), today),
+    )
+
+
+def n480ml_annual_status(record, today=None, profile=None):
+    """Roll up N480ML 100 Hr and undone grease checkpoints (2-hour grease window)."""
+    if not record:
+        return None
+    profile = profile or aircraft_maint_profile("N480ML") or {}
+    amber = profile.get("amber_hours", 10)
+    current = record.get("Hobbs")
+    kinds = [hobbs_flag(current, record.get("Next 100 Hr"), amber)]
+    grease_hobbs = record.get("Grease Hobbs")
+    grease_window = grease_amber_hours(profile)
+    for offset in grease_offsets_for(profile):
+        if is_grease_checkpoint_done(record, offset):
+            continue
+        kinds.append(hobbs_flag(current, grease_due_hobbs(grease_hobbs, offset), grease_window))
+    return combine_maint_status(*kinds)
+
+
+def aircraft_annual_status(aircraft_id, record, today=None, profile=None):
+    """Overall Annual/100 Hr status for one aircraft, or None when nothing is saved."""
+    profile = profile or aircraft_maint_profile(aircraft_id)
+    if profile and grease_offsets_for(profile):
+        return n480ml_annual_status(record, today=today, profile=profile)
+    if profile:
+        return n893pc_annual_status(record, today=today, profile=profile)
+    return None
+
+
+def aircraft_annual_button_label(status):
+    if status is None:
+        return DOM_ACTION_ANNUAL + " — No data"
+    return DOM_ACTION_ANNUAL
+
+
+def aircraft_annual_button_color(status):
+    return DATE_STATUS_COLORS[status]
+
+
+def load_latest_annual_record_readonly(aircraft_id, spreadsheet=None):
+    profile = aircraft_maint_profile(aircraft_id)
+    if profile and grease_offsets_for(profile):
+        records = load_n480ml_maint_records_readonly(spreadsheet)
+    elif profile:
+        records = load_aircraft_maint_records_readonly(spreadsheet, aircraft_id=aircraft_id)
+    else:
+        return None
+    return latest_aircraft_maint_record(records)
+
+
+def dom_annual_statuses(spreadsheet=None, today=None):
+    """Read-only Annual/100 Hr status for each DOM aircraft. Missing tabs count as no data."""
+    spreadsheet = spreadsheet or _gsheets_spreadsheet()
+    today = today or datetime.now(ZoneInfo("America/Los_Angeles")).date()
+    statuses = {}
+    for aircraft in DOM_AIRCRAFT:
+        aid = _cell(aircraft.get("id") or aircraft.get("name"))
+        if not aid:
+            continue
+        latest = load_latest_annual_record_readonly(aid, spreadsheet)
+        statuses[aid] = aircraft_annual_status(aid, latest, today=today)
+    return statuses
+
+
+def apply_dom_annual_button_styles(statuses):
+    """Color each DOM Annual/100 Hr button from its status."""
+    css = ["<style>"]
+    for aid, status in (statuses or {}).items():
+        color = aircraft_annual_button_color(status)
+        key = "dom_annual_" + _cell(aid)
+        css.append(
+            ".st-key-" + key + " button,"
+            ".st-key-" + key + " button[data-baseweb='button'][kind='primary']{"
+            "background-color:" + color + " !important;"
+            "color:#ffffff !important;"
+            "border-color:" + color + " !important;"
+            "}"
+        )
+    css.append("</style>")
+    st.markdown("".join(css), unsafe_allow_html=True)
+    return statuses
 
 
 def show_dom_annual_panel(aircraft_id):
@@ -2179,15 +2327,25 @@ def show_dom_page():
         show_dom_annual_panel(selected)
         return
     st.title("DOM")
+    try:
+        statuses = dom_annual_statuses()
+    except Exception:
+        statuses = None
     for aircraft in DOM_AIRCRAFT:
         aid = _cell(aircraft.get("id") or aircraft.get("name"))
         if not aid:
             continue
-        label = _cell(aircraft.get("name")) or aid
-        st.markdown("**" + label + "**")
-        if st.button(DOM_ACTION_ANNUAL, key="dom_annual_" + aid, use_container_width=True):
+        name = _cell(aircraft.get("name")) or aid
+        st.markdown("**" + name + "**")
+        if statuses is None:
+            button_label = DOM_ACTION_ANNUAL
+        else:
+            button_label = aircraft_annual_button_label(statuses.get(aid))
+        if st.button(button_label, key="dom_annual_" + aid, use_container_width=True, type="primary"):
             st.session_state.dom_annual_aircraft = aid
             st.rerun()
+    if statuses is not None:
+        apply_dom_annual_button_styles(statuses)
 
 
 def clear_equipment_edit_widgets(unit_id):

@@ -16,7 +16,7 @@ def _exec_equipment_helpers():
     names = {
         "PILOTS", "ACCOUNTABLE_EXEC", "DIRECTOR_MAINTENANCE", "APPROVERS",
         "EQUIPMENT_SHEET_TITLE", "SQUAWKS_SHEET_TITLE", "SAFETY_MEETINGS_SHEET_TITLE", "SAFETY_MEETING_ITEMS", "SAFETY_MEETING_ATTENDEES", "SAFETY_MEETING_VIEW", "SAFETY_MEETING_RECORD", "AIRCRAFT_MAINT_SHEET_TITLE", "AIRCRAFT_MAINT_COLUMNS", "AIRCRAFT_MAINT_PROFILES",
-        "GREASE_CHECKPOINT_OFFSETS", "N480ML_MAINT_SHEET_TITLE",
+        "GREASE_CHECKPOINT_OFFSETS", "GREASE_AMBER_HOURS", "N480ML_MAINT_SHEET_TITLE",
         "EQUIPMENT_INFO_COLUMNS", "EQUIPMENT_COLUMNS", "EQUIPMENT_EDIT_COLUMNS", "SQUAWK_COLUMNS", "EQUIPMENT_TYPES",
         "SQUAWK_CATEGORIES", "SQUAWK_SEVERITIES", "SEVERITY_GROUNDED", "STATUS_OPEN",
         "STATUS_RESOLVED", "REPORTERS", "ACTIVE_VALUES", "HEADER_PAGES",
@@ -54,8 +54,13 @@ def _exec_equipment_helpers():
         "build_aircraft_maint_record", "save_aircraft_maint_record",
         "grease_offsets_for", "grease_checkpoint_label", "grease_checkpoint_columns",
         "n480ml_maint_columns", "grease_due_hobbs", "format_grease_hobbs_date",
-        "is_grease_checkpoint_done", "grease_done_markup",
+        "is_grease_checkpoint_done", "grease_done_markup", "grease_amber_hours",
         "ensure_n480ml_maint_worksheet", "load_n480ml_maint_records",
+        "load_aircraft_maint_records_readonly", "load_n480ml_maint_records_readonly",
+        "combine_maint_status", "n893pc_annual_status", "n480ml_annual_status",
+        "aircraft_annual_status", "aircraft_annual_button_label", "aircraft_annual_button_color",
+        "load_latest_annual_record_readonly", "dom_annual_statuses",
+        "apply_dom_annual_button_styles",
         "build_n480ml_maint_record", "save_n480ml_maint_record",
         "update_n480ml_grease_checkpoint",
         "unit_has_ifta", "ifta_jurisdiction_label", "ifta_jurisdiction_options", "parse_ifta_jurisdiction",
@@ -395,6 +400,9 @@ class PlaceholderAndLogicTests(unittest.TestCase):
         self.assertEqual(tuple(n480["grease_offsets"]), (25, 50, 75, 100))
         self.assertEqual(n480["hundred_hr_interval"], 100)
         self.assertEqual(n480["amber_hours"], 10)
+        self.assertEqual(n480["grease_amber_hours"], 2)
+        self.assertEqual(self.s["GREASE_AMBER_HOURS"], 2)
+        self.assertEqual(self.s["grease_amber_hours"](n480), 2)
         self.assertNotIn("oil_interval", n480)
 
     def test_safety_meeting_month_status_and_header_color(self):
@@ -439,6 +447,73 @@ class PlaceholderAndLogicTests(unittest.TestCase):
         self.assertEqual(self.s["safety_meeting_months_with_entries"](meetings, 2026), {3, 11})
         self.assertEqual(self.s["safety_meeting_months_with_entries"](meetings, 2025), set())
 
+
+
+    def test_annual_button_status_rollup_and_grease_two_hour_window(self):
+        from datetime import date
+        today = date(2026, 11, 10)
+        colors = self.s["DATE_STATUS_COLORS"]
+        good_n893 = {
+            "Hobbs": "1190",
+            "Next 100 Hr": "1205",
+            "Next Oil Change": "1210",
+            "Annual Due Date": "2027-03-01",
+        }
+        self.assertIsNone(self.s["n893pc_annual_status"](None, today=today))
+        self.assertIsNone(self.s["aircraft_annual_status"]("N893PC", None, today=today))
+        self.assertEqual(self.s["n893pc_annual_status"](good_n893, today=today), "ok")
+        soon_100 = dict(good_n893, Hobbs="1196")
+        self.assertEqual(self.s["n893pc_annual_status"](soon_100, today=today), "soon")
+        soon_annual = dict(good_n893, **{"Annual Due Date": "2026-12-01"})
+        self.assertEqual(self.s["n893pc_annual_status"](soon_annual, today=today), "soon")
+        overdue_100 = dict(good_n893, Hobbs="1205")
+        self.assertEqual(self.s["n893pc_annual_status"](overdue_100, today=today), "expired")
+        overdue_annual = dict(good_n893, **{"Annual Due Date": "2026-10-01"})
+        self.assertEqual(self.s["n893pc_annual_status"](overdue_annual, today=today), "expired")
+        expired_wins = dict(good_n893, Hobbs="1205", **{"Annual Due Date": "2026-12-01"})
+        self.assertEqual(self.s["n893pc_annual_status"](expired_wins, today=today), "expired")
+
+        good_n480 = {
+            "Hobbs": "1020",
+            "Next 100 Hr": "1100",
+            "Grease Hobbs": "1000",
+            "Grease 25 Done": "Yes",
+            "Grease 50 Done": "",
+            "Grease 75 Done": "",
+            "Grease 100 Done": "",
+        }
+        self.assertIsNone(self.s["n480ml_annual_status"](None, today=today))
+        # 25 is done; 50 is due at 1050 (30 hours out) so overall good.
+        self.assertEqual(self.s["n480ml_annual_status"](good_n480, today=today), "ok")
+        # 5 hours before the 25 Hr grease due is still green; 2 hours is amber.
+        open_25 = dict(good_n480, **{"Grease 25 Done": ""})
+        self.assertEqual(self.s["n480ml_annual_status"](open_25, today=today), "ok")
+        grease_soon = dict(open_25, Hobbs="1024")
+        self.assertEqual(self.s["n480ml_annual_status"](grease_soon, today=today), "soon")
+        grease_due = dict(open_25, Hobbs="1025")
+        self.assertEqual(self.s["n480ml_annual_status"](grease_due, today=today), "expired")
+        # 25/50/75 already done; grease 100 is due at 1100 (8 hours out, still green).
+        hundred_soon = dict(
+            good_n480, Hobbs="1092", **{
+                "Next 100 Hr": "1100",
+                "Grease 50 Done": "Yes",
+                "Grease 75 Done": "Yes",
+            },
+        )
+        self.assertEqual(self.s["n480ml_annual_status"](hundred_soon, today=today), "soon")
+        self.assertEqual(self.s["aircraft_annual_button_label"](None), "Annual/100 Hr — No data")
+        self.assertEqual(self.s["aircraft_annual_button_label"]("ok"), "Annual/100 Hr")
+        self.assertEqual(self.s["aircraft_annual_button_label"]("soon"), "Annual/100 Hr")
+        self.assertEqual(self.s["aircraft_annual_button_label"]("expired"), "Annual/100 Hr")
+        self.assertEqual(self.s["aircraft_annual_button_color"](None), colors[None])
+        self.assertEqual(self.s["aircraft_annual_button_color"]("ok"), colors["ok"])
+        self.assertEqual(self.s["aircraft_annual_button_color"]("soon"), colors["soon"])
+        self.assertEqual(self.s["aircraft_annual_button_color"]("expired"), colors["expired"])
+        self.assertEqual(colors["soon"], "#b45309")
+        self.assertEqual(self.s["combine_maint_status"]("ok", "soon", "expired"), "expired")
+        self.assertEqual(self.s["combine_maint_status"]("ok", "soon"), "soon")
+        self.assertEqual(self.s["combine_maint_status"]("ok", None), "ok")
+        self.assertIsNone(self.s["combine_maint_status"](None, None))
 
     def test_ifta_drivers_dropdown_order_and_trips_header_unchanged(self):
         self.assertEqual(self.s["DRIVERS"], [
@@ -842,6 +917,49 @@ class FakeSheetBehaviorTests(unittest.TestCase):
         self.assertEqual(ws.rows, rows_after_save)
         self._assert_frat_untouched()
 
+
+    def test_readonly_annual_status_load_does_not_create_or_alter_tabs(self):
+        from datetime import date
+        frat_writes = list(self.book.sheet1.writes)
+        self.assertEqual(self.s["load_aircraft_maint_records_readonly"](self.book), [])
+        self.assertEqual(self.s["load_n480ml_maint_records_readonly"](self.book), [])
+        self.assertIsNone(self.s["load_latest_annual_record_readonly"]("N893PC", self.book))
+        self.assertIsNone(self.s["load_latest_annual_record_readonly"]("N480ML", self.book))
+        self.assertNotIn("Aircraft Maint", self.book.sheets)
+        self.assertNotIn("N480ML Maint", self.book.sheets)
+        statuses = self.s["dom_annual_statuses"](self.book, today=date(2026, 11, 10))
+        self.assertEqual(statuses, {"N893PC": None, "N480ML": None})
+        self.assertNotIn("Aircraft Maint", self.book.sheets)
+        self.assertNotIn("N480ML Maint", self.book.sheets)
+        self.assertEqual(self.book.sheet1.writes, frat_writes)
+        self._assert_frat_untouched()
+
+        self.s["ensure_aircraft_maint_worksheet"](self.book)
+        self.s["ensure_n480ml_maint_worksheet"](self.book)
+        ac = self.book.sheets["Aircraft Maint"]
+        n480 = self.book.sheets["N480ML Maint"]
+        ac_header, n480_header = list(ac.rows[0]), list(n480.rows[0])
+        ac_writes, n480_writes = list(ac.writes), list(n480.writes)
+        self.assertEqual(self.s["load_aircraft_maint_records_readonly"](self.book, "N893PC"), [])
+        self.assertEqual(self.s["load_n480ml_maint_records_readonly"](self.book), [])
+        self.assertEqual(ac.rows[0], ac_header)
+        self.assertEqual(n480.rows[0], n480_header)
+        self.assertEqual(ac.writes, ac_writes)
+        self.assertEqual(n480.writes, n480_writes)
+
+        good = self.s["build_aircraft_maint_record"](
+            "N893PC", date(2026, 11, 10), "1190", "1105", date(2027, 3, 1), "1160", "Ronald A Cline",
+        )
+        self.s["save_aircraft_maint_record"](good, self.book)
+        ac_writes = list(ac.writes)
+        ac_rows = [list(r) for r in ac.rows]
+        loaded = self.s["load_aircraft_maint_records_readonly"](self.book, "N893PC")
+        self.assertEqual(len(loaded), 1)
+        self.assertEqual(self.s["aircraft_annual_status"]("N893PC", loaded[0], today=date(2026, 11, 10)), "ok")
+        self.assertEqual(ac.writes, ac_writes)
+        self.assertEqual(ac.rows, ac_rows)
+        self._assert_frat_untouched()
+
     def test_aircraft_maint_tab_appends_only_and_computes_next(self):
         from datetime import date
         self.s["ensure_equipment_worksheet"](self.book)
@@ -939,6 +1057,11 @@ class FakeSheetBehaviorTests(unittest.TestCase):
         self.assertEqual(self.s["hobbs_flag"]("1014", "1025", 10), "ok")
         self.assertEqual(self.s["hobbs_flag"]("1015", "1025", 10), "soon")
         self.assertEqual(self.s["hobbs_flag"]("1025", "1025", 10), "expired")
+        # Grease uses a 2-hour window: 5 hours out is still good; 2 hours out is amber.
+        self.assertEqual(self.s["hobbs_flag"]("1020", "1025", 2), "ok")
+        self.assertEqual(self.s["hobbs_flag"]("1022", "1025", 2), "ok")
+        self.assertEqual(self.s["hobbs_flag"]("1023", "1025", 2), "soon")
+        self.assertEqual(self.s["hobbs_flag"]("1025", "1025", 2), "expired")
         kind, html = self.s["hobbs_status_markup"]("25 Hr", None, "1000", 10)
         self.assertIsNone(kind)
         self.assertIn("Not set", html)
@@ -1342,8 +1465,9 @@ class HeaderAndEquipmentPageTests(unittest.TestCase):
             [m.value for m in at.markdown if m.value in ("**N893PC**", "**N480ML**")],
             ["**N893PC**", "**N480ML**"],
         )
-        annual = [b for b in at.button if b.label == "Annual/100 Hr"]
+        annual = [b for b in at.button if (b.label or "").startswith("Annual/100 Hr")]
         self.assertEqual(len(annual), 2)
+        self.assertTrue(all((b.label or "").endswith("No data") for b in annual))
         self.assertFalse(any("Coming soon - Ron to define contents" in (i.value or "") for i in at.info))
         # Existing FRAT path remains one tap away.
         next(b for b in at.button if b.label == "🛩️ Pilot").click().run()
@@ -1648,14 +1772,96 @@ class HeaderAndEquipmentPageTests(unittest.TestCase):
         if "Squawks" in book.sheets:
             self.assertEqual(book.sheets["Squawks"].rows[0][0], "Timestamp")
 
+
+    def test_dom_annual_buttons_color_by_saved_status(self):
+        from datetime import date
+        from streamlit.testing.v1 import AppTest
+        at = AppTest.from_string(equipment_offline_app(), default_timeout=30).run()
+        at.button(key="nav_dom").click().run()
+        self.assertFalse(list(at.exception))
+        n893 = at.button(key="dom_annual_N893PC")
+        n480 = at.button(key="dom_annual_N480ML")
+        self.assertEqual(n893.label, "Annual/100 Hr — No data")
+        self.assertEqual(n480.label, "Annual/100 Hr — No data")
+        md = " ".join(m.value or "" for m in at.markdown)
+        self.assertIn(".st-key-dom_annual_N893PC", md)
+        self.assertIn(".st-key-dom_annual_N480ML", md)
+        compact = md.replace(" ", "")
+        self.assertIn("background-color:#6b7280", compact)
+        self.assertNotIn("Aircraft Maint", at.session_state["_workbook"].sheets)
+        self.assertNotIn("N480ML Maint", at.session_state["_workbook"].sheets)
+        self.assertEqual(at.session_state["_workbook"].sheets["Sheet1"].rows, [])
+
+        n893.click().run()
+        self.assertFalse(list(at.exception))
+        next(t for t in at.text_input if t.label == "Current Hobbs").set_value("1190")
+        next(t for t in at.text_input if t.label == "Last 100 Hr (Hobbs)").set_value("1105")
+        next(t for t in at.text_input if t.label == "Last Oil Change (Hobbs)").set_value("1160")
+        next(d for d in at.date_input if d.label == "Annual Due Date").set_value(date(2027, 3, 1))
+        next(s for s in at.selectbox if s.label == "Entered By").select("Ronald A Cline")
+        next(b for b in at.button if b.label == "Save").click().run()
+        self.assertFalse(list(at.exception))
+        next(b for b in at.button if b.label == "Back").click().run()
+        self.assertFalse(list(at.exception))
+        self.assertEqual(at.button(key="dom_annual_N893PC").label, "Annual/100 Hr")
+        self.assertEqual(at.button(key="dom_annual_N480ML").label, "Annual/100 Hr — No data")
+        md = " ".join(m.value or "" for m in at.markdown)
+        self.assertIn(".st-key-dom_annual_N893PC", md)
+        self.assertIn("#15803d", md)
+        self.assertIn(".st-key-dom_annual_N480ML", md)
+        self.assertIn("#6b7280", md)
+
+        at.button(key="dom_annual_N480ML").click().run()
+        self.assertFalse(list(at.exception))
+        next(t for t in at.text_input if t.label == "Current Hobbs").set_value("1025")
+        next(t for t in at.text_input if t.label == "Last 100 Hr Hobbs").set_value("1000")
+        next(t for t in at.text_input if t.label == "Grease Hobbs").set_value("1000")
+        at.run()
+        md = " ".join(m.value or "" for m in at.markdown)
+        self.assertIn("1025", md)
+        self.assertIn(" — due", md)
+        next(s for s in at.selectbox if s.label == "Entered By").select("Ronald A Cline")
+        next(b for b in at.button if b.label == "Save").click().run()
+        self.assertFalse(list(at.exception))
+        next(b for b in at.button if b.label == "Back").click().run()
+        self.assertFalse(list(at.exception))
+        self.assertEqual(at.button(key="dom_annual_N893PC").label, "Annual/100 Hr")
+        self.assertEqual(at.button(key="dom_annual_N480ML").label, "Annual/100 Hr")
+        md = " ".join(m.value or "" for m in at.markdown)
+        compact = md.replace(" ", "")
+        self.assertIn("background-color:#15803d", compact)
+        self.assertIn("background-color:#b91c1c", compact)
+        self.assertIn(".st-key-dom_annual_N893PC", md)
+        self.assertIn(".st-key-dom_annual_N480ML", md)
+        self.assertIn("Aircraft Maint", at.session_state["_workbook"].sheets)
+        self.assertIn("N480ML Maint", at.session_state["_workbook"].sheets)
+        self.assertEqual(at.session_state["_workbook"].sheets["Sheet1"].rows, [])
+
+        # Amber: 100 Hr within 10 hours on N893PC, grease within 2 hours on a new N480ML cycle.
+        at.button(key="dom_annual_N893PC").click().run()
+        next(t for t in at.text_input if t.label == "Current Hobbs").set_value("1198")
+        next(t for t in at.text_input if t.label == "Last 100 Hr (Hobbs)").set_value("1105")
+        next(t for t in at.text_input if t.label == "Last Oil Change (Hobbs)").set_value("1160")
+        next(d for d in at.date_input if d.label == "Annual Due Date").set_value(date(2027, 3, 1))
+        next(s for s in at.selectbox if s.label == "Entered By").select("Ronald A Cline")
+        next(b for b in at.button if b.label == "Save").click().run()
+        self.assertFalse(list(at.exception))
+        next(b for b in at.button if b.label == "Back").click().run()
+        self.assertFalse(list(at.exception))
+        self.assertEqual(at.button(key="dom_annual_N893PC").label, "Annual/100 Hr")
+        compact = " ".join((m.value or "").replace(" ", "") for m in at.markdown)
+        self.assertIn("background-color:#b45309", compact)
+        self.assertIn("background-color:#b91c1c", compact)
+
     def test_dom_annual_n893pc_form_and_n480ml_placeholder(self):
         from streamlit.testing.v1 import AppTest
         at = AppTest.from_string(equipment_offline_app(), default_timeout=30).run()
         at.button(key="nav_dom").click().run()
         self.assertFalse(list(at.exception))
-        annual = [b for b in at.button if b.label == "Annual/100 Hr"]
+        annual = [b for b in at.button if (b.label or "").startswith("Annual/100 Hr")]
         self.assertEqual(len(annual), 2)
-        annual[0].click().run()
+        self.assertTrue(all((b.label or "").endswith("No data") for b in annual))
+        at.button(key="dom_annual_N893PC").click().run()
         self.assertFalse(list(at.exception))
         self.assertTrue(any(t.value == "DOM" for t in at.title))
         self.assertTrue(any(t.value == "Annual/100 Hr — N893PC" for t in at.subheader))
@@ -1673,9 +1879,10 @@ class HeaderAndEquipmentPageTests(unittest.TestCase):
         self.assertIn("Next Oil Change", md)
         next(b for b in at.button if b.label == "Back").click().run()
         self.assertFalse(list(at.exception))
-        annual = [b for b in at.button if b.label == "Annual/100 Hr"]
+        annual = [b for b in at.button if (b.label or "").startswith("Annual/100 Hr")]
         self.assertEqual(len(annual), 2)
-        annual[1].click().run()
+        self.assertTrue(all((b.label or "").endswith("No data") for b in annual))
+        at.button(key="dom_annual_N480ML").click().run()
         self.assertTrue(any(t.value == "Annual/100 Hr — N480ML" for t in at.subheader))
         self.assertFalse(any("Coming soon - Ron to define contents" in (i.value or "") for i in at.info))
         n480_labels = [t.label for t in at.text_input]
@@ -1704,7 +1911,7 @@ class HeaderAndEquipmentPageTests(unittest.TestCase):
         from streamlit.testing.v1 import AppTest
         at = AppTest.from_string(equipment_offline_app(), default_timeout=30).run()
         at.button(key="nav_dom").click().run()
-        [b for b in at.button if b.label == "Annual/100 Hr"][0].click().run()
+        at.button(key="dom_annual_N893PC").click().run()
         self.assertFalse(list(at.exception))
         next(t for t in at.text_input if t.label == "Last 100 Hr (Hobbs)").set_value("1105")
         next(t for t in at.text_input if t.label == "Last Oil Change (Hobbs)").set_value("1160")
@@ -1756,7 +1963,7 @@ class HeaderAndEquipmentPageTests(unittest.TestCase):
         from streamlit.testing.v1 import AppTest
         at = AppTest.from_string(equipment_offline_app(), default_timeout=30).run()
         at.button(key="nav_dom").click().run()
-        [b for b in at.button if b.label == "Annual/100 Hr"][1].click().run()
+        at.button(key="dom_annual_N480ML").click().run()
         self.assertFalse(list(at.exception))
         next(t for t in at.text_input if t.label == "Current Hobbs").set_value("1020")
         next(t for t in at.text_input if t.label == "Last 100 Hr Hobbs").set_value("1000")
@@ -1767,7 +1974,9 @@ class HeaderAndEquipmentPageTests(unittest.TestCase):
         self.assertIn("1025", md)
         self.assertIn("1050", md)
         self.assertIn("1075", md)
-        self.assertIn("within 10 hours", md)
+        # 1020 vs grease due 1025 is 5 hours out, so still green under the 2-hour window.
+        self.assertNotIn("within 10 hours", md)
+        self.assertNotIn("within 2 hours", md)
         next(d for d in at.date_input if d.label == "Date").set_value(date(2026, 11, 10))
         next(s for s in at.selectbox if s.label == "Entered By").select("Ronald A Cline")
         next(b for b in at.button if b.label == "Save").click().run()
