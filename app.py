@@ -20,22 +20,70 @@ st.markdown("""
     <link rel="icon" href="https://img.icons8.com/color/48/000000/helicopter.png" type="image/png">
 """, unsafe_allow_html=True)
 
-# CVH Logo
+# CVH Logo and header navigation (logo left, four buttons right)
 LOGO_URL = "flaglogo.png"
-try:
-    st.image(LOGO_URL, width=300)
-    st.logo(LOGO_URL, size="medium")
-except Exception:
-    st.markdown("### CVH Employee Tool ⌯✈︎")
+HEADER_PAGES = ["Monthly Safety Meeting", "Yearly Items", "Equipment", "DOM"]
 
-# Button Colors
+# Button Colors and compact wrapping header buttons for phones
 st.markdown("""
 <style>
-    .stButton button[data-baseweb="button"][kind="primary"] { background-color: #007BFF !important; color: white !important; } /* Blue - Pilot */
+    .stButton button[data-baseweb="button"][kind="primary"] { background-color: #007BFF !important; color: white !important; } /* Blue - Pilot / active header */
     .stButton button[data-baseweb="button"][kind="secondary"] { background-color: #FFC107 !important; color: black !important; } /* Yellow - Driver */
     .stButton button[data-baseweb="button"][kind="tertiary"] { background-color: #DC3545 !important; color: white !important; } /* Red - Emergency */
+    .stButton button { white-space: normal; line-height: 1.15; height: auto; min-height: 2.75rem; }
+    /* Keep the flag logo and the four header buttons on one row on phones. */
+    [data-testid="stMainBlockContainer"] [data-testid="stHorizontalBlock"]:has(img),
+    [data-testid="stMainBlockContainer"] [data-testid="stHorizontalBlock"]:has(img) [data-testid="stHorizontalBlock"] {
+        flex-direction: row !important;
+        flex-wrap: nowrap !important;
+        align-items: center !important;
+        gap: 0.35rem !important;
+    }
+    [data-testid="stMainBlockContainer"] [data-testid="stHorizontalBlock"]:has(img) div {
+        min-width: 0 !important;
+    }
+    [data-testid="stMainBlockContainer"] [data-testid="stHorizontalBlock"]:has(img) [data-testid="stHorizontalBlock"] > div {
+        flex: 1 1 0 !important;
+    }
+    [data-testid="stMainBlockContainer"] [data-testid="stHorizontalBlock"]:has(img) {
+        overflow: hidden;
+    }
+    [data-testid="stMainBlockContainer"] [data-testid="stHorizontalBlock"]:has(img) .stButton button {
+        font-size: 0.75rem;
+        min-height: 2.35rem;
+        padding: 0.25rem 0.25rem;
+    }
 </style>
 """, unsafe_allow_html=True)
+
+if "current_mode" not in st.session_state:
+    st.session_state.current_mode = "Pilot"
+
+header_left, header_right = st.columns([0.9, 2.1])
+with header_left:
+    try:
+        st.image(LOGO_URL, width=110)
+        st.logo(LOGO_URL, size="medium")
+    except Exception:
+        st.markdown("### CVH Employee Tool ⌯✈︎")
+with header_right:
+    def _header_btn(label, page, key):
+        active = st.session_state.current_mode == page
+        # type="primary" (blue) for all header buttons so inactive ones are not Driver-yellow.
+        shown = ("● " + label) if active else label
+        if st.button(shown, key=key, use_container_width=True, type="primary"):
+            st.session_state.current_mode = page
+            st.rerun()
+    hr1, hr2 = st.columns(2)
+    with hr1:
+        _header_btn("Monthly Safety Meeting", "Monthly Safety Meeting", "nav_monthly_safety")
+    with hr2:
+        _header_btn("Yearly Items", "Yearly Items", "nav_yearly_items")
+    hr3, hr4 = st.columns(2)
+    with hr3:
+        _header_btn("Equipment", "Equipment", "nav_equipment")
+    with hr4:
+        _header_btn("DOM", "DOM", "nav_dom")
 
 # ────────────────────────────────────────────────
 # Session State
@@ -178,16 +226,20 @@ FRAT_COLUMNS = (["timestamp", "date", "part", "pilot", "aircraft", "route_job"] 
                 + ["total", "max_total", "percent", "risk_level", "mitigations", "approver",
                    "approved", "pilot_signature", "decision", "ron_unreachable", "pilot_attests"])
 
-def _gsheets_worksheet():
-    """Open the production worksheet; configuration and network failures propagate."""
+def _gsheets_spreadsheet():
+    """Open the production spreadsheet; does not select or modify a worksheet."""
     if "gcp_service_account" not in st.secrets:
         raise RuntimeError("Google Sheets service account is not configured")
     import gspread
     gc = gspread.service_account_from_dict(dict(st.secrets["gcp_service_account"]))
     sheet_id = st.secrets.get("frat_sheet_id")
-    sheet = (gc.open_by_key(sheet_id) if sheet_id else
-             gc.open(st.secrets.get("frat_sheet_name") or FRAT_SHEET_NAME))
-    return sheet.sheet1
+    return (gc.open_by_key(sheet_id) if sheet_id else
+            gc.open(st.secrets.get("frat_sheet_name") or FRAT_SHEET_NAME))
+
+
+def _gsheets_worksheet():
+    """Open the production FRAT worksheet (sheet1); configuration and network failures propagate."""
+    return _gsheets_spreadsheet().sheet1
 
 
 def save_frat_record(record):
@@ -206,6 +258,614 @@ def load_frat_records():
     """Read Sheets only; the history UI reports unavailable configuration or service."""
     ws = _gsheets_worksheet()
     return pd.DataFrame(ws.get_all_records())
+
+# ────────────────────────────────────────────────
+# Equipment squawks (same spreadsheet, separate tabs; never writes the FRAT sheet)
+# ────────────────────────────────────────────────
+EQUIPMENT_SHEET_TITLE = "Equipment"
+SQUAWKS_SHEET_TITLE = "Squawks"
+REGISTRATION_EXPIRE_COL = "Registration Expire Date"
+ANNUAL_MAINT_COL = "Annual Maint Date"
+TONNAGE_APPLIES_COL = "Tonnage Applies"
+TONNAGE_EXPIRE_COL = "Tonnage Wt Expire Date"
+# Seeded Yes for these six; Ron can change the Tonnage Applies column later.
+TONNAGE_DEFAULT_UNITS = ("Heli2", "Heli3", "Heli4", "S1", "C8000", "Boomer")
+EQUIPMENT_INFO_COLUMNS = [
+    "Year", "Make/Model", "VIN/Serial", "Plate/N-number", "Notes",
+    "Registration Expire Date", "Annual Maint Date",
+    "Tonnage Applies", "Tonnage Wt Expire Date",
+]
+EQUIPMENT_COLUMNS = ["Unit ID", "Name", "Type", "Active"] + EQUIPMENT_INFO_COLUMNS
+SQUAWK_COLUMNS = [
+    "Timestamp", "Unit ID", "Equipment Name", "Type", "Reported By", "Category",
+    "Severity", "Description", "Odometer/Hours", "Status", "Resolved Date",
+    "Resolved By", "Notes",
+]
+EQUIPMENT_TYPES = ["Truck", "Trailer", "Vehicle", "Other"]
+SQUAWK_CATEGORIES = ["Mechanical", "Electrical", "Tires", "Body", "Safety", "Other"]
+SQUAWK_SEVERITIES = ["Low", "Medium", "Grounded-Do not use"]
+SEVERITY_GROUNDED = "Grounded-Do not use"
+STATUS_OPEN = "Open"
+STATUS_RESOLVED = "Resolved"
+REPORTERS = _unique(PILOTS + APPROVERS)
+ACTIVE_VALUES = {"", "yes", "y", "true", "1", "active"}
+
+
+# Ron's equipment list, in this exact order. Type is set only when the name is clearly a trailer.
+OFFICIAL_EQUIPMENT_NAMES = [
+    "Heli1", "Heli2", "Heli3", "Heli4", "F250", "F350", "PW", "Ram", "FS Truck",
+    "C8000", "S1", "Boomer", "Inter Fueler", "Bounder", "Bus", "Equinox", "Tesla", "Mercedes", "Sienna",
+    "R44 Trailer", "Enstrom Heli Trailer", "Heli Hauler", "Pod", "Dump Trailer",
+    "Fuel Trailer", "Bobcat", "Forklift", "Lift", "JD Tractor", "Grasshopper",
+]
+
+
+def official_equipment_rows():
+    """Unit ID and Name are the official names; Type is Trailer only when obvious.
+
+    Info and date columns are left blank — do not invent Year, Make/Model, VIN, plate, notes, or dates.
+    Tonnage Applies is Yes only for the six units Ron named; Tonnage Wt Expire Date stays blank.
+    """
+    rows = []
+    for name in OFFICIAL_EQUIPMENT_NAMES:
+        record = {col: "" for col in EQUIPMENT_COLUMNS}
+        record["Unit ID"] = name
+        record["Name"] = name
+        record["Type"] = "Trailer" if "Trailer" in name else ""
+        record["Active"] = "Yes"
+        if name in TONNAGE_DEFAULT_UNITS:
+            record[TONNAGE_APPLIES_COL] = "Yes"
+        rows.append([record[col] for col in EQUIPMENT_COLUMNS])
+    return rows
+
+
+def is_placeholder_equipment_seed(records):
+    """True when the tab still has the temporary placeholder seed, so it can be replaced."""
+    if not records:
+        return False
+    for record in records:
+        unit_id = _cell(record.get("Unit ID"))
+        name = _cell(record.get("Name"))
+        if "(placeholder)" in name or unit_id.startswith(("TRK-", "TRL-", "CAR-", "OTH-")):
+            continue
+        return False
+    return True
+
+
+def _cell(value):
+    return str(value or "").strip()
+
+
+def parse_equipment_date(value):
+    """Parse a date entered on the Equipment tab. Blank stays blank; unparseable is ignored."""
+    text_value = _cell(value)
+    if not text_value:
+        return None
+    from datetime import date, datetime, timedelta  # local import safe if already imported
+    text_value = text_value.replace(".", "/").replace("-", "/")
+    for fmt in ("%Y/%m/%d", "%m/%d/%Y", "%m/%d/%y", "%Y/%m/%d %H:%M:%S", "%m/%d/%Y %H:%M:%S"):
+        try:
+            return datetime.strptime(text_value, fmt).date()
+        except ValueError:
+            continue
+    # ISO dates that used hyphen (already swapped to /) are covered; try original hyphen ISO too.
+    try:
+        return date.fromisoformat(_cell(value)[:10])
+    except ValueError:
+        return None
+
+
+def registration_due_date(unit):
+    return parse_equipment_date(unit.get(REGISTRATION_EXPIRE_COL))
+
+
+def tonnage_applies(unit):
+    """Sheet flag controls whether Tonnage Wt Expire Date is shown. Default seed is Yes for six units."""
+    flag = _cell(unit.get(TONNAGE_APPLIES_COL)).lower()
+    return flag in {"yes", "y", "true", "1"}
+
+
+def tonnage_due_date(unit):
+    if not tonnage_applies(unit):
+        return None
+    return parse_equipment_date(unit.get(TONNAGE_EXPIRE_COL))
+
+
+def annual_maint_due_date(unit):
+    """Due date is one year after the Annual Maint Date."""
+    performed = parse_equipment_date(unit.get(ANNUAL_MAINT_COL))
+    if performed is None:
+        return None
+    try:
+        return performed.replace(year=performed.year + 1)
+    except ValueError:
+        # Feb 29 -> Feb 28 the following year
+        return performed.replace(year=performed.year + 1, day=28)
+
+
+DATE_STATUS_COLORS = {
+    "expired": "#b91c1c",
+    "soon": "#b45309",
+    "ok": "#15803d",
+    None: "#6b7280",
+}
+
+
+def date_flag(due, today=None):
+    """'expired' if past, 'soon' if within 30 days, 'ok' if later; None when the date is blank."""
+    if due is None:
+        return None
+    today = today or datetime.now(ZoneInfo("America/Los_Angeles")).date()
+    if due < today:
+        return "expired"
+    if (due - today).days <= 30:
+        return "soon"
+    return "ok"
+
+
+def date_flag_label(kind, due, label):
+    if kind == "expired":
+        return label + " expired " + due.strftime("%Y-%m-%d")
+    if kind == "soon":
+        return label + " due " + due.strftime("%Y-%m-%d")
+    if kind == "ok" and due is not None:
+        return label + " " + due.strftime("%Y-%m-%d")
+    return None
+
+
+def date_status_markup(label, raw_value, due, today=None, due_note=False):
+    """Colored date text: red expired, amber within 30 days, green otherwise, gray 'Not set' if blank."""
+    kind = date_flag(due, today)
+    if kind is None:
+        body = "Not set"
+    else:
+        shown = due.strftime("%Y-%m-%d")
+        raw = _cell(raw_value)
+        if due_note:
+            body = ((raw + " (due " + shown + ")") if raw else ("due " + shown))
+        else:
+            body = raw or shown
+        if kind == "expired":
+            body += " — expired"
+        elif kind == "soon":
+            body += " — expires within 30 days"
+    color = DATE_STATUS_COLORS[kind]
+    safe = body.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    return kind, "**" + label + ":** <span style='color:" + color + "; font-weight:600'>" + safe + "</span>"
+
+
+def is_active_equipment(record):
+    return _cell(record.get("Active")).lower() in ACTIVE_VALUES
+
+
+def is_open_squawk(record):
+    status = _cell(record.get("Status")) or STATUS_OPEN
+    return status.lower() == STATUS_OPEN.lower()
+
+
+def is_grounded_squawk(record):
+    return _cell(record.get("Severity")) == SEVERITY_GROUNDED
+
+
+def squawks_for(unit_id, squawks):
+    """All squawk history for one unit, in sheet order (oldest first)."""
+    unit_id = _cell(unit_id)
+    return [s for s in squawks if _cell(s.get("Unit ID")) == unit_id]
+
+
+def open_squawks_for(unit_id, squawks):
+    return [s for s in squawks_for(unit_id, squawks) if is_open_squawk(s)]
+
+
+def equipment_has_grounding(unit_id, squawks):
+    return any(is_grounded_squawk(s) for s in open_squawks_for(unit_id, squawks))
+
+
+def records_from_worksheet(ws, expected_columns):
+    """Read rows as dicts keyed by the first-row header; missing columns stay empty."""
+    values = ws.get_all_values()
+    if not values:
+        return []
+    header = [_cell(c) for c in values[0]]
+    records = []
+    for row in values[1:]:
+        if not any(_cell(c) for c in row):
+            continue
+        record = {col: "" for col in expected_columns}
+        for idx, col in enumerate(header):
+            if col:
+                record[col] = _cell(row[idx]) if idx < len(row) else ""
+        records.append(record)
+    return records
+
+
+def _worksheet_or_none(spreadsheet, title):
+    try:
+        return spreadsheet.worksheet(title)
+    except Exception as exc:
+        name = type(exc).__name__
+        message = str(exc).lower()
+        if name in {"WorksheetNotFound", "NotFound"} or ("worksheet" in message and "not found" in message):
+            return None
+        raise
+
+
+def _write_equipment_rows(ws, rows):
+    """Replace this tab's values only (never other worksheets)."""
+    values = [EQUIPMENT_COLUMNS] + [list(r) for r in rows]
+    if hasattr(ws, "clear"):
+        ws.clear()
+    if hasattr(ws, "update"):
+        ws.update("A1", values, value_input_option="RAW")
+        return
+    # Test doubles that only implement append_row / a rows list.
+    if hasattr(ws, "rows"):
+        ws.rows = values
+        if hasattr(ws, "writes"):
+            ws.writes.append(("replace", values))
+        return
+    for row in values:
+        ws.append_row(row, value_input_option="RAW")
+
+
+def ensure_equipment_worksheet(spreadsheet):
+    """Create the Equipment tab, or replace a leftover placeholder seed, with Ron's list."""
+    ws = _worksheet_or_none(spreadsheet, EQUIPMENT_SHEET_TITLE)
+    created = False
+    official = official_equipment_rows()
+    if ws is None:
+        ws = spreadsheet.add_worksheet(title=EQUIPMENT_SHEET_TITLE, rows=50, cols=len(EQUIPMENT_COLUMNS))
+        _write_equipment_rows(ws, official)
+        created = True
+    else:
+        records = records_from_worksheet(ws, EQUIPMENT_COLUMNS)
+        header = [_cell(c) for c in ws.row_values(1)]
+        if not header or not records or is_placeholder_equipment_seed(records):
+            _write_equipment_rows(ws, official)
+            created = not records
+        else:
+            ensure_equipment_info_columns(ws)
+    return ws, created
+
+
+def ensure_equipment_info_columns(ws):
+    """Add any missing info-column headers on the right; do not invent or overwrite values."""
+    header = [_cell(c) for c in ws.row_values(1)]
+    if not header:
+        return False
+    missing = [col for col in EQUIPMENT_COLUMNS if col not in header]
+    if not missing:
+        return False
+    start = len(header) + 1
+    for offset, col in enumerate(missing):
+        ws.update_cell(1, start + offset, col)
+    return True
+
+
+def ensure_squawks_worksheet(spreadsheet):
+    """Create the Squawks tab with a header only when the tab is missing or has no header."""
+    ws = _worksheet_or_none(spreadsheet, SQUAWKS_SHEET_TITLE)
+    created = False
+    if ws is None:
+        ws = spreadsheet.add_worksheet(title=SQUAWKS_SHEET_TITLE, rows=200, cols=len(SQUAWK_COLUMNS))
+        ws.append_row(SQUAWK_COLUMNS, value_input_option="RAW")
+        created = True
+    else:
+        header = [_cell(c) for c in ws.row_values(1)]
+        if not header:
+            ws.append_row(SQUAWK_COLUMNS, value_input_option="RAW")
+            created = True
+        elif header != SQUAWK_COLUMNS:
+            raise RuntimeError("Squawks worksheet headers do not match this app; check the live sheet")
+    return ws, created
+
+
+def load_equipment_records(spreadsheet=None):
+    ws, _created = ensure_equipment_worksheet(spreadsheet or _gsheets_spreadsheet())
+    return records_from_worksheet(ws, EQUIPMENT_COLUMNS)
+
+
+def load_squawk_records(spreadsheet=None):
+    ws, _created = ensure_squawks_worksheet(spreadsheet or _gsheets_spreadsheet())
+    return records_from_worksheet(ws, SQUAWK_COLUMNS)
+
+
+def build_squawk_record(unit, reported_by, when, category, severity, description, odometer=""):
+    description = _cell(description)
+    reported_by = _cell(reported_by)
+    if not description:
+        raise ValueError("A squawk description is required")
+    if not reported_by:
+        raise ValueError("Reported By is required")
+    if category not in SQUAWK_CATEGORIES:
+        raise ValueError("Select a squawk category")
+    if severity not in SQUAWK_SEVERITIES:
+        raise ValueError("Select a squawk severity")
+    stamp = when.strftime("%Y-%m-%d %H:%M:%S")
+    return {
+        "Timestamp": stamp,
+        "Unit ID": _cell(unit.get("Unit ID")),
+        "Equipment Name": _cell(unit.get("Name")),
+        "Type": _cell(unit.get("Type")),
+        "Reported By": reported_by,
+        "Category": category,
+        "Severity": severity,
+        "Description": description,
+        "Odometer/Hours": _cell(odometer),
+        "Status": STATUS_OPEN,
+        "Resolved Date": "",
+        "Resolved By": "",
+        "Notes": "",
+    }
+
+
+def save_squawk_record(record, spreadsheet=None):
+    """Append one squawk to the Squawks tab only. Never writes the FRAT worksheet."""
+    ws, _created = ensure_squawks_worksheet(spreadsheet or _gsheets_spreadsheet())
+    ws.append_row([str(record.get(c, "")) for c in SQUAWK_COLUMNS], value_input_option="RAW")
+    return "Google Sheets (Squawks)"
+
+
+def resolve_squawk(timestamp, unit_id, resolved_by, notes="", when=None, spreadsheet=None):
+    """Mark a matching open squawk resolved. Updates only the Squawks tab."""
+    resolved_by = _cell(resolved_by)
+    if not resolved_by:
+        raise ValueError("Resolved By is required")
+    when = when or datetime.now(ZoneInfo("America/Los_Angeles"))
+    ws, _created = ensure_squawks_worksheet(spreadsheet or _gsheets_spreadsheet())
+    values = ws.get_all_values()
+    if not values:
+        raise RuntimeError("Squawks worksheet has no header")
+    header = [_cell(c) for c in values[0]]
+    try:
+        status_col = header.index("Status") + 1
+        resolved_date_col = header.index("Resolved Date") + 1
+        resolved_by_col = header.index("Resolved By") + 1
+        notes_col = header.index("Notes") + 1
+        ts_idx = header.index("Timestamp")
+        unit_idx = header.index("Unit ID")
+        status_idx = header.index("Status")
+    except ValueError as exc:
+        raise RuntimeError("Squawks worksheet headers do not match this app; check the live sheet") from exc
+    stamp = _cell(timestamp)
+    unit_id = _cell(unit_id)
+    for row_number, row in enumerate(values[1:], start=2):
+        row_status = _cell(row[status_idx]) if status_idx < len(row) else ""
+        if ((_cell(row[ts_idx]) if ts_idx < len(row) else "") == stamp
+                and (_cell(row[unit_idx]) if unit_idx < len(row) else "") == unit_id
+                and (row_status or STATUS_OPEN).lower() == STATUS_OPEN.lower()):
+            ws.update_cell(row_number, status_col, STATUS_RESOLVED)
+            ws.update_cell(row_number, resolved_date_col, when.strftime("%Y-%m-%d %H:%M:%S"))
+            ws.update_cell(row_number, resolved_by_col, resolved_by)
+            if _cell(notes):
+                existing = _cell(row[notes_col - 1]) if notes_col - 1 < len(row) else ""
+                ws.update_cell(row_number, notes_col, (existing + " " + _cell(notes)).strip() if existing else _cell(notes))
+            return True
+    raise RuntimeError("Could not find that open squawk on the Squawks tab")
+
+
+def show_placeholder_page(title):
+    st.title(title)
+    st.info("Coming soon - Ron to define contents")
+
+
+def show_equipment_info(unit, squawks):
+    """Details from the Equipment tab plus this unit's squawk history. Blank fields stay blank."""
+    name = _cell(unit.get("Name")) or _cell(unit.get("Unit ID"))
+    st.markdown("---")
+    st.subheader("Info — " + name)
+    today = datetime.now(ZoneInfo("America/Los_Angeles")).date()
+    for col in EQUIPMENT_COLUMNS:
+        if col == TONNAGE_APPLIES_COL:
+            continue
+        if col == TONNAGE_EXPIRE_COL and not tonnage_applies(unit):
+            continue
+        if col == REGISTRATION_EXPIRE_COL:
+            _kind, markup = date_status_markup(col, unit.get(col), registration_due_date(unit), today)
+            st.markdown(markup, unsafe_allow_html=True)
+            continue
+        if col == ANNUAL_MAINT_COL:
+            _kind, markup = date_status_markup(
+                col, unit.get(col), annual_maint_due_date(unit), today, due_note=True
+            )
+            st.markdown(markup, unsafe_allow_html=True)
+            continue
+        if col == TONNAGE_EXPIRE_COL:
+            _kind, markup = date_status_markup(col, unit.get(col), tonnage_due_date(unit), today)
+            st.markdown(markup, unsafe_allow_html=True)
+            continue
+        value = _cell(unit.get(col))
+        st.markdown("**" + col + ":** " + (value if value else "—"))
+    history = list(reversed(squawks_for(unit.get("Unit ID"), squawks)))
+    st.markdown("**Squawk history**")
+    if not history:
+        st.info("No squawks recorded for this unit.")
+    else:
+        for item in history:
+            status = _cell(item.get("Status")) or STATUS_OPEN
+            line = (
+                "**" + _cell(item.get("Timestamp")) + "** — " + status
+                + " — " + _cell(item.get("Severity"))
+                + " — " + _cell(item.get("Category"))
+            )
+            st.markdown(line)
+            if _cell(item.get("Description")):
+                st.markdown(_cell(item.get("Description")))
+            extras = []
+            if _cell(item.get("Reported By")):
+                extras.append("Reported by " + _cell(item.get("Reported By")))
+            if _cell(item.get("Odometer/Hours")):
+                extras.append("Odometer/Hours " + _cell(item.get("Odometer/Hours")))
+            if _cell(item.get("Resolved Date")) or _cell(item.get("Resolved By")):
+                extras.append(
+                    "Resolved " + " ".join(
+                        part for part in [_cell(item.get("Resolved Date")), _cell(item.get("Resolved By"))] if part
+                    )
+                )
+            if _cell(item.get("Notes")):
+                extras.append("Notes: " + _cell(item.get("Notes")))
+            if extras:
+                st.caption(" · ".join(extras))
+    st.markdown("---")
+
+
+def show_equipment_page():
+    st.title("Equipment Squawks")
+    st.caption(
+        "Tap a unit and save a squawk to the Google Sheet. "
+        "Edit names on the Equipment tab of the CVH FRAT Log if the list changes."
+    )
+    st.link_button("Open CVH FRAT Log (Equipment and Squawks tabs)", frat_sheet_url(), use_container_width=True)
+    try:
+        spreadsheet = _gsheets_spreadsheet()
+        units = [u for u in load_equipment_records(spreadsheet) if is_active_equipment(u) and _cell(u.get("Unit ID"))]
+        squawks = load_squawk_records(spreadsheet)
+    except Exception as e:
+        st.error(f"Could not load equipment or squawks: {e}")
+        return
+
+    if not units:
+        st.warning("No active equipment found. Add units on the Equipment tab (Unit ID, Name, Type, Active).")
+        return
+
+    if st.session_state.get("squawk_saved"):
+        st.success(st.session_state.pop("squawk_saved"))
+    if st.session_state.get("squawk_resolved"):
+        st.success(st.session_state.pop("squawk_resolved"))
+
+    selected_id = st.session_state.get("squawk_unit_id")
+    info_id = st.session_state.get("info_unit_id")
+    for unit in units:
+        unit_id = _cell(unit.get("Unit ID"))
+        open_items = open_squawks_for(unit_id, squawks)
+        grounded = equipment_has_grounding(unit_id, squawks)
+        name = _cell(unit.get("Name")) or unit_id
+        name_col, info_col, squawk_col = st.columns([3.2, 1, 1])
+        with name_col:
+            st.markdown("**" + name + "**")
+            if unit_id and unit_id != name:
+                st.caption(unit_id)
+            if grounded:
+                st.error("GROUNDED — Do not use")
+            today = datetime.now(ZoneInfo("America/Los_Angeles")).date()
+            # Set dates are colored on the row; blank dates stay off the list (INFO shows gray 'Not set').
+            for label, raw, due, due_note in (
+                ("Registration Expire Date", unit.get(REGISTRATION_EXPIRE_COL), registration_due_date(unit), False),
+                ("Annual Maint Date", unit.get(ANNUAL_MAINT_COL), annual_maint_due_date(unit), True),
+                ("Tonnage Wt Expire Date", unit.get(TONNAGE_EXPIRE_COL), tonnage_due_date(unit), False),
+            ):
+                if due is None:
+                    continue
+                _kind, markup = date_status_markup(label, raw, due, today, due_note=due_note)
+                st.markdown(markup, unsafe_allow_html=True)
+            if open_items and not grounded:
+                count = len(open_items)
+                st.warning(f"{count} open squawk{'s' if count != 1 else ''}")
+        with info_col:
+            if st.button("INFO", key=f"info_btn_{unit_id}", use_container_width=True):
+                st.session_state.info_unit_id = None if info_id == unit_id else unit_id
+                st.session_state.squawk_unit_id = None
+                st.rerun()
+        with squawk_col:
+            if st.button("Squawk", key=f"squawk_btn_{unit_id}", use_container_width=True):
+                st.session_state.squawk_unit_id = unit_id
+                st.session_state.info_unit_id = None
+                st.rerun()
+        if info_id == unit_id:
+            show_equipment_info(unit, squawks)
+        if _cell(selected_id) == unit_id:
+            typ = _cell(unit.get("Type"))
+            form_bits = [unit_id] + ([typ] if typ else []) + ["times are Pacific (America/Los_Angeles)"]
+            st.markdown("---")
+            st.subheader("New squawk — " + name)
+            st.caption(" · ".join(form_bits))
+            now = datetime.now(ZoneInfo("America/Los_Angeles"))
+            with st.form("equipment_squawk_form"):
+                reporter = st.selectbox("Reported by", REPORTERS + ["Other"], index=None, placeholder="Select name")
+                other_name = st.text_input("Name if Other")
+                c1, c2 = st.columns(2)
+                with c1:
+                    squawk_date = st.date_input("Date", value=now.date())
+                with c2:
+                    squawk_time = st.time_input("Time (Pacific)", value=now.time().replace(microsecond=0))
+                category = st.selectbox("Category", SQUAWK_CATEGORIES, index=None, placeholder="Select category")
+                severity = st.selectbox("Severity", SQUAWK_SEVERITIES, index=None, placeholder="Select severity")
+                description = st.text_area("Description", placeholder="What is wrong, and where?")
+                odometer = st.text_input("Odometer / Hours (optional)")
+                submitted = st.form_submit_button("Save squawk", type="primary", use_container_width=True)
+            if st.button("Cancel", key="squawk_form_cancel"):
+                st.session_state.squawk_unit_id = None
+                st.rerun()
+            if submitted:
+                reported_by = other_name.strip() if reporter == "Other" else (reporter or "")
+                when = datetime.combine(squawk_date, squawk_time).replace(tzinfo=ZoneInfo("America/Los_Angeles"))
+                try:
+                    record = build_squawk_record(
+                        unit, reported_by, when, category, severity, description, odometer
+                    )
+                    save_squawk_record(record, spreadsheet)
+                except Exception as e:
+                    st.error("Could not save squawk: " + str(e))
+                else:
+                    st.session_state.squawk_saved = (
+                        "Saved squawk for " + record["Equipment Name"] + " (" + record["Unit ID"] + ")."
+                    )
+                    st.session_state.squawk_unit_id = None
+                    st.rerun()
+            st.markdown("---")
+
+    open_all = [s for s in squawks if is_open_squawk(s)]
+    st.markdown("---")
+    st.subheader("Open squawks")
+    if not open_all:
+        st.info("No open squawks.")
+        return
+    for idx, item in enumerate(open_all):
+        title = f"{item.get('Equipment Name') or item.get('Unit ID')} — {item.get('Severity')} — {item.get('Category')}"
+        if is_grounded_squawk(item):
+            title = "GROUNDED · " + title
+        with st.expander(title):
+            st.markdown(
+                f"**Unit:** {item.get('Unit ID')}  \n"
+                f"**Reported:** {item.get('Timestamp')} by {item.get('Reported By')}  \n"
+                f"**Odometer/Hours:** {item.get('Odometer/Hours') or '—'}  \n"
+                f"**Description:** {item.get('Description')}"
+            )
+            if item.get("Notes"):
+                st.markdown(f"**Notes:** {item.get('Notes')}")
+            resolved_by = st.selectbox(
+                "Resolved by",
+                REPORTERS + ["Other"],
+                index=None,
+                placeholder="Select name",
+                key=f"resolve_by_{idx}_{item.get('Timestamp')}_{item.get('Unit ID')}",
+            )
+            resolve_other = st.text_input(
+                "Name if Other",
+                key=f"resolve_other_{idx}_{item.get('Timestamp')}_{item.get('Unit ID')}",
+            )
+            resolve_notes = st.text_input(
+                "Resolution notes (optional)",
+                key=f"resolve_notes_{idx}_{item.get('Timestamp')}_{item.get('Unit ID')}",
+            )
+            if st.button("Mark resolved", key=f"resolve_btn_{idx}_{item.get('Timestamp')}_{item.get('Unit ID')}"):
+                who = resolve_other.strip() if resolved_by == "Other" else (resolved_by or "")
+                try:
+                    resolve_squawk(
+                        item.get("Timestamp"),
+                        item.get("Unit ID"),
+                        who,
+                        resolve_notes,
+                        datetime.now(ZoneInfo("America/Los_Angeles")),
+                        spreadsheet,
+                    )
+                except Exception as e:
+                    st.error(f"Could not mark resolved: {e}")
+                else:
+                    st.session_state.squawk_resolved = (
+                        f"Marked resolved: {item.get('Equipment Name') or item.get('Unit ID')}."
+                    )
+                    st.rerun()
 
 # ────────────────────────────────────────────────
 # Risk Assessment – FRAT function (per FAR part; Part 5 §5.51–5.55, records §5.97)
@@ -396,7 +1056,7 @@ def show_frat_history():
     st.dataframe(df.iloc[::-1], use_container_width=True, hide_index=True)
     st.download_button("⬇️ Download CSV", df.to_csv(index=False).encode(), file_name=f"cvh_frat_log_{datetime.now():%Y%m%d}.csv", mime="text/csv")
 # ────────────────────────────────────────────────
-# Mode Buttons
+# Mode Buttons (Pilot / Driver / Emergency remain so FRAT and existing tools stay reachable)
 # ────────────────────────────────────────────────
 col1, col2, col3 = st.columns(3)
 with col1:
@@ -832,6 +1492,21 @@ elif st.session_state.current_mode == "Driver":
         st.subheader("Completed Checklists")
         for item in st.session_state.completed_checklists:
             st.success(item) 
+
+# ────────────────────────────────────────────────
+# HEADER PAGES (Equipment squawks; other pages are placeholders)
+# ────────────────────────────────────────────────
+elif st.session_state.current_mode == "Equipment":
+    show_equipment_page()
+
+elif st.session_state.current_mode == "Monthly Safety Meeting":
+    show_placeholder_page("Monthly Safety Meeting")
+
+elif st.session_state.current_mode == "Yearly Items":
+    show_placeholder_page("Yearly Items")
+
+elif st.session_state.current_mode == "DOM":
+    show_placeholder_page("DOM")
 
 # ────────────────────────────────────────────────
 # EMERGENCY CHECKLIST
