@@ -22,7 +22,7 @@ def _exec_equipment_helpers():
         "STATUS_RESOLVED", "REPORTERS", "ACTIVE_VALUES", "HEADER_PAGES",
         "OFFICIAL_EQUIPMENT_NAMES", "REGISTRATION_EXPIRE_COL", "ANNUAL_MAINT_COL",
         "TONNAGE_APPLIES_COL", "TONNAGE_EXPIRE_COL", "TONNAGE_DEFAULT_UNITS", "DATE_STATUS_COLORS",
-        "IFTA_UNITS", "DRIVERS", "IFTA_TRIPS_SHEET_TITLE", "IFTA_FUEL_SHEET_TITLE", "IFTA_TRIPS_COLUMNS", "IFTA_FUEL_COLUMNS", "IFTA_RECEIPT_COLUMN", "IFTA_DEFAULT_JURISDICTION", "IFTA_JURISDICTIONS",
+        "IFTA_UNITS", "DRIVERS", "EMPLOYEES", "IFTA_TRIPS_SHEET_TITLE", "IFTA_FUEL_SHEET_TITLE", "IFTA_TRIPS_COLUMNS", "IFTA_FUEL_COLUMNS", "IFTA_RECEIPT_COLUMN", "IFTA_DEFAULT_JURISDICTION", "IFTA_JURISDICTIONS",
         "DOM_AIRCRAFT", "DOM_ACTION_ANNUAL", "YEARLY_ITEMS_SHEET_TITLE", "YEARLY_ITEMS_COLUMNS", "YEARLY_ITEM_GROUPS",
         "PARTS", "CORE_FACTORS", "PART_FACTORS", "PART_STOPS", "CONFIG_FIELDS",
         "ALL_FACTOR_KEYS", "ALL_STOP_KEYS", "FRAT_COLUMNS",
@@ -78,6 +78,7 @@ def _exec_equipment_helpers():
         "_yearly_item_sort_key", "latest_yearly_item_record", "yearly_item_is_done", "yearly_item_status",
         "yearly_group_status", "yearly_group_statuses", "yearly_item_years",
         "yearly_item_status_markup", "apply_yearly_group_button_styles",
+        "employee_button_key",
     }
     nodes = [n for n in TREE.body if
              (isinstance(n, ast.Assign) and any(isinstance(t, ast.Name) and t.id in names for t in n.targets))
@@ -658,6 +659,32 @@ class PlaceholderAndLogicTests(unittest.TestCase):
             "Timestamp", "Date", "Unit", "Driver", "Jurisdiction",
             "Start Odometer", "End Odometer", "Miles", "Notes",
         ])
+
+    def test_employees_roster_order_and_drivers_unchanged(self):
+        self.assertEqual(self.s["EMPLOYEES"], [
+            "Ron Cline",
+            "Carl Mulvaney",
+            "Anthony Root",
+            "Barry Markham",
+            "Robert Rackley",
+            "Gary Grant",
+            "Skylar Fingerle",
+        ])
+        self.assertEqual(self.s["DRIVERS"], [
+            "Robert Rackley",
+            "Barry Markham",
+            "Anthony Root",
+            "Carl Mulvaney",
+            "Ron Cline",
+            "Gary Grant",
+        ])
+        self.assertNotIn("Skylar Fingerle", self.s["DRIVERS"])
+        self.assertEqual(self.s["employee_button_key"]("Ron Cline"), "employee_btn_Ron_Cline")
+        self.assertEqual(self.s["employee_button_key"]("Skylar Fingerle"), "employee_btn_Skylar_Fingerle")
+        self.assertEqual(
+            self.s["HEADER_PAGES"],
+            ["Monthly Safety Meeting", "Yearly Items", "Equipment", "DOM", "EMPLOYEES"],
+        )
 
 
 
@@ -1705,6 +1732,89 @@ class HeaderAndEquipmentPageTests(unittest.TestCase):
         self.assertTrue(any("Pilot Performance" in (t.value or "") for t in at.title))
         frat_visible = any("FRAT" in (getattr(x, "value", None) or getattr(x, "label", None) or "") for x in list(at.tabs) + list(at.subheader) + list(at.title))
         self.assertTrue(frat_visible)
+
+    def test_employees_header_navigation_and_blank_placeholders(self):
+        from streamlit.testing.v1 import AppTest
+        expected = [
+            "Ron Cline",
+            "Carl Mulvaney",
+            "Anthony Root",
+            "Barry Markham",
+            "Robert Rackley",
+            "Gary Grant",
+            "Skylar Fingerle",
+        ]
+
+        def _employee_names(at):
+            names = []
+            for b in at.button:
+                label = b.label or ""
+                name = label[2:] if label.startswith("● ") else label
+                if name in expected:
+                    names.append(name)
+            return names
+
+        def _assert_blank_employee_body(at):
+            self.assertFalse(list(at.exception))
+            self.assertFalse(list(at.text_input))
+            self.assertFalse(list(at.text_area))
+            self.assertFalse(list(at.selectbox))
+            self.assertFalse(list(at.date_input))
+            self.assertFalse(list(at.checkbox))
+            self.assertFalse(list(at.number_input))
+            self.assertFalse(any("Coming soon - Ron to define contents" in (i.value or "") for i in at.info))
+
+        at = AppTest.from_string(equipment_offline_app(), default_timeout=30).run()
+        self.assertTrue(any((b.label or "").endswith("EMPLOYEES") for b in at.button))
+        at.button(key="nav_employees").click().run()
+        _assert_blank_employee_body(at)
+        self.assertTrue(any(t.value == "Employees" for t in at.title))
+        self.assertEqual(_employee_names(at), expected)
+        book = at.session_state.get("_workbook")
+        if book is not None:
+            self.assertEqual(set(book.sheets), {"Sheet1"})
+
+        at.button(key="employee_btn_Ron_Cline").click().run()
+        _assert_blank_employee_body(at)
+        self.assertTrue(any(t.value == "Ron Cline" for t in at.title))
+        self.assertEqual(_employee_names(at), expected)
+        self.assertTrue(any((b.label or "") == "● Ron Cline" for b in at.button))
+        self.assertTrue(any(b.label == "Back" for b in at.button))
+        at.button(key="employees_back").click().run()
+        _assert_blank_employee_body(at)
+        self.assertTrue(any(t.value == "Employees" for t in at.title))
+        self.assertFalse(any(t.value == "Ron Cline" for t in at.title))
+
+        at.button(key="employee_btn_Skylar_Fingerle").click().run()
+        _assert_blank_employee_body(at)
+        self.assertTrue(any(t.value == "Skylar Fingerle" for t in at.title))
+        self.assertEqual(_employee_names(at), expected)
+        # Header EMPLOYEES button returns to the list.
+        at.button(key="nav_employees").click().run()
+        _assert_blank_employee_body(at)
+        self.assertTrue(any(t.value == "Employees" for t in at.title))
+        self.assertFalse(any(t.value == "Skylar Fingerle" for t in at.title))
+
+        # Remaining people also open a blank page headed by their name.
+        for name, key in (
+            ("Carl Mulvaney", "employee_btn_Carl_Mulvaney"),
+            ("Anthony Root", "employee_btn_Anthony_Root"),
+            ("Barry Markham", "employee_btn_Barry_Markham"),
+            ("Robert Rackley", "employee_btn_Robert_Rackley"),
+            ("Gary Grant", "employee_btn_Gary_Grant"),
+        ):
+            at.button(key=key).click().run()
+            _assert_blank_employee_body(at)
+            self.assertTrue(any(t.value == name for t in at.title), name)
+            self.assertEqual(_employee_names(at), expected)
+            self.assertTrue(any(b.label == "Back" for b in at.button))
+
+        book = at.session_state.get("_workbook")
+        if book is not None:
+            self.assertEqual(set(book.sheets), {"Sheet1"})
+        next(b for b in at.button if b.label == "🛩️ Pilot").click().run()
+        self.assertFalse(list(at.exception))
+        self.assertTrue(any("Pilot Performance" in (t.value or "") for t in at.title))
 
     def test_monthly_safety_meeting_form_saves_and_edits_notes_on_fake_sheet(self):
         from datetime import date

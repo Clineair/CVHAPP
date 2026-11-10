@@ -20,9 +20,9 @@ st.markdown("""
     <link rel="icon" href="https://img.icons8.com/color/48/000000/helicopter.png" type="image/png">
 """, unsafe_allow_html=True)
 
-# CVH Logo and header navigation (logo left, four buttons right)
+# CVH Logo and header navigation (logo left, header buttons right)
 LOGO_URL = "flaglogo.png"
-HEADER_PAGES = ["Monthly Safety Meeting", "Yearly Items", "Equipment", "DOM"]
+HEADER_PAGES = ["Monthly Safety Meeting", "Yearly Items", "Equipment", "DOM", "EMPLOYEES"]
 
 # Button Colors and compact wrapping header buttons for phones
 st.markdown("""
@@ -31,7 +31,7 @@ st.markdown("""
     .stButton button[data-baseweb="button"][kind="secondary"] { background-color: #FFC107 !important; color: black !important; } /* Yellow - Driver */
     .stButton button[data-baseweb="button"][kind="tertiary"] { background-color: #DC3545 !important; color: white !important; } /* Red - Emergency */
     .stButton button { white-space: normal; line-height: 1.15; height: auto; min-height: 2.75rem; }
-    /* Keep the flag logo and the four header buttons on one row on phones. */
+    /* Keep the flag logo and the header buttons on one row on phones. */
     [data-testid="stMainBlockContainer"] [data-testid="stHorizontalBlock"]:has(img),
     [data-testid="stMainBlockContainer"] [data-testid="stHorizontalBlock"]:has(img) [data-testid="stHorizontalBlock"] {
         flex-direction: row !important;
@@ -73,17 +73,21 @@ with header_right:
         shown = ("● " + label) if active else label
         if st.button(shown, key=key, use_container_width=True, type="primary"):
             st.session_state.current_mode = page
+            if page == "EMPLOYEES":
+                st.session_state.employees_selected = None
             st.rerun()
     hr1, hr2 = st.columns(2)
     with hr1:
         _header_btn("Monthly Safety Meeting", "Monthly Safety Meeting", "nav_monthly_safety")
     with hr2:
         _header_btn("Yearly Items", "Yearly Items", "nav_yearly_items")
-    hr3, hr4 = st.columns(2)
+    hr3, hr4, hr5 = st.columns(3)
     with hr3:
         _header_btn("Equipment", "Equipment", "nav_equipment")
     with hr4:
         _header_btn("DOM", "DOM", "nav_dom")
+    with hr5:
+        _header_btn("EMPLOYEES", "EMPLOYEES", "nav_employees")
 
 # ────────────────────────────────────────────────
 # Session State
@@ -357,6 +361,7 @@ OFFICIAL_EQUIPMENT_NAMES = [
 # Add a unit ID here to show an IFTA button on the Equipment page, between INFO and Squawk.
 IFTA_UNITS = ("Heli2",)
 # Drivers for the IFTA Trips form, in Ron's listed order.
+# Do not add names here unless Ron authorizes them as drivers.
 DRIVERS = [
     "Robert Rackley",
     "Barry Markham",
@@ -364,6 +369,17 @@ DRIVERS = [
     "Carl Mulvaney",
     "Ron Cline",
     "Gary Grant",
+]
+# Employees page roster, in Ron's listed order. Separate from DRIVERS;
+# Skylar Fingerle is not an authorized addition to the driver dropdown.
+EMPLOYEES = [
+    "Ron Cline",
+    "Carl Mulvaney",
+    "Anthony Root",
+    "Barry Markham",
+    "Robert Rackley",
+    "Gary Grant",
+    "Skylar Fingerle",
 ]
 IFTA_TRIPS_SHEET_TITLE = "IFTA Trips"
 IFTA_FUEL_SHEET_TITLE = "IFTA Fuel"
@@ -1867,6 +1883,40 @@ def show_yearly_group_page(group):
 def show_placeholder_page(title):
     st.title(title)
     st.info("Coming soon - Ron to define contents")
+
+
+def employee_button_key(name):
+    """Stable Streamlit key for an Employees page person button."""
+    parts = []
+    for ch in _cell(name):
+        if ch.isalnum():
+            parts.append(ch)
+        elif not parts or parts[-1] != "_":
+            parts.append("_")
+    return "employee_btn_" + "".join(parts).strip("_")
+
+
+def show_employees_page():
+    """Employee buttons at the top, and a blank placeholder page per person."""
+    selected = _cell(st.session_state.get("employees_selected"))
+    names = list(EMPLOYEES)
+    for i in range(0, len(names), 2):
+        cols = st.columns(2)
+        for col, name in zip(cols, names[i:i + 2]):
+            with col:
+                shown = ("● " + name) if selected == name else name
+                if st.button(shown, key=employee_button_key(name), use_container_width=True, type="primary"):
+                    st.session_state.employees_selected = name
+                    st.rerun()
+
+    if selected:
+        st.title(selected)
+        if st.button("Back", key="employees_back", use_container_width=True):
+            st.session_state.employees_selected = None
+            st.rerun()
+        return
+
+    st.title("Employees")
 
 
 YEARLY_ITEMS_SHEET_TITLE = "Yearly Items"
@@ -4497,7 +4547,7 @@ elif st.session_state.current_mode == "Driver":
             st.success(item) 
 
 # ────────────────────────────────────────────────
-# HEADER PAGES (Equipment, Monthly Safety Meeting, Yearly Items, DOM)
+# HEADER PAGES (Equipment, Monthly Safety Meeting, Yearly Items, DOM, EMPLOYEES)
 # ────────────────────────────────────────────────
 elif st.session_state.current_mode == "Equipment":
     show_equipment_page()
@@ -4510,6 +4560,9 @@ elif st.session_state.current_mode == "Yearly Items":
 
 elif st.session_state.current_mode == "DOM":
     show_dom_page()
+
+elif st.session_state.current_mode == "EMPLOYEES":
+    show_employees_page()
 
 # ────────────────────────────────────────────────
 # EMERGENCY CHECKLIST
