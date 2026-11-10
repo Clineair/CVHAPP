@@ -23,7 +23,7 @@ def _exec_equipment_helpers():
         "OFFICIAL_EQUIPMENT_NAMES", "REGISTRATION_EXPIRE_COL", "ANNUAL_MAINT_COL",
         "TONNAGE_APPLIES_COL", "TONNAGE_EXPIRE_COL", "TONNAGE_DEFAULT_UNITS", "DATE_STATUS_COLORS",
         "IFTA_UNITS", "DRIVERS", "IFTA_TRIPS_SHEET_TITLE", "IFTA_FUEL_SHEET_TITLE", "IFTA_TRIPS_COLUMNS", "IFTA_FUEL_COLUMNS", "IFTA_RECEIPT_COLUMN", "IFTA_DEFAULT_JURISDICTION", "IFTA_JURISDICTIONS",
-        "DOM_AIRCRAFT", "DOM_ACTION_ANNUAL",
+        "DOM_AIRCRAFT", "DOM_ACTION_ANNUAL", "YEARLY_ITEMS_SHEET_TITLE", "YEARLY_ITEMS_COLUMNS", "YEARLY_ITEM_GROUPS",
         "PARTS", "CORE_FACTORS", "PART_FACTORS", "PART_STOPS", "CONFIG_FIELDS",
         "ALL_FACTOR_KEYS", "ALL_STOP_KEYS", "FRAT_COLUMNS",
     }
@@ -70,6 +70,14 @@ def _exec_equipment_helpers():
         "load_ifta_trip_records", "load_ifta_fuel_records", "build_ifta_trip_record", "build_ifta_fuel_record",
         "save_ifta_trip_record", "save_ifta_fuel_record", "ifta_mpg", "build_ifta_quarterly_summary",
         "build_ifta_summary_csv", "ifta_summary_pdf_filename", "build_ifta_summary_pdf",
+        "yearly_item_group_names", "yearly_item_sections", "yearly_items_for_group",
+        "yearly_item_display_name", "yearly_group_button_key",
+        "ensure_yearly_items_worksheet", "load_yearly_item_records",
+        "load_yearly_item_records_readonly", "yearly_item_year_value",
+        "build_yearly_item_record", "save_yearly_item_record", "filter_yearly_items",
+        "_yearly_item_sort_key", "latest_yearly_item_record", "yearly_item_is_done", "yearly_item_status",
+        "yearly_group_status", "yearly_group_statuses", "yearly_item_years",
+        "yearly_item_status_markup", "apply_yearly_group_button_styles",
     }
     nodes = [n for n in TREE.body if
              (isinstance(n, ast.Assign) and any(isinstance(t, ast.Name) and t.id in names for t in n.targets))
@@ -516,6 +524,97 @@ class PlaceholderAndLogicTests(unittest.TestCase):
         self.assertEqual(self.s["combine_maint_status"]("ok", None), "ok")
         self.assertIsNone(self.s["combine_maint_status"](None, None))
 
+
+
+    def test_yearly_items_groups_status_and_training_subheading(self):
+        from datetime import date, datetime
+        from zoneinfo import ZoneInfo
+        today = date(2026, 11, 10)
+        self.assertEqual(self.s["YEARLY_ITEMS_SHEET_TITLE"], "Yearly Items")
+        self.assertEqual(self.s["YEARLY_ITEMS_COLUMNS"], [
+            "Timestamp", "Year", "Group", "Item", "Date Done", "Done By", "Notes",
+        ])
+        self.assertEqual(self.s["yearly_item_group_names"](), [
+            "Winterizing",
+            "Fuel Systems",
+            "Annual Policies & Procedures (SMS)",
+            "Training",
+        ])
+        self.assertEqual(self.s["yearly_items_for_group"]("Winterizing"), [
+            "Office irrigation system",
+            "Trucks",
+            "Rinse Pad",
+            "Pod",
+            "Heli hauler",
+            "Bounder",
+        ])
+        self.assertEqual(self.s["yearly_items_for_group"]("Fuel Systems"), ["Tanks"])
+        self.assertEqual(
+            self.s["yearly_items_for_group"]("Annual Policies & Procedures (SMS)"),
+            ["Annual SMS policies & procedures review"],
+        )
+        self.assertEqual(self.s["yearly_items_for_group"]("Training"), [
+            "WPS Mixer/Loader",
+            "Pilot Training - N480ML",
+            "Pilot Training - N893PC",
+        ])
+        sections = self.s["yearly_item_sections"]("Training")
+        self.assertEqual(sections[0], (None, ["WPS Mixer/Loader"]))
+        self.assertEqual(sections[1], ("Pilot Training", [
+            "Pilot Training - N480ML",
+            "Pilot Training - N893PC",
+        ]))
+        self.assertEqual(self.s["yearly_item_display_name"]("Pilot Training - N480ML", "Pilot Training"), "N480ML")
+        self.assertEqual(self.s["yearly_item_display_name"]("WPS Mixer/Loader", None), "WPS Mixer/Loader")
+        self.assertEqual(self.s["yearly_group_button_key"]("Fuel Systems"), "yearly_group_Fuel_Systems")
+        self.assertEqual(
+            self.s["yearly_group_button_key"]("Annual Policies & Procedures (SMS)"),
+            "yearly_group_Annual_Policies_Procedures_SMS",
+        )
+
+        when = datetime(2026, 11, 10, 9, 0, 0, tzinfo=ZoneInfo("America/Los_Angeles"))
+        trucks = self.s["build_yearly_item_record"](
+            2026, "Winterizing", "Trucks", date(2026, 10, 15), "Ron Cline", "Winterized", when=when,
+        )
+        self.assertEqual(trucks["Year"], "2026")
+        self.assertEqual(trucks["Group"], "Winterizing")
+        self.assertEqual(trucks["Item"], "Trucks")
+        self.assertEqual(trucks["Date Done"], "2026-10-15")
+        self.assertEqual(trucks["Done By"], "Ron Cline")
+        tanks = self.s["build_yearly_item_record"](
+            2026, "Fuel Systems", "Tanks", date(2026, 11, 1), "Gary Grant", "", when=when,
+        )
+        n480 = self.s["build_yearly_item_record"](
+            2026, "Training", "Pilot Training - N480ML", date(2026, 9, 1), "Anthony Root", "", when=when,
+        )
+        records = [trucks, tanks, n480]
+        self.assertEqual(self.s["yearly_item_status"](records, 2026, "Winterizing", "Trucks"), "ok")
+        self.assertEqual(self.s["yearly_item_status"](records, 2026, "Winterizing", "Pod"), "expired")
+        self.assertEqual(self.s["yearly_group_status"](records, 2026, "Winterizing"), "expired")
+        self.assertEqual(self.s["yearly_group_status"](records, 2026, "Fuel Systems"), "ok")
+        self.assertEqual(self.s["yearly_group_status"](records, 2026, "Annual Policies & Procedures (SMS)"), "expired")
+        self.assertEqual(self.s["yearly_group_status"](records, 2026, "Training"), "expired")
+        self.assertEqual(self.s["yearly_item_status"](records, 2026, "Training", "Pilot Training - N480ML"), "ok")
+        self.assertEqual(self.s["yearly_item_status"](records, 2026, "Training", "WPS Mixer/Loader"), "expired")
+        all_winter = records + [
+            self.s["build_yearly_item_record"](2026, "Winterizing", item, date(2026, 10, 15), "Ron Cline", "", when=when)
+            for item in self.s["yearly_items_for_group"]("Winterizing")
+            if item != "Trucks"
+        ]
+        self.assertEqual(self.s["yearly_group_status"](all_winter, 2026, "Winterizing"), "ok")
+        self.assertEqual(self.s["yearly_group_status"](records, 2025, "Fuel Systems"), "expired")
+        self.assertEqual(self.s["yearly_item_years"](records, today=today), [2026])
+        kind, html = self.s["yearly_item_status_markup"]("Trucks", trucks)
+        self.assertEqual(kind, "ok")
+        self.assertIn("#15803d", html)
+        self.assertIn("2026-10-15", html)
+        self.assertIn("Ron Cline", html)
+        kind, html = self.s["yearly_item_status_markup"]("Pod", None)
+        self.assertEqual(kind, "expired")
+        self.assertIn("#b91c1c", html)
+        self.assertIn("Not done yet", html)
+        with self.assertRaisesRegex(ValueError, "Done By"):
+            self.s["build_yearly_item_record"](2026, "Fuel Systems", "Tanks", date(2026, 11, 1), "", "")
 
     def test_ifta_have_receipt_yes_no_and_keeps_receipt_hash_header(self):
         from datetime import date
@@ -1338,6 +1437,64 @@ class FakeSheetBehaviorTests(unittest.TestCase):
         self._assert_frat_untouched()
 
 
+
+    def test_yearly_items_save_and_readonly_load_leave_headers_alone(self):
+        from datetime import date, datetime
+        from zoneinfo import ZoneInfo
+        frat_writes = list(self.book.sheet1.writes)
+        self.assertEqual(self.s["load_yearly_item_records_readonly"](self.book), [])
+        self.assertNotIn("Yearly Items", self.book.sheets)
+        statuses = self.s["yearly_group_statuses"]([], 2026)
+        self.assertEqual(statuses["Winterizing"], "expired")
+        self.assertEqual(statuses["Fuel Systems"], "expired")
+        self.assertEqual(statuses["Annual Policies & Procedures (SMS)"], "expired")
+        self.assertEqual(statuses["Training"], "expired")
+        self.assertNotIn("Yearly Items", self.book.sheets)
+        self.assertEqual(self.book.sheet1.writes, frat_writes)
+        self._assert_frat_untouched()
+
+        when = datetime(2026, 11, 10, 9, 0, 0, tzinfo=ZoneInfo("America/Los_Angeles"))
+        record = self.s["build_yearly_item_record"](
+            2026, "Training", "Pilot Training - N893PC", date(2026, 9, 12),
+            "Ron Cline", "Annual review", when=when,
+        )
+        self.s["save_yearly_item_record"](record, self.book)
+        self.assertIn("Yearly Items", self.book.sheets)
+        ws = self.book.sheets["Yearly Items"]
+        self.assertEqual(ws.rows[0], self.s["YEARLY_ITEMS_COLUMNS"])
+        self.assertEqual(ws.rows[1][ws.rows[0].index("Group")], "Training")
+        self.assertEqual(ws.rows[1][ws.rows[0].index("Item")], "Pilot Training - N893PC")
+        self.assertEqual(ws.rows[1][ws.rows[0].index("Year")], "2026")
+        self.assertEqual(ws.rows[1][ws.rows[0].index("Date Done")], "2026-09-12")
+        self.assertEqual(ws.rows[1][ws.rows[0].index("Done By")], "Ron Cline")
+        self.assertEqual(ws.rows[1][ws.rows[0].index("Notes")], "Annual review")
+        header = list(ws.rows[0])
+        writes_after_save = list(ws.writes)
+        loaded = self.s["load_yearly_item_records_readonly"](self.book)
+        self.assertEqual(len(loaded), 1)
+        self.assertEqual(loaded[0]["Item"], "Pilot Training - N893PC")
+        self.assertTrue(self.s["yearly_item_is_done"](loaded, 2026, "Training", "Pilot Training - N893PC"))
+        self.assertEqual(ws.rows[0], header)
+        self.assertEqual(ws.writes, writes_after_save)
+        second, created_again = self.s["ensure_yearly_items_worksheet"](self.book)
+        self.assertFalse(created_again)
+        self.assertEqual(second.rows[0], header)
+        self.assertNotIn("Equipment", self.book.sheets)
+        self.assertNotIn("IFTA Fuel", self.book.sheets)
+        self._assert_frat_untouched()
+
+    def test_yearly_items_ensure_does_not_alter_an_existing_custom_header(self):
+        ws = self.book.add_worksheet("Yearly Items", 20, 8)
+        custom = ["Timestamp", "Year", "Group", "Item", "Date Done", "Done By", "Notes", "Extra"]
+        ws.append_row(custom)
+        writes = list(ws.writes)
+        out, created = self.s["ensure_yearly_items_worksheet"](self.book)
+        self.assertFalse(created)
+        self.assertIs(out, ws)
+        self.assertEqual(ws.rows[0], custom)
+        self.assertEqual(ws.writes, writes)
+        self._assert_frat_untouched()
+
     def test_ifta_fuel_have_receipt_does_not_alter_existing_header(self):
         from datetime import date
         header = [
@@ -1519,7 +1676,18 @@ class HeaderAndEquipmentPageTests(unittest.TestCase):
         self.assertTrue(any(b.label == "Save meeting" for b in at.button))
         at.button(key="nav_yearly_items").click().run()
         self.assertTrue(any(t.value == "Yearly Items" for t in at.title))
-        self.assertTrue(any("Coming soon - Ron to define contents" in (i.value or "") for i in at.info))
+        self.assertFalse(any("Coming soon - Ron to define contents" in (i.value or "") for i in at.info))
+        labels = [b.label for b in at.button]
+        self.assertIn("Winterizing", labels)
+        self.assertIn("Fuel Systems", labels)
+        self.assertIn("Annual Policies & Procedures (SMS)", labels)
+        self.assertIn("Training", labels)
+        self.assertLess(labels.index("Winterizing"), labels.index("Fuel Systems"))
+        self.assertLess(labels.index("Fuel Systems"), labels.index("Annual Policies & Procedures (SMS)"))
+        self.assertLess(labels.index("Annual Policies & Procedures (SMS)"), labels.index("Training"))
+        book = at.session_state.get("_workbook")
+        if book is not None:
+            self.assertNotIn("Yearly Items", book.sheets)
         at.button(key="nav_dom").click().run()
         self.assertFalse(list(at.exception))
         self.assertTrue(any(t.value == "DOM" for t in at.title))
@@ -1846,6 +2014,150 @@ class HeaderAndEquipmentPageTests(unittest.TestCase):
         if "Squawks" in book.sheets:
             self.assertEqual(book.sheets["Squawks"].rows[0][0], "Timestamp")
 
+
+
+    def test_yearly_items_page_buttons_colors_and_saves_on_fake_sheet(self):
+        from datetime import date
+        from streamlit.testing.v1 import AppTest
+        at = AppTest.from_string(equipment_offline_app(), default_timeout=30).run()
+        at.button(key="nav_yearly_items").click().run()
+        self.assertFalse(list(at.exception))
+        self.assertTrue(any(t.value == "Yearly Items" for t in at.title))
+        self.assertFalse(any("Coming soon - Ron to define contents" in (i.value or "") for i in at.info))
+        self.assertTrue(any(s.label == "Year" for s in at.selectbox))
+        self.assertTrue(any(t.value == "History" for t in at.subheader))
+        self.assertTrue(any("No yearly items recorded for 2026." in (i.value or "") for i in at.info))
+        for label in (
+            "Winterizing",
+            "Fuel Systems",
+            "Annual Policies & Procedures (SMS)",
+            "Training",
+        ):
+            self.assertTrue(any(b.label == label for b in at.button), label)
+        md = " ".join(m.value or "" for m in at.markdown)
+        self.assertIn(".st-key-yearly_group_Winterizing", md)
+        self.assertIn(".st-key-yearly_group_Fuel_Systems", md)
+        self.assertIn(".st-key-yearly_group_Annual_Policies_Procedures_SMS", md)
+        self.assertIn(".st-key-yearly_group_Training", md)
+        compact = md.replace(" ", "")
+        self.assertIn("background-color:#b91c1c", compact)
+        book = at.session_state["_workbook"]
+        self.assertNotIn("Yearly Items", book.sheets)
+        self.assertEqual(book.sheets["Sheet1"].rows, [])
+
+        at.button(key="yearly_group_Fuel_Systems").click().run()
+        self.assertFalse(list(at.exception))
+        self.assertTrue(any(t.value == "Fuel Systems" for t in at.subheader))
+        self.assertTrue(any(b.label == "Back" for b in at.button))
+        md = " ".join(m.value or "" for m in at.markdown)
+        self.assertIn("Tanks", md)
+        self.assertIn("Not done yet", md)
+        self.assertIn("#b91c1c", md)
+        next(s for s in at.selectbox if s.label == "Done By").select("Gary Grant")
+        next(d for d in at.date_input if d.label == "Date Done").set_value(date(2026, 11, 1))
+        notes = [t for t in at.text_input if t.label == "Notes (optional)"]
+        if notes:
+            notes[0].set_value("Fall service")
+        next(b for b in at.button if b.label == "Save").click().run()
+        self.assertFalse(list(at.exception))
+        self.assertTrue(any("Saved Tanks for 2026." in (s.value or "") for s in at.success))
+        md = " ".join(m.value or "" for m in at.markdown)
+        self.assertIn("#15803d", md)
+        self.assertIn("2026-11-01", md)
+        self.assertIn("Gary Grant", md)
+        next(b for b in at.button if b.label == "Back").click().run()
+        self.assertFalse(list(at.exception))
+        compact = " ".join((m.value or "").replace(" ", "") for m in at.markdown)
+        self.assertIn("background-color:#15803d", compact)
+        self.assertIn("background-color:#b91c1c", compact)
+        hist = " ".join(m.value or "" for m in at.markdown) + " " + " ".join(i.value or "" for i in at.info)
+        # History should list Tanks
+        self.assertIn("Tanks", " ".join(m.value or "" for m in at.markdown))
+        self.assertIn("Gary Grant", " ".join(m.value or "" for m in at.markdown))
+
+        at.button(key="yearly_group_Annual_Policies_Procedures_SMS").click().run()
+        self.assertFalse(list(at.exception))
+        self.assertTrue(any(t.value == "Annual Policies & Procedures (SMS)" for t in at.subheader))
+        sms_md = " ".join(m.value or "" for m in at.markdown)
+        self.assertTrue("Annual SMS policies" in sms_md and "procedures review" in sms_md)
+        next(s for s in at.selectbox if s.label == "Done By").select("Ron Cline")
+        next(d for d in at.date_input if d.label == "Date Done").set_value(date(2026, 10, 20))
+        next(b for b in at.button if b.label == "Save").click().run()
+        self.assertFalse(list(at.exception))
+        next(b for b in at.button if b.label == "Back").click().run()
+        self.assertFalse(list(at.exception))
+
+        at.button(key="yearly_group_Training").click().run()
+        self.assertFalse(list(at.exception))
+        self.assertTrue(any(t.value == "Training" for t in at.subheader))
+        md = " ".join(m.value or "" for m in at.markdown)
+        self.assertIn("WPS Mixer/Loader", md)
+        self.assertIn("**Pilot Training**", md)
+        self.assertIn("N480ML", md)
+        self.assertIn("N893PC", md)
+        # Fill the N480ML form (second Done By after WPS).
+        by_boxes = [s for s in at.selectbox if s.label == "Done By"]
+        self.assertEqual(len(by_boxes), 3)
+        by_boxes[1].select("Anthony Root")
+        date_boxes = [d for d in at.date_input if d.label == "Date Done"]
+        date_boxes[1].set_value(date(2026, 9, 1))
+        save_btns = [b for b in at.button if b.label == "Save"]
+        self.assertEqual(len(save_btns), 3)
+        save_btns[1].click().run()
+        self.assertFalse(list(at.exception))
+        self.assertTrue(any("Saved Pilot Training - N480ML for 2026." in (s.value or "") for s in at.success))
+        next(b for b in at.button if b.label == "Back").click().run()
+        self.assertFalse(list(at.exception))
+
+        at.button(key="yearly_group_Winterizing").click().run()
+        self.assertFalse(list(at.exception))
+        md = " ".join(m.value or "" for m in at.markdown)
+        for item in ("Office irrigation system", "Trucks", "Rinse Pad", "Pod", "Heli hauler", "Bounder"):
+            self.assertIn(item, md)
+        by_boxes = [s for s in at.selectbox if s.label == "Done By"]
+        self.assertEqual(len(by_boxes), 6)
+        by_boxes[1].select("Ron Cline")
+        date_boxes = [d for d in at.date_input if d.label == "Date Done"]
+        date_boxes[1].set_value(date(2026, 10, 15))
+        note_boxes = [t for t in at.text_input if t.label == "Notes (optional)"]
+        note_boxes[1].set_value("Antifreeze added")
+        [b for b in at.button if b.label == "Save"][1].click().run()
+        self.assertFalse(list(at.exception))
+        self.assertTrue(any("Saved Trucks for 2026." in (s.value or "") for s in at.success))
+        md = " ".join(m.value or "" for m in at.markdown)
+        self.assertIn("2026-10-15", md)
+        self.assertIn("Ron Cline", md)
+        next(b for b in at.button if b.label == "Back").click().run()
+        self.assertFalse(list(at.exception))
+
+        # Winterizing and Training still incomplete (red); Fuel Systems and SMS complete (green).
+        compact = " ".join((m.value or "").replace(" ", "") for m in at.markdown)
+        self.assertIn("background-color:#15803d", compact)
+        self.assertIn("background-color:#b91c1c", compact)
+        history = " ".join(m.value or "" for m in at.markdown)
+        self.assertIn("Trucks", history)
+        self.assertIn("Tanks", history)
+        self.assertIn("Pilot Training", history)
+        self.assertIn("N480ML", history)
+        self.assertFalse(any("Coming soon - Ron to define contents" in (i.value or "") for i in at.info))
+
+        rows = book.sheets["Yearly Items"].rows
+        header = rows[0]
+        self.assertEqual(header, [
+            "Timestamp", "Year", "Group", "Item", "Date Done", "Done By", "Notes",
+        ])
+        items = {row[header.index("Item")]: row for row in rows[1:]}
+        self.assertEqual(items["Tanks"][header.index("Group")], "Fuel Systems")
+        self.assertEqual(items["Tanks"][header.index("Done By")], "Gary Grant")
+        self.assertEqual(items["Annual SMS policies & procedures review"][header.index("Group")], "Annual Policies & Procedures (SMS)")
+        self.assertEqual(items["Pilot Training - N480ML"][header.index("Group")], "Training")
+        self.assertEqual(items["Pilot Training - N480ML"][header.index("Done By")], "Anthony Root")
+        self.assertEqual(items["Trucks"][header.index("Notes")], "Antifreeze added")
+        self.assertEqual(len(rows), 5)  # header + 4 saves
+        self.assertEqual(book.sheets["Sheet1"].rows, [])
+        self.assertNotIn("Equipment", book.sheets)
+        self.assertNotIn("Safety Meetings", book.sheets)
+        self.assertEqual(set(book.sheets), {"Sheet1", "Yearly Items"})
 
     def test_dom_annual_buttons_color_by_saved_status(self):
         from datetime import date
