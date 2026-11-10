@@ -264,6 +264,15 @@ def load_frat_records():
 # ────────────────────────────────────────────────
 EQUIPMENT_SHEET_TITLE = "Equipment"
 SQUAWKS_SHEET_TITLE = "Squawks"
+SAFETY_MEETINGS_SHEET_TITLE = "Safety Meetings"
+# Add a string here to show another checklist item on the Monthly Safety Meeting form.
+SAFETY_MEETING_ITEMS = [
+    "Aircraft Fire Extinguishers",
+    "Review Equipment",
+    "Review Employee Licenses / Certificates",
+    "First Aid Kits",
+    "PPE",
+]
 REGISTRATION_EXPIRE_COL = "Registration Expire Date"
 ANNUAL_MAINT_COL = "Annual Maint Date"
 TONNAGE_APPLIES_COL = "Tonnage Applies"
@@ -276,6 +285,11 @@ EQUIPMENT_INFO_COLUMNS = [
     "Tonnage Applies", "Tonnage Wt Expire Date",
 ]
 EQUIPMENT_COLUMNS = ["Unit ID", "Name", "Type", "Active"] + EQUIPMENT_INFO_COLUMNS
+EQUIPMENT_EDIT_COLUMNS = [
+    "Type", "Active", "Year", "Make/Model", "VIN/Serial", "Plate/N-number", "Notes",
+    "Registration Expire Date", "Annual Maint Date",
+    "Tonnage Applies", "Tonnage Wt Expire Date",
+]
 SQUAWK_COLUMNS = [
     "Timestamp", "Unit ID", "Equipment Name", "Type", "Reported By", "Category",
     "Severity", "Description", "Odometer/Hours", "Status", "Resolved Date",
@@ -353,6 +367,18 @@ def parse_equipment_date(value):
         return date.fromisoformat(_cell(value)[:10])
     except ValueError:
         return None
+
+
+def format_equipment_date(value):
+    """Store dates as YYYY-MM-DD; blank stays blank."""
+    if value is None:
+        return ""
+    if hasattr(value, "strftime"):
+        return value.strftime("%Y-%m-%d")
+    parsed = parse_equipment_date(value)
+    if parsed is not None:
+        return parsed.strftime("%Y-%m-%d")
+    return _cell(value)
 
 
 def registration_due_date(unit):
@@ -644,38 +670,448 @@ def resolve_squawk(timestamp, unit_id, resolved_by, notes="", when=None, spreads
     raise RuntimeError("Could not find that open squawk on the Squawks tab")
 
 
+def update_equipment_record(unit_id, fields, spreadsheet=None):
+    """Update only this unit's data row on the Equipment tab.
+
+    Finds the row by Unit ID and writes values to matching columns by header
+    name. Never writes the FRAT (Sheet1) or Squawks tabs, never changes the
+    header row, and never changes Unit ID or Name.
+    """
+    unit_id = _cell(unit_id)
+    if not unit_id:
+        raise ValueError("Unit ID is required")
+    allowed = set(EQUIPMENT_EDIT_COLUMNS)
+    incoming = fields or {}
+    updates = {}
+    for col, value in incoming.items():
+        if col in ("Unit ID", "Name"):
+            continue
+        if col not in allowed:
+            continue
+        if col in (REGISTRATION_EXPIRE_COL, ANNUAL_MAINT_COL, TONNAGE_EXPIRE_COL):
+            updates[col] = format_equipment_date(value)
+        else:
+            updates[col] = _cell(value)
+    if not updates:
+        raise ValueError("No editable equipment fields to save")
+    spreadsheet = spreadsheet or _gsheets_spreadsheet()
+    ws = _worksheet_or_none(spreadsheet, EQUIPMENT_SHEET_TITLE)
+    if ws is None:
+        raise RuntimeError("Equipment worksheet not found")
+    values = ws.get_all_values()
+    if not values:
+        raise RuntimeError("Equipment worksheet has no header")
+    header = [_cell(c) for c in values[0]]
+    try:
+        unit_idx = header.index("Unit ID")
+    except ValueError as exc:
+        raise RuntimeError("Equipment worksheet is missing the Unit ID column") from exc
+    for row_number, row in enumerate(values[1:], start=2):
+        row_id = _cell(row[unit_idx]) if unit_idx < len(row) else ""
+        if row_id != unit_id:
+            continue
+        for col_name, value in updates.items():
+            if col_name not in header:
+                # Do not invent columns or touch the header row.
+                continue
+            col_number = header.index(col_name) + 1
+            ws.update_cell(row_number, col_number, value)
+        return True
+    raise RuntimeError("Could not find that unit on the Equipment tab")
+
+
+def safety_meeting_columns():
+    """Header for the Safety Meetings tab. New checklist items append as Done/Note pairs."""
+    cols = ["Timestamp", "Meeting Date", "Recorded By", "Attendees"]
+    for item in SAFETY_MEETING_ITEMS:
+        cols.append(item + " Done")
+        cols.append(item + " Note")
+    cols.append("Discussion Notes")
+    return cols
+
+
+def _safety_item_key(item):
+    return "".join(ch.lower() if ch.isalnum() else "_" for ch in item).strip("_")
+
+
+def ensure_safety_meetings_worksheet(spreadsheet):
+    """Create the Safety Meetings tab with a header when it is missing.
+
+    Existing headers are left in place; any newly added item columns are
+    appended on the right. Never writes FRAT, Squawks, or Equipment.
+    """
+    cols = safety_meeting_columns()
+    ws = _worksheet_or_none(spreadsheet, SAFETY_MEETINGS_SHEET_TITLE)
+    created = False
+    if ws is None:
+        ws = spreadsheet.add_worksheet(title=SAFETY_MEETINGS_SHEET_TITLE, rows=200, cols=max(len(cols), 8))
+        ws.append_row(cols, value_input_option="RAW")
+        created = True
+    else:
+        header = [_cell(c) for c in ws.row_values(1)]
+        if not header:
+            ws.append_row(cols, value_input_option="RAW")
+            created = True
+        else:
+            missing = [col for col in cols if col not in header]
+            if missing:
+                start = len(header) + 1
+                for offset, col in enumerate(missing):
+                    ws.update_cell(1, start + offset, col)
+    return ws, created
+
+
+def load_safety_meeting_records(spreadsheet=None):
+    ws, _created = ensure_safety_meetings_worksheet(spreadsheet or _gsheets_spreadsheet())
+    return records_from_worksheet(ws, safety_meeting_columns())
+
+
+def build_safety_meeting_record(meeting_date, recorded_by, attendees, item_states, discussion, when=None):
+    when = when or datetime.now(ZoneInfo("America/Los_Angeles"))
+    record = {
+        "Timestamp": when.strftime("%Y-%m-%d %H:%M:%S"),
+        "Meeting Date": format_equipment_date(meeting_date),
+        "Recorded By": _cell(recorded_by),
+        "Attendees": _cell(attendees),
+        "Discussion Notes": _cell(discussion),
+    }
+    states = item_states or {}
+    for item in SAFETY_MEETING_ITEMS:
+        state = states.get(item) or {}
+        done = state.get("done")
+        if done in (True, "Yes", "yes", "Y", "y", "1", "true", "True"):
+            record[item + " Done"] = "Yes"
+        else:
+            record[item + " Done"] = ""
+        record[item + " Note"] = _cell(state.get("note"))
+    return record
+
+
+def save_safety_meeting_record(record, spreadsheet=None):
+    """Append one meeting to the Safety Meetings tab only."""
+    ws, _created = ensure_safety_meetings_worksheet(spreadsheet or _gsheets_spreadsheet())
+    header = [_cell(c) for c in ws.row_values(1)]
+    if not header:
+        raise RuntimeError("Safety Meetings worksheet has no header")
+    ws.append_row([str(record.get(c, "")) for c in header], value_input_option="RAW")
+    return "Google Sheets (Safety Meetings)"
+
+
+def update_safety_meeting_discussion(timestamp, notes, spreadsheet=None):
+    """Replace Discussion Notes on the matching meeting row only. Never other tabs."""
+    timestamp = _cell(timestamp)
+    if not timestamp:
+        raise ValueError("Timestamp is required")
+    ws, _created = ensure_safety_meetings_worksheet(spreadsheet or _gsheets_spreadsheet())
+    values = ws.get_all_values()
+    if not values:
+        raise RuntimeError("Safety Meetings worksheet has no header")
+    header = [_cell(c) for c in values[0]]
+    try:
+        ts_idx = header.index("Timestamp")
+        notes_col = header.index("Discussion Notes") + 1
+    except ValueError as exc:
+        raise RuntimeError("Safety Meetings worksheet is missing required columns") from exc
+    for row_number, row in enumerate(values[1:], start=2):
+        row_ts = _cell(row[ts_idx]) if ts_idx < len(row) else ""
+        if row_ts != timestamp:
+            continue
+        ws.update_cell(row_number, notes_col, _cell(notes))
+        return True
+    raise RuntimeError("Could not find that meeting on the Safety Meetings tab")
+
+
+def _safety_meeting_sort_key(record):
+    stamp = parse_equipment_date(_cell(record.get("Timestamp"))[:10]) if _cell(record.get("Timestamp")) else None
+    # Prefer the full timestamp when present so same-day meetings sort correctly.
+    text_value = _cell(record.get("Timestamp"))
+    if text_value:
+        from datetime import datetime as _dt
+        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y/%m/%d %H:%M:%S", "%m/%d/%Y %H:%M:%S"):
+            try:
+                return _dt.strptime(text_value, fmt)
+            except ValueError:
+                continue
+    meeting = parse_equipment_date(record.get("Meeting Date"))
+    if meeting is not None:
+        return datetime(meeting.year, meeting.month, meeting.day)
+    if stamp is not None:
+        return datetime(stamp.year, stamp.month, stamp.day)
+    return datetime.min
+
+
+def show_safety_meetings_page():
+    """Monthly Safety Meeting form and past-meeting list. Phone-friendly, stacked fields."""
+    st.title("Monthly Safety Meeting")
+    today = datetime.now(ZoneInfo("America/Los_Angeles")).date()
+    try:
+        spreadsheet = _gsheets_spreadsheet()
+        meetings = load_safety_meeting_records(spreadsheet)
+    except Exception as exc:
+        st.error(f"Could not load safety meetings: {exc}")
+        return
+
+    if st.session_state.get("safety_meeting_saved"):
+        st.success(st.session_state.pop("safety_meeting_saved"))
+    if st.session_state.get("safety_meeting_notes_saved"):
+        st.success(st.session_state.pop("safety_meeting_notes_saved"))
+
+    gen = int(st.session_state.get("safety_form_gen") or 0)
+    st.date_input("Meeting Date", value=today, format="YYYY-MM-DD", key=f"safety_date_{gen}")
+    recorded_options = [""] + list(REPORTERS)
+    st.selectbox("Recorded By (optional)", recorded_options, key=f"safety_recorded_by_{gen}")
+    st.text_input("Attendees (optional)", key=f"safety_attendees_{gen}")
+
+    st.subheader("Checklist")
+    st.caption("Check Done / Reviewed and add a short note if needed.")
+    for item in SAFETY_MEETING_ITEMS:
+        slug = _safety_item_key(item)
+        st.markdown("**" + item + "**")
+        st.checkbox("Done / Reviewed", key=f"safety_done_{slug}_{gen}")
+        st.text_input("Note (optional)", key=f"safety_note_{slug}_{gen}", label_visibility="visible")
+
+    st.subheader("Meeting Discussion")
+    st.text_area("Discussion notes for this meeting", key=f"safety_discussion_{gen}", height=180)
+
+    if st.button("Save meeting", type="primary", key=f"safety_save_{gen}", use_container_width=True):
+        item_states = {}
+        for item in SAFETY_MEETING_ITEMS:
+            slug = _safety_item_key(item)
+            item_states[item] = {
+                "done": bool(st.session_state.get(f"safety_done_{slug}_{gen}")),
+                "note": st.session_state.get(f"safety_note_{slug}_{gen}", ""),
+            }
+        record = build_safety_meeting_record(
+            st.session_state.get(f"safety_date_{gen}"),
+            st.session_state.get(f"safety_recorded_by_{gen}", ""),
+            st.session_state.get(f"safety_attendees_{gen}", ""),
+            item_states,
+            st.session_state.get(f"safety_discussion_{gen}", ""),
+        )
+        try:
+            save_safety_meeting_record(record, spreadsheet=spreadsheet)
+        except Exception as exc:
+            st.error(f"Could not save the safety meeting: {exc}")
+        else:
+            st.session_state.safety_meeting_saved = (
+                "Saved safety meeting for " + (record.get("Meeting Date") or "today") + "."
+            )
+            st.session_state.safety_form_gen = gen + 1
+            st.rerun()
+
+    st.markdown("---")
+    st.subheader("Past meetings")
+    if not meetings:
+        st.info("No meetings recorded yet.")
+        return
+    for meeting in sorted(meetings, key=_safety_meeting_sort_key, reverse=True):
+        stamp = _cell(meeting.get("Timestamp"))
+        meeting_date = _cell(meeting.get("Meeting Date")) or "Meeting"
+        recorded = _cell(meeting.get("Recorded By"))
+        title = meeting_date + ((" — " + recorded) if recorded else "")
+        if stamp:
+            title = title + "  (" + stamp + ")"
+        with st.expander(title):
+            if _cell(meeting.get("Attendees")):
+                st.markdown("**Attendees:** " + _cell(meeting.get("Attendees")))
+            for item in SAFETY_MEETING_ITEMS:
+                done = _cell(meeting.get(item + " Done"))
+                note = _cell(meeting.get(item + " Note"))
+                mark = "Yes" if done.lower() in {"yes", "y", "true", "1"} else "No"
+                line = "**" + item + ":** " + ("Done / Reviewed" if mark == "Yes" else "Not reviewed")
+                if note:
+                    line = line + " — " + note
+                st.markdown(line)
+            disc_key = "safety_past_disc_" + _safety_item_key(stamp or meeting_date)
+            if disc_key not in st.session_state:
+                st.session_state[disc_key] = _cell(meeting.get("Discussion Notes"))
+            st.text_area("Discussion Notes", key=disc_key, height=140)
+            if st.button("Save discussion notes", key="safety_past_save_" + _safety_item_key(stamp or meeting_date), use_container_width=True):
+                try:
+                    update_safety_meeting_discussion(stamp, st.session_state.get(disc_key, ""), spreadsheet=spreadsheet)
+                except Exception as exc:
+                    st.error(f"Could not update discussion notes: {exc}")
+                else:
+                    st.session_state.safety_meeting_notes_saved = "Updated discussion notes for " + meeting_date + "."
+                    st.rerun()
+
+
 def show_placeholder_page(title):
     st.title(title)
     st.info("Coming soon - Ron to define contents")
 
 
-def show_equipment_info(unit, squawks):
+# Add a dict to this list to show another aircraft on the DOM page.
+DOM_AIRCRAFT = [
+    {"id": "N893PC"},
+    {"id": "N480ML"},
+]
+DOM_ACTION_ANNUAL = "Annual/100 Hr"
+
+
+def show_dom_annual_panel(aircraft_id):
+    """Placeholder only — do not invent inspection fields or data."""
+    st.title("DOM")
+    st.subheader(DOM_ACTION_ANNUAL + " — " + aircraft_id)
+    st.info("Coming soon - Ron to define contents")
+    if st.button("Back", key="dom_annual_back", use_container_width=True):
+        st.session_state.dom_annual_aircraft = None
+        st.rerun()
+
+
+def show_dom_page():
+    """Phone-friendly DOM list: one section per aircraft, actions stacked underneath."""
+    selected = _cell(st.session_state.get("dom_annual_aircraft"))
+    if selected:
+        show_dom_annual_panel(selected)
+        return
+    st.title("DOM")
+    for aircraft in DOM_AIRCRAFT:
+        aid = _cell(aircraft.get("id") or aircraft.get("name"))
+        if not aid:
+            continue
+        label = _cell(aircraft.get("name")) or aid
+        st.markdown("**" + label + "**")
+        if st.button(DOM_ACTION_ANNUAL, key="dom_annual_" + aid, use_container_width=True):
+            st.session_state.dom_annual_aircraft = aid
+            st.rerun()
+
+
+def clear_equipment_edit_widgets(unit_id):
+    """Drop edit-form widget state so the next open starts from the sheet row."""
+    unit_id = _cell(unit_id)
+    if not unit_id:
+        return
+    for suffix in (
+        "type", "active", "year", "make", "vin", "plate", "notes",
+        "reg", "annual", "tonnage_applies", "tonnage_expire",
+    ):
+        st.session_state.pop(f"edit_{suffix}_{unit_id}", None)
+
+
+def show_equipment_edit_form(unit, spreadsheet):
+    """Phone-friendly editor for one unit. Unit ID and Name stay read-only."""
+    unit_id = _cell(unit.get("Unit ID"))
+    name = _cell(unit.get("Name")) or unit_id
+    st.markdown("**Unit ID:** " + (unit_id if unit_id else "—"))
+    st.markdown("**Name:** " + (name if name else "—"))
+
+    def _init(key, value):
+        if key not in st.session_state:
+            st.session_state[key] = value
+
+    blank_type = "—"
+    type_options = [blank_type] + [t for t in EQUIPMENT_TYPES]
+    current_type = _cell(unit.get("Type"))
+    if current_type and current_type not in type_options:
+        type_options = [current_type] + type_options
+    _init(f"edit_type_{unit_id}", current_type if current_type else blank_type)
+    st.selectbox("Type", type_options, key=f"edit_type_{unit_id}")
+
+    _init(f"edit_active_{unit_id}", "Yes" if is_active_equipment(unit) else "No")
+    st.selectbox("Active", ["Yes", "No"], key=f"edit_active_{unit_id}")
+
+    _init(f"edit_year_{unit_id}", _cell(unit.get("Year")))
+    st.text_input("Year", key=f"edit_year_{unit_id}")
+    _init(f"edit_make_{unit_id}", _cell(unit.get("Make/Model")))
+    st.text_input("Make/Model", key=f"edit_make_{unit_id}")
+    _init(f"edit_vin_{unit_id}", _cell(unit.get("VIN/Serial")))
+    st.text_input("VIN/Serial", key=f"edit_vin_{unit_id}")
+    _init(f"edit_plate_{unit_id}", _cell(unit.get("Plate/N-number")))
+    st.text_input("Plate/N-number", key=f"edit_plate_{unit_id}")
+    _init(f"edit_notes_{unit_id}", _cell(unit.get("Notes")))
+    st.text_area("Notes", key=f"edit_notes_{unit_id}")
+
+    _init(f"edit_reg_{unit_id}", parse_equipment_date(unit.get(REGISTRATION_EXPIRE_COL)))
+    st.date_input("Registration Expire Date", format="YYYY-MM-DD", key=f"edit_reg_{unit_id}")
+    _init(f"edit_annual_{unit_id}", parse_equipment_date(unit.get(ANNUAL_MAINT_COL)))
+    st.date_input("Annual Maint Date", format="YYYY-MM-DD", key=f"edit_annual_{unit_id}")
+
+    # Read the widget first so a toggle immediately shows or hides the expire date.
+    _init(f"edit_tonnage_applies_{unit_id}", "Yes" if tonnage_applies(unit) else "No")
+    applies_choice = st.selectbox(
+        "Tonnage Applies",
+        ["Yes", "No"],
+        key=f"edit_tonnage_applies_{unit_id}",
+    )
+    if applies_choice == "Yes":
+        _init(f"edit_tonnage_expire_{unit_id}", parse_equipment_date(unit.get(TONNAGE_EXPIRE_COL)))
+        st.date_input("Tonnage Wt Expire Date", format="YYYY-MM-DD", key=f"edit_tonnage_expire_{unit_id}")
+
+    cancel_col, save_col = st.columns(2)
+    with cancel_col:
+        if st.button("Cancel", key=f"equip_edit_cancel_{unit_id}", use_container_width=True):
+            clear_equipment_edit_widgets(unit_id)
+            st.session_state.edit_unit_id = None
+            st.rerun()
+    with save_col:
+        if st.button("Save", type="primary", key=f"equip_edit_save_{unit_id}", use_container_width=True):
+            fields = {
+                "Type": ("" if st.session_state.get(f"edit_type_{unit_id}", "") == "—" else st.session_state.get(f"edit_type_{unit_id}", "")),
+                "Active": st.session_state.get(f"edit_active_{unit_id}", ""),
+                "Year": st.session_state.get(f"edit_year_{unit_id}", ""),
+                "Make/Model": st.session_state.get(f"edit_make_{unit_id}", ""),
+                "VIN/Serial": st.session_state.get(f"edit_vin_{unit_id}", ""),
+                "Plate/N-number": st.session_state.get(f"edit_plate_{unit_id}", ""),
+                "Notes": st.session_state.get(f"edit_notes_{unit_id}", ""),
+                REGISTRATION_EXPIRE_COL: st.session_state.get(f"edit_reg_{unit_id}"),
+                ANNUAL_MAINT_COL: st.session_state.get(f"edit_annual_{unit_id}"),
+                TONNAGE_APPLIES_COL: st.session_state.get(f"edit_tonnage_applies_{unit_id}", ""),
+            }
+            if _cell(fields[TONNAGE_APPLIES_COL]).lower() in {"yes", "y", "true", "1"}:
+                fields[TONNAGE_EXPIRE_COL] = st.session_state.get(f"edit_tonnage_expire_{unit_id}")
+            try:
+                update_equipment_record(unit_id, fields, spreadsheet=spreadsheet)
+            except Exception as exc:
+                st.error(f"Could not save equipment updates: {exc}")
+                return
+            clear_equipment_edit_widgets(unit_id)
+            st.session_state.edit_unit_id = None
+            if _cell(fields.get("Active")).lower() in {"no", "n", "false", "0", "inactive"}:
+                st.session_state.info_unit_id = None
+                st.session_state.equipment_saved = (
+                    "Saved updates for " + name + ". It is now inactive and hidden from this list."
+                )
+            else:
+                st.session_state.equipment_saved = "Saved updates for " + name + "."
+            st.rerun()
+
+
+def show_equipment_info(unit, squawks, spreadsheet=None):
     """Details from the Equipment tab plus this unit's squawk history. Blank fields stay blank."""
     name = _cell(unit.get("Name")) or _cell(unit.get("Unit ID"))
+    unit_id = _cell(unit.get("Unit ID"))
     st.markdown("---")
     st.subheader("Info — " + name)
-    today = datetime.now(ZoneInfo("America/Los_Angeles")).date()
-    for col in EQUIPMENT_COLUMNS:
-        if col == TONNAGE_APPLIES_COL:
-            continue
-        if col == TONNAGE_EXPIRE_COL and not tonnage_applies(unit):
-            continue
-        if col == REGISTRATION_EXPIRE_COL:
-            _kind, markup = date_status_markup(col, unit.get(col), registration_due_date(unit), today)
-            st.markdown(markup, unsafe_allow_html=True)
-            continue
-        if col == ANNUAL_MAINT_COL:
-            _kind, markup = date_status_markup(
-                col, unit.get(col), annual_maint_due_date(unit), today, due_note=True
-            )
-            st.markdown(markup, unsafe_allow_html=True)
-            continue
-        if col == TONNAGE_EXPIRE_COL:
-            _kind, markup = date_status_markup(col, unit.get(col), tonnage_due_date(unit), today)
-            st.markdown(markup, unsafe_allow_html=True)
-            continue
-        value = _cell(unit.get(col))
-        st.markdown("**" + col + ":** " + (value if value else "—"))
+    editing = st.session_state.get("edit_unit_id") == unit_id
+    if not editing:
+        if st.button("Edit", key=f"equip_edit_btn_{unit_id}", use_container_width=True):
+            st.session_state.edit_unit_id = unit_id
+            st.rerun()
+        today = datetime.now(ZoneInfo("America/Los_Angeles")).date()
+        for col in EQUIPMENT_COLUMNS:
+            if col == TONNAGE_APPLIES_COL:
+                continue
+            if col == TONNAGE_EXPIRE_COL and not tonnage_applies(unit):
+                continue
+            if col == REGISTRATION_EXPIRE_COL:
+                _kind, markup = date_status_markup(col, unit.get(col), registration_due_date(unit), today)
+                st.markdown(markup, unsafe_allow_html=True)
+                continue
+            if col == ANNUAL_MAINT_COL:
+                _kind, markup = date_status_markup(
+                    col, unit.get(col), annual_maint_due_date(unit), today, due_note=True
+                )
+                st.markdown(markup, unsafe_allow_html=True)
+                continue
+            if col == TONNAGE_EXPIRE_COL:
+                _kind, markup = date_status_markup(col, unit.get(col), tonnage_due_date(unit), today)
+                st.markdown(markup, unsafe_allow_html=True)
+                continue
+            value = _cell(unit.get(col))
+            st.markdown("**" + col + ":** " + (value if value else "—"))
+    else:
+        show_equipment_edit_form(unit, spreadsheet)
     history = list(reversed(squawks_for(unit.get("Unit ID"), squawks)))
     st.markdown("**Squawk history**")
     if not history:
@@ -732,6 +1168,8 @@ def show_equipment_page():
         st.success(st.session_state.pop("squawk_saved"))
     if st.session_state.get("squawk_resolved"):
         st.success(st.session_state.pop("squawk_resolved"))
+    if st.session_state.get("equipment_saved"):
+        st.success(st.session_state.pop("equipment_saved"))
 
     selected_id = st.session_state.get("squawk_unit_id")
     info_id = st.session_state.get("info_unit_id")
@@ -763,16 +1201,20 @@ def show_equipment_page():
                 st.warning(f"{count} open squawk{'s' if count != 1 else ''}")
         with info_col:
             if st.button("INFO", key=f"info_btn_{unit_id}", use_container_width=True):
+                clear_equipment_edit_widgets(st.session_state.get("edit_unit_id"))
                 st.session_state.info_unit_id = None if info_id == unit_id else unit_id
                 st.session_state.squawk_unit_id = None
+                st.session_state.edit_unit_id = None
                 st.rerun()
         with squawk_col:
             if st.button("Squawk", key=f"squawk_btn_{unit_id}", use_container_width=True):
+                clear_equipment_edit_widgets(st.session_state.get("edit_unit_id"))
                 st.session_state.squawk_unit_id = unit_id
                 st.session_state.info_unit_id = None
+                st.session_state.edit_unit_id = None
                 st.rerun()
         if info_id == unit_id:
-            show_equipment_info(unit, squawks)
+            show_equipment_info(unit, squawks, spreadsheet=spreadsheet)
         if _cell(selected_id) == unit_id:
             typ = _cell(unit.get("Type"))
             form_bits = [unit_id] + ([typ] if typ else []) + ["times are Pacific (America/Los_Angeles)"]
@@ -1494,19 +1936,19 @@ elif st.session_state.current_mode == "Driver":
             st.success(item) 
 
 # ────────────────────────────────────────────────
-# HEADER PAGES (Equipment squawks; other pages are placeholders)
+# HEADER PAGES (Equipment, Monthly Safety Meeting, DOM aircraft list; Yearly Items is a placeholder)
 # ────────────────────────────────────────────────
 elif st.session_state.current_mode == "Equipment":
     show_equipment_page()
 
 elif st.session_state.current_mode == "Monthly Safety Meeting":
-    show_placeholder_page("Monthly Safety Meeting")
+    show_safety_meetings_page()
 
 elif st.session_state.current_mode == "Yearly Items":
     show_placeholder_page("Yearly Items")
 
 elif st.session_state.current_mode == "DOM":
-    show_placeholder_page("DOM")
+    show_dom_page()
 
 # ────────────────────────────────────────────────
 # EMERGENCY CHECKLIST

@@ -15,24 +15,29 @@ APP = Path(__file__).resolve().parents[1] / "app.py"
 def _exec_equipment_helpers():
     names = {
         "PILOTS", "ACCOUNTABLE_EXEC", "DIRECTOR_MAINTENANCE", "APPROVERS",
-        "EQUIPMENT_SHEET_TITLE", "SQUAWKS_SHEET_TITLE",
-        "EQUIPMENT_INFO_COLUMNS", "EQUIPMENT_COLUMNS", "SQUAWK_COLUMNS", "EQUIPMENT_TYPES",
+        "EQUIPMENT_SHEET_TITLE", "SQUAWKS_SHEET_TITLE", "SAFETY_MEETINGS_SHEET_TITLE", "SAFETY_MEETING_ITEMS",
+        "EQUIPMENT_INFO_COLUMNS", "EQUIPMENT_COLUMNS", "EQUIPMENT_EDIT_COLUMNS", "SQUAWK_COLUMNS", "EQUIPMENT_TYPES",
         "SQUAWK_CATEGORIES", "SQUAWK_SEVERITIES", "SEVERITY_GROUNDED", "STATUS_OPEN",
         "STATUS_RESOLVED", "REPORTERS", "ACTIVE_VALUES", "HEADER_PAGES",
         "OFFICIAL_EQUIPMENT_NAMES", "REGISTRATION_EXPIRE_COL", "ANNUAL_MAINT_COL",
         "TONNAGE_APPLIES_COL", "TONNAGE_EXPIRE_COL", "TONNAGE_DEFAULT_UNITS", "DATE_STATUS_COLORS",
+        "DOM_AIRCRAFT", "DOM_ACTION_ANNUAL",
         "PARTS", "CORE_FACTORS", "PART_FACTORS", "PART_STOPS", "CONFIG_FIELDS",
         "ALL_FACTOR_KEYS", "ALL_STOP_KEYS", "FRAT_COLUMNS",
     }
     functions = {
         "_unique", "official_equipment_rows", "is_placeholder_equipment_seed",
-        "_cell", "parse_equipment_date", "registration_due_date", "annual_maint_due_date",
+        "_cell", "parse_equipment_date", "format_equipment_date", "registration_due_date", "annual_maint_due_date",
         "date_flag", "date_flag_label", "date_status_markup", "tonnage_applies", "tonnage_due_date", "is_active_equipment",
         "is_open_squawk", "is_grounded_squawk", "squawks_for", "open_squawks_for",
         "equipment_has_grounding", "records_from_worksheet", "_worksheet_or_none",
         "_write_equipment_rows", "ensure_equipment_worksheet", "ensure_equipment_info_columns",
         "ensure_squawks_worksheet", "load_equipment_records",
         "load_squawk_records", "build_squawk_record", "save_squawk_record", "resolve_squawk",
+        "update_equipment_record",
+        "safety_meeting_columns", "_safety_item_key", "ensure_safety_meetings_worksheet",
+        "load_safety_meeting_records", "build_safety_meeting_record", "save_safety_meeting_record",
+        "update_safety_meeting_discussion", "_safety_meeting_sort_key",
     }
     nodes = [n for n in TREE.body if
              (isinstance(n, ast.Assign) and any(isinstance(t, ast.Name) and t.id in names for t in n.targets))
@@ -248,6 +253,46 @@ class PlaceholderAndLogicTests(unittest.TestCase):
         self.assertEqual(record["Resolved Date"], "")
         self.assertEqual(list(record), self.s["SQUAWK_COLUMNS"])
 
+    def test_dom_aircraft_list_is_easy_to_extend(self):
+        ids = [a["id"] for a in self.s["DOM_AIRCRAFT"]]
+        self.assertEqual(ids, ["N893PC", "N480ML"])
+        self.assertEqual(self.s["DOM_ACTION_ANNUAL"], "Annual/100 Hr")
+        self.assertTrue(all("id" in aircraft for aircraft in self.s["DOM_AIRCRAFT"]))
+
+    def test_format_equipment_date(self):
+        from datetime import date
+        fmt = self.s["format_equipment_date"]
+        self.assertEqual(fmt(None), "")
+        self.assertEqual(fmt(date(2027, 3, 1)), "2027-03-01")
+        self.assertEqual(fmt("03/01/2027"), "2027-03-01")
+        self.assertEqual(fmt(""), "")
+
+    def test_safety_meeting_columns_are_extensible(self):
+        items = self.s["SAFETY_MEETING_ITEMS"]
+        self.assertEqual(items, [
+            "Aircraft Fire Extinguishers",
+            "Review Equipment",
+            "Review Employee Licenses / Certificates",
+            "First Aid Kits",
+            "PPE",
+        ])
+        cols = self.s["safety_meeting_columns"]()
+        self.assertEqual(cols[:4], ["Timestamp", "Meeting Date", "Recorded By", "Attendees"])
+        self.assertEqual(cols[-1], "Discussion Notes")
+        for item in items:
+            self.assertIn(item + " Done", cols)
+            self.assertIn(item + " Note", cols)
+            self.assertLess(cols.index(item + " Done"), cols.index(item + " Note"))
+        # Adding an item later should only append new Done/Note pairs before Discussion Notes.
+        original = list(items)
+        try:
+            items.append("New Item")
+            extended = self.s["safety_meeting_columns"]()
+            self.assertEqual(extended[-3:], ["New Item Done", "New Item Note", "Discussion Notes"])
+            self.assertEqual(extended[:-3], cols[:-1])
+        finally:
+            items[:] = original
+
 
 class FakeSheetBehaviorTests(unittest.TestCase):
     def setUp(self):
@@ -361,6 +406,169 @@ class FakeSheetBehaviorTests(unittest.TestCase):
         self.s["ensure_squawks_worksheet"](self.book)
         with self.assertRaisesRegex(ValueError, "Resolved By"):
             self.s["resolve_squawk"]("2026-11-10 08:21:00", "CAR-01", "  ", spreadsheet=self.book)
+
+    def test_update_equipment_writes_only_matching_row_by_header(self):
+        from datetime import date
+        # Column order is intentionally different from EQUIPMENT_COLUMNS.
+        cols = [
+            "Name", "Active", "Unit ID", "Notes", "Year", "Type", "Make/Model",
+            "VIN/Serial", "Plate/N-number", "Registration Expire Date",
+            "Annual Maint Date", "Tonnage Applies", "Tonnage Wt Expire Date",
+        ]
+        self.book.sheets["Equipment"] = FakeWorksheet("Equipment", [
+            cols,
+            ["Heli1", "Yes", "Heli1", "", "", "", "", "", "", "", "", "", ""],
+            ["Heli2", "Yes", "Heli2", "old note", "", "", "", "", "", "", "", "Yes", "2026-01-01"],
+            ["Heli3", "Yes", "Heli3", "leave me", "2010", "", "", "", "", "", "", "Yes", ""],
+        ])
+        self.s["ensure_squawks_worksheet"](self.book)
+        squawks_before = [list(r) for r in self.book.sheets["Squawks"].rows]
+        squawks_writes_before = list(self.book.sheets["Squawks"].writes)
+        header_before = list(self.book.sheets["Equipment"].rows[0])
+        heli3_before = list(self.book.sheets["Equipment"].rows[3])
+
+        self.s["update_equipment_record"]("Heli2", {
+            "Unit ID": "SHOULD-NOT-CHANGE",
+            "Name": "SHOULD-NOT-CHANGE",
+            "Year": "2018",
+            "Make/Model": "Test Model",
+            "Type": "Vehicle",
+            "Active": "Yes",
+            "VIN/Serial": "SN123",
+            "Plate/N-number": "ABC123",
+            "Notes": "Phone edit",
+            "Registration Expire Date": date(2027, 3, 1),
+            "Annual Maint Date": "2026-04-15",
+            "Tonnage Applies": "Yes",
+            "Tonnage Wt Expire Date": date(2027, 6, 1),
+            "Not A Column": "ignore me",
+        }, self.book)
+
+        records = self.s["records_from_worksheet"](self.book.sheets["Equipment"], self.s["EQUIPMENT_COLUMNS"])
+        heli2 = next(r for r in records if r["Unit ID"] == "Heli2")
+        self.assertEqual(heli2["Name"], "Heli2")
+        self.assertEqual(heli2["Unit ID"], "Heli2")
+        self.assertEqual(heli2["Year"], "2018")
+        self.assertEqual(heli2["Make/Model"], "Test Model")
+        self.assertEqual(heli2["Type"], "Vehicle")
+        self.assertEqual(heli2["VIN/Serial"], "SN123")
+        self.assertEqual(heli2["Plate/N-number"], "ABC123")
+        self.assertEqual(heli2["Notes"], "Phone edit")
+        self.assertEqual(heli2["Registration Expire Date"], "2027-03-01")
+        self.assertEqual(heli2["Annual Maint Date"], "2026-04-15")
+        self.assertEqual(heli2["Tonnage Applies"], "Yes")
+        self.assertEqual(heli2["Tonnage Wt Expire Date"], "2027-06-01")
+        self.assertEqual(self.book.sheets["Equipment"].rows[0], header_before)
+        self.assertFalse(any(w[0] == "update_cell" and w[1] == 1 for w in self.book.sheets["Equipment"].writes))
+        self.assertEqual(self.book.sheets["Equipment"].rows[3], heli3_before)
+        self.assertEqual(self.book.sheets["Squawks"].rows, squawks_before)
+        self.assertEqual(self.book.sheets["Squawks"].writes, squawks_writes_before)
+        self._assert_frat_untouched()
+
+    def test_update_equipment_leaves_tonnage_date_when_not_in_fields(self):
+        cols = self.s["EQUIPMENT_COLUMNS"]
+        row = {c: "" for c in cols}
+        row.update({"Unit ID": "Heli2", "Name": "Heli2", "Active": "Yes", "Tonnage Applies": "Yes", "Tonnage Wt Expire Date": "2026-08-01"})
+        self.book.sheets["Equipment"] = FakeWorksheet("Equipment", [cols, [row[c] for c in cols]])
+        self.s["update_equipment_record"]("Heli2", {"Tonnage Applies": "No", "Year": "2019"}, self.book)
+        records = self.s["records_from_worksheet"](self.book.sheets["Equipment"], cols)
+        self.assertEqual(records[0]["Tonnage Applies"], "No")
+        self.assertEqual(records[0]["Year"], "2019")
+        self.assertEqual(records[0]["Tonnage Wt Expire Date"], "2026-08-01")
+        self.assertEqual(records[0]["Name"], "Heli2")
+        self._assert_frat_untouched()
+
+    def test_update_equipment_rejects_missing_unit(self):
+        cols = self.s["EQUIPMENT_COLUMNS"]
+        row = {c: "" for c in cols}
+        row.update({"Unit ID": "Heli1", "Name": "Heli1", "Active": "Yes"})
+        self.book.sheets["Equipment"] = FakeWorksheet("Equipment", [cols, [row[c] for c in cols]])
+        with self.assertRaisesRegex(ValueError, "Unit ID"):
+            self.s["update_equipment_record"]("  ", {"Year": "2018"}, self.book)
+        with self.assertRaisesRegex(RuntimeError, "Could not find that unit"):
+            self.s["update_equipment_record"]("MissingUnit", {"Year": "2018"}, self.book)
+        self.assertEqual(self.book.sheets["Equipment"].rows[1][cols.index("Year")], "")
+        self._assert_frat_untouched()
+
+
+    def test_safety_meetings_tab_saves_and_updates_discussion_only(self):
+        from datetime import date
+        # Pre-seed FRAT, Equipment, and Squawks so we can prove those headers stay put.
+        self.s["ensure_equipment_worksheet"](self.book)
+        self.s["ensure_squawks_worksheet"](self.book)
+        equipment_before = [list(r) for r in self.book.sheets["Equipment"].rows]
+        squawks_before = [list(r) for r in self.book.sheets["Squawks"].rows]
+        equipment_writes = list(self.book.sheets["Equipment"].writes)
+        squawks_writes = list(self.book.sheets["Squawks"].writes)
+
+        ws, created = self.s["ensure_safety_meetings_worksheet"](self.book)
+        self.assertTrue(created)
+        self.assertEqual(ws.row_values(1), self.s["safety_meeting_columns"]())
+        second, created_again = self.s["ensure_safety_meetings_worksheet"](self.book)
+        self.assertFalse(created_again)
+        self.assertIs(second, ws)
+
+        earlier = self.s["build_safety_meeting_record"](
+            date(2026, 10, 1), "Ronald A Cline", "Ron, Carl",
+            {
+                "Aircraft Fire Extinguishers": {"done": True, "note": "Cabin bottle OK"},
+                "PPE": {"done": False, "note": ""},
+            },
+            "Talked about winter ops.",
+            _pacific("2026-10-01 09:00:00"),
+        )
+        later = self.s["build_safety_meeting_record"](
+            date(2026, 11, 10), "Anthony Root", "",
+            {"Review Equipment": {"done": True, "note": "List reviewed"}},
+            "Discussed equipment squawks.",
+            _pacific("2026-11-10 08:00:00"),
+        )
+        self.assertEqual(earlier["Aircraft Fire Extinguishers Done"], "Yes")
+        self.assertEqual(earlier["Aircraft Fire Extinguishers Note"], "Cabin bottle OK")
+        self.assertEqual(earlier["PPE Done"], "")
+        self.assertEqual(earlier["Review Employee Licenses / Certificates Done"], "")
+        self.s["save_safety_meeting_record"](earlier, self.book)
+        self.s["save_safety_meeting_record"](later, self.book)
+        rows = self.s["load_safety_meeting_records"](self.book)
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[0]["Meeting Date"], "2026-10-01")
+        self.assertEqual(rows[1]["Meeting Date"], "2026-11-10")
+        self.assertEqual(rows[1]["Recorded By"], "Anthony Root")
+        self.assertEqual(rows[1]["Review Equipment Done"], "Yes")
+        self.assertEqual(rows[1]["Discussion Notes"], "Discussed equipment squawks.")
+
+        self.s["update_safety_meeting_discussion"](
+            "2026-11-10 08:00:00", "Discussed equipment squawks. Added follow-up.", self.book
+        )
+        rows = self.s["load_safety_meeting_records"](self.book)
+        self.assertEqual(rows[0]["Discussion Notes"], "Talked about winter ops.")
+        self.assertEqual(rows[1]["Discussion Notes"], "Discussed equipment squawks. Added follow-up.")
+        self.assertEqual(rows[1]["Review Equipment Done"], "Yes")
+        self.assertEqual(rows[1]["Meeting Date"], "2026-11-10")
+        # Only the Discussion Notes cell on that row was updated after the two appends.
+        discussion_col = self.s["safety_meeting_columns"]().index("Discussion Notes") + 1
+        cell_writes = [w for w in ws.writes if w[0] == "update_cell"]
+        self.assertTrue(any(w[1] == 3 and w[2] == discussion_col for w in cell_writes))
+        self.assertFalse(any(w[1] == 1 for w in cell_writes))  # header row unchanged after create
+        self.assertFalse(any(w[1] == 2 for w in cell_writes))  # earlier meeting untouched
+
+        self.assertEqual(self.book.sheets["Equipment"].rows, equipment_before)
+        self.assertEqual(self.book.sheets["Squawks"].rows, squawks_before)
+        self.assertEqual(self.book.sheets["Equipment"].writes, equipment_writes)
+        self.assertEqual(self.book.sheets["Squawks"].writes, squawks_writes)
+        self.assertEqual(self.book.sheets["Equipment"].rows[0], self.s["EQUIPMENT_COLUMNS"])
+        self.assertEqual(self.book.sheets["Squawks"].rows[0], self.s["SQUAWK_COLUMNS"])
+        self._assert_frat_untouched()
+        sorted_rows = sorted(rows, key=self.s["_safety_meeting_sort_key"], reverse=True)
+        self.assertEqual([r["Timestamp"] for r in sorted_rows], ["2026-11-10 08:00:00", "2026-10-01 09:00:00"])
+
+    def test_safety_meeting_update_rejects_missing_row(self):
+        self.s["ensure_safety_meetings_worksheet"](self.book)
+        with self.assertRaisesRegex(ValueError, "Timestamp"):
+            self.s["update_safety_meeting_discussion"]("  ", "notes", self.book)
+        with self.assertRaisesRegex(RuntimeError, "Could not find that meeting"):
+            self.s["update_safety_meeting_discussion"]("1999-01-01 00:00:00", "notes", self.book)
+        self._assert_frat_untouched()
 
 
 def equipment_offline_app():
@@ -495,19 +703,176 @@ class HeaderAndEquipmentPageTests(unittest.TestCase):
         at.button(key="nav_monthly_safety").click().run()
         self.assertFalse(list(at.exception))
         self.assertTrue(any(t.value == "Monthly Safety Meeting" for t in at.title))
-        self.assertTrue(any("Coming soon - Ron to define contents" in (i.value or "") for i in at.info))
+        self.assertFalse(any("Coming soon - Ron to define contents" in (i.value or "") for i in at.info))
+        self.assertTrue(any(d.label == "Meeting Date" for d in at.date_input))
+        self.assertTrue(any(b.label == "Save meeting" for b in at.button))
         at.button(key="nav_yearly_items").click().run()
         self.assertTrue(any(t.value == "Yearly Items" for t in at.title))
         self.assertTrue(any("Coming soon - Ron to define contents" in (i.value or "") for i in at.info))
         at.button(key="nav_dom").click().run()
+        self.assertFalse(list(at.exception))
         self.assertTrue(any(t.value == "DOM" for t in at.title))
-        self.assertTrue(any("Coming soon - Ron to define contents" in (i.value or "") for i in at.info))
+        self.assertEqual(
+            [m.value for m in at.markdown if m.value in ("**N893PC**", "**N480ML**")],
+            ["**N893PC**", "**N480ML**"],
+        )
+        annual = [b for b in at.button if b.label == "Annual/100 Hr"]
+        self.assertEqual(len(annual), 2)
+        self.assertFalse(any("Coming soon - Ron to define contents" in (i.value or "") for i in at.info))
         # Existing FRAT path remains one tap away.
         next(b for b in at.button if b.label == "🛩️ Pilot").click().run()
         self.assertFalse(list(at.exception))
         self.assertTrue(any("Pilot Performance" in (t.value or "") for t in at.title))
         frat_visible = any("FRAT" in (getattr(x, "value", None) or getattr(x, "label", None) or "") for x in list(at.tabs) + list(at.subheader) + list(at.title))
         self.assertTrue(frat_visible)
+
+    def test_monthly_safety_meeting_form_saves_and_edits_notes_on_fake_sheet(self):
+        from datetime import date
+        from streamlit.testing.v1 import AppTest
+        at = AppTest.from_string(equipment_offline_app(), default_timeout=30).run()
+        at.button(key="nav_monthly_safety").click().run()
+        self.assertFalse(list(at.exception))
+        self.assertTrue(any(t.value == "Monthly Safety Meeting" for t in at.title))
+        self.assertTrue(any(d.label == "Meeting Date" for d in at.date_input))
+        self.assertTrue(any("Recorded By" in (s.label or "") for s in at.selectbox))
+        self.assertTrue(any("Attendees" in (t.label or "") for t in at.text_input))
+        names = " ".join(m.value or "" for m in at.markdown)
+        for item in (
+            "Aircraft Fire Extinguishers",
+            "Review Equipment",
+            "Review Employee Licenses / Certificates",
+            "First Aid Kits",
+            "PPE",
+        ):
+            self.assertIn(item, names)
+        self.assertEqual(sum(1 for c in at.checkbox if c.label == "Done / Reviewed"), 5)
+        self.assertTrue(any(t.label == "Discussion notes for this meeting" for t in at.text_area))
+        self.assertTrue(any("No meetings recorded yet." in (i.value or "") for i in at.info))
+
+        next(d for d in at.date_input if d.label == "Meeting Date").set_value(date(2026, 11, 10))
+        next(s for s in at.selectbox if "Recorded By" in (s.label or "")).select("Ronald A Cline")
+        next(t for t in at.text_input if "Attendees" in (t.label or "")).set_value("Ron, Carl")
+        at.checkbox[0].check()
+        notes = [t for t in at.text_input if t.label == "Note (optional)"]
+        notes[0].set_value("Cabin bottle OK")
+        next(t for t in at.text_area if t.label == "Discussion notes for this meeting").set_value("Talked about winter ops.")
+        next(b for b in at.button if b.label == "Save meeting").click().run()
+        self.assertFalse(list(at.exception))
+        self.assertTrue(any("Saved safety meeting for 2026-11-10" in (s.value or "") for s in at.success))
+        self.assertTrue(any(e.label and "2026-11-10" in e.label for e in at.expander))
+        book = at.session_state["_workbook"]
+        self.assertIn("Safety Meetings", book.sheets)
+        rows = book.sheets["Safety Meetings"].rows
+        self.assertEqual(len(rows), 2)  # header + one meeting
+        header = rows[0]
+        data = rows[1]
+        self.assertEqual(data[header.index("Meeting Date")], "2026-11-10")
+        self.assertEqual(data[header.index("Recorded By")], "Ronald A Cline")
+        self.assertEqual(data[header.index("Attendees")], "Ron, Carl")
+        self.assertEqual(data[header.index("Aircraft Fire Extinguishers Done")], "Yes")
+        self.assertEqual(data[header.index("Aircraft Fire Extinguishers Note")], "Cabin bottle OK")
+        self.assertEqual(data[header.index("Discussion Notes")], "Talked about winter ops.")
+        self.assertEqual(book.sheets["Sheet1"].rows, [])
+        self.assertNotIn("Equipment", book.sheets)
+        self.assertNotIn("Squawks", book.sheets)
+        self.assertEqual(set(book.sheets), {"Sheet1", "Safety Meetings"})
+
+        disc = next(t for t in at.text_area if t.label == "Discussion Notes")
+        disc.set_value("Talked about winter ops. Added follow-up.")
+        next(b for b in at.button if b.label == "Save discussion notes").click().run()
+        self.assertFalse(list(at.exception))
+        self.assertTrue(any("Updated discussion notes" in (s.value or "") for s in at.success))
+        data = book.sheets["Safety Meetings"].rows[1]
+        self.assertEqual(data[header.index("Discussion Notes")], "Talked about winter ops. Added follow-up.")
+        self.assertEqual(data[header.index("Aircraft Fire Extinguishers Done")], "Yes")
+        self.assertEqual(len(book.sheets["Safety Meetings"].rows), 2)
+
+    def test_dom_annual_opens_coming_soon_panel(self):
+        from streamlit.testing.v1 import AppTest
+        at = AppTest.from_string(equipment_offline_app(), default_timeout=30).run()
+        at.button(key="nav_dom").click().run()
+        self.assertFalse(list(at.exception))
+        annual = [b for b in at.button if b.label == "Annual/100 Hr"]
+        self.assertEqual(len(annual), 2)
+        annual[0].click().run()
+        self.assertFalse(list(at.exception))
+        self.assertTrue(any(t.value == "DOM" for t in at.title))
+        self.assertTrue(any(t.value == "Annual/100 Hr — N893PC" for t in at.subheader))
+        self.assertTrue(any("Coming soon - Ron to define contents" in (i.value or "") for i in at.info))
+        # Do not invent inspection fields or data on this placeholder.
+        blob = " ".join(str(getattr(x, "value", "") or getattr(x, "label", "") or "") for x in list(at.markdown) + list(at.text_input) + list(at.number_input) + list(at.selectbox))
+        self.assertNotIn("Hobbs", blob)
+        self.assertNotIn("Tach", blob)
+        self.assertNotIn("Inspection due", blob)
+        next(b for b in at.button if b.label == "Back").click().run()
+        self.assertFalse(list(at.exception))
+        annual = [b for b in at.button if b.label == "Annual/100 Hr"]
+        self.assertEqual(len(annual), 2)
+        annual[1].click().run()
+        self.assertTrue(any(t.value == "Annual/100 Hr — N480ML" for t in at.subheader))
+        self.assertTrue(any("Coming soon - Ron to define contents" in (i.value or "") for i in at.info))
+
+    def test_info_edit_form_is_phone_friendly_and_saves_on_fake_sheet(self):
+        from datetime import date
+        from streamlit.testing.v1 import AppTest
+        at = AppTest.from_string(equipment_offline_app(), default_timeout=30).run()
+        at.button(key="nav_equipment").click().run()
+        self.assertFalse(list(at.exception))
+        info_buttons = [b for b in at.button if b.label == "INFO"]
+        info_buttons[0].click().run()
+        self.assertTrue(any(t.value and str(t.value).startswith("Info — Heli1") for t in at.subheader))
+        next(b for b in at.button if b.label == "Edit").click().run()
+        self.assertFalse(list(at.exception))
+        text_labels = [t.label for t in at.text_input]
+        self.assertNotIn("Unit ID", text_labels)
+        self.assertNotIn("Name", text_labels)
+        for expected in ("Year", "Make/Model", "VIN/Serial", "Plate/N-number"):
+            self.assertIn(expected, text_labels)
+        self.assertTrue(any(t.label == "Notes" for t in at.text_area))
+        date_labels = [d.label for d in at.date_input]
+        self.assertIn("Registration Expire Date", date_labels)
+        self.assertIn("Annual Maint Date", date_labels)
+        self.assertNotIn("Tonnage Wt Expire Date", date_labels)
+        select_labels = [s.label for s in at.selectbox]
+        self.assertIn("Type", select_labels)
+        self.assertIn("Active", select_labels)
+        self.assertIn("Tonnage Applies", select_labels)
+        self.assertTrue(any(b.label == "Save" for b in at.button))
+        self.assertTrue(any(b.label == "Cancel" for b in at.button))
+        next(b for b in at.button if b.label == "Cancel").click().run()
+        self.assertFalse(list(at.exception))
+        self.assertTrue(any(t.value and str(t.value).startswith("Info — Heli1") for t in at.subheader))
+        self.assertTrue(any(b.label == "Edit" for b in at.button))
+        self.assertFalse(any(b.label == "Save" for b in at.button))
+
+        info_buttons = [b for b in at.button if b.label == "INFO"]
+        info_buttons[1].click().run()
+        next(b for b in at.button if b.label == "Edit").click().run()
+        self.assertFalse(list(at.exception))
+        date_labels = [d.label for d in at.date_input]
+        self.assertIn("Tonnage Wt Expire Date", date_labels)
+        next(t for t in at.text_input if t.label == "Year").set_value("2018")
+        next(t for t in at.text_input if t.label == "Make/Model").set_value("Test Model")
+        next(d for d in at.date_input if d.label == "Registration Expire Date").set_value(date(2027, 3, 1))
+        next(b for b in at.button if b.label == "Save").click().run()
+        self.assertFalse(list(at.exception))
+        self.assertTrue(any("Saved updates for Heli2" in (s.value or "") for s in at.success))
+        self.assertTrue(any(t.value and str(t.value).startswith("Info — Heli2") for t in at.subheader))
+        info_md = " ".join(m.value or "" for m in at.markdown)
+        self.assertIn("2018", info_md)
+        self.assertIn("Test Model", info_md)
+        self.assertIn("2027-03-01", info_md)
+        book = at.session_state["_workbook"]
+        eq = book.sheets["Equipment"]
+        header = eq.rows[0]
+        heli2 = eq.rows[2]
+        self.assertEqual(heli2[header.index("Year")], "2018")
+        self.assertEqual(heli2[header.index("Make/Model")], "Test Model")
+        self.assertEqual(heli2[header.index("Registration Expire Date")], "2027-03-01")
+        self.assertEqual(heli2[header.index("Unit ID")], "Heli2")
+        self.assertEqual(heli2[header.index("Name")], "Heli2")
+        self.assertEqual(book.sheets["Sheet1"].rows, [])
+        self.assertEqual(len(book.sheets["Squawks"].rows), 1)
 
     def test_existing_offline_frat_app_still_loads(self):
         from streamlit.testing.v1 import AppTest
