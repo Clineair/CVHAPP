@@ -351,6 +351,42 @@ OFFICIAL_EQUIPMENT_NAMES = [
 ]
 
 
+
+# Add a unit ID here to show an IFTA button on the Equipment page, between INFO and Squawk.
+IFTA_UNITS = ("Heli2",)
+IFTA_TRIPS_SHEET_TITLE = "IFTA Trips"
+IFTA_FUEL_SHEET_TITLE = "IFTA Fuel"
+IFTA_TRIPS_COLUMNS = [
+    "Timestamp", "Date", "Unit", "Driver", "Jurisdiction",
+    "Start Odometer", "End Odometer", "Miles", "Notes",
+]
+IFTA_FUEL_COLUMNS = [
+    "Timestamp", "Date", "Unit", "Jurisdiction", "Gallons",
+    "Price/Gal", "Total Cost", "Vendor/Location", "Receipt #", "Notes",
+]
+IFTA_DEFAULT_JURISDICTION = "WA"
+# IFTA member jurisdictions: 48 contiguous US states and 10 Canadian provinces.
+IFTA_JURISDICTIONS = [
+    ("AL", "Alabama"), ("AZ", "Arizona"), ("AR", "Arkansas"), ("CA", "California"),
+    ("CO", "Colorado"), ("CT", "Connecticut"), ("DE", "Delaware"), ("FL", "Florida"),
+    ("GA", "Georgia"), ("ID", "Idaho"), ("IL", "Illinois"), ("IN", "Indiana"),
+    ("IA", "Iowa"), ("KS", "Kansas"), ("KY", "Kentucky"), ("LA", "Louisiana"),
+    ("ME", "Maine"), ("MD", "Maryland"), ("MA", "Massachusetts"), ("MI", "Michigan"),
+    ("MN", "Minnesota"), ("MS", "Mississippi"), ("MO", "Missouri"), ("MT", "Montana"),
+    ("NE", "Nebraska"), ("NV", "Nevada"), ("NH", "New Hampshire"), ("NJ", "New Jersey"),
+    ("NM", "New Mexico"), ("NY", "New York"), ("NC", "North Carolina"), ("ND", "North Dakota"),
+    ("OH", "Ohio"), ("OK", "Oklahoma"), ("OR", "Oregon"), ("PA", "Pennsylvania"),
+    ("RI", "Rhode Island"), ("SC", "South Carolina"), ("SD", "South Dakota"), ("TN", "Tennessee"),
+    ("TX", "Texas"), ("UT", "Utah"), ("VT", "Vermont"), ("VA", "Virginia"),
+    ("WA", "Washington"), ("WV", "West Virginia"), ("WI", "Wisconsin"), ("WY", "Wyoming"),
+    ("AB", "Alberta"), ("BC", "British Columbia"), ("MB", "Manitoba"),
+    ("NB", "New Brunswick"), ("NL", "Newfoundland and Labrador"), ("NS", "Nova Scotia"),
+    ("ON", "Ontario"), ("PE", "Prince Edward Island"), ("QC", "Quebec"), ("SK", "Saskatchewan"),
+]
+IFTA_VIEW_TRIPS = "Trip / Mileage log"
+IFTA_VIEW_FUEL = "Fuel purchase log"
+IFTA_VIEW_SUMMARY = "Quarterly summary"
+
 def official_equipment_rows():
     """Unit ID and Name are the official names; Type is Trailer only when obvious.
 
@@ -2219,20 +2255,730 @@ def show_equipment_info(unit, squawks, spreadsheet=None):
     st.markdown("---")
 
 
+
+def unit_has_ifta(unit):
+    """True when this equipment unit should show an IFTA button."""
+    wanted = {_cell(item) for item in IFTA_UNITS}
+    if isinstance(unit, dict):
+        return _cell(unit.get("Unit ID")) in wanted or _cell(unit.get("Name")) in wanted
+    return _cell(unit) in wanted
+
+
+def ifta_jurisdiction_label(code):
+    code = _cell(code).upper()
+    for item_code, name in IFTA_JURISDICTIONS:
+        if item_code == code:
+            return item_code + " — " + name
+    return _cell(code)
+
+
+def ifta_jurisdiction_options():
+    return [ifta_jurisdiction_label(code) for code, _name in IFTA_JURISDICTIONS]
+
+
+def parse_ifta_jurisdiction(value):
+    """Accept a code, 'WA — Washington', or a full name; store the two-letter code."""
+    text_value = _cell(value)
+    if not text_value:
+        return ""
+    if "—" in text_value:
+        text_value = text_value.split("—", 1)[0].strip()
+    elif "-" in text_value and len(text_value.split("-", 1)[0].strip()) <= 3:
+        maybe = text_value.split("-", 1)[0].strip()
+        if maybe.isalpha() and len(maybe) <= 3:
+            text_value = maybe
+    upper = text_value.upper()
+    for code, name in IFTA_JURISDICTIONS:
+        if upper == code or text_value.lower() == name.lower():
+            return code
+    if len(upper) <= 3 and upper.isalpha():
+        return upper
+    return _cell(value)
+
+
+def parse_ifta_number(value):
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value)
+    text_value = _cell(value).replace(",", "").replace("$", "")
+    if not text_value:
+        return None
+    try:
+        return float(text_value)
+    except ValueError:
+        return None
+
+
+def format_ifta_number(value, places=None):
+    number = parse_ifta_number(value)
+    if number is None:
+        return ""
+    if places is not None:
+        return ("%." + str(int(places)) + "f") % number
+    if abs(number - round(number)) < 1e-9:
+        return str(int(round(number)))
+    return ("%.4f" % number).rstrip("0").rstrip(".")
+
+
+def ifta_trip_miles(start_odometer, end_odometer):
+    start = parse_ifta_number(start_odometer)
+    end = parse_ifta_number(end_odometer)
+    if start is None or end is None:
+        return None
+    return end - start
+
+
+def ifta_fuel_amounts(gallons, price_per_gal, total_cost):
+    """Fill a blank Price/Gal or Total Cost when the other amount and gallons are known."""
+    gallons_n = parse_ifta_number(gallons)
+    price_n = parse_ifta_number(price_per_gal)
+    total_n = parse_ifta_number(total_cost)
+    if gallons_n is not None and price_n is not None and total_n is None:
+        total_n = gallons_n * price_n
+    elif gallons_n is not None and total_n is not None and price_n is None and gallons_n != 0:
+        price_n = total_n / gallons_n
+    return gallons_n, price_n, total_n
+
+
+def ifta_quarter_range(year, quarter):
+    from datetime import date, timedelta
+    year = int(year)
+    quarter = int(quarter)
+    start_month = (quarter - 1) * 3 + 1
+    start = date(year, start_month, 1)
+    if quarter == 4:
+        end = date(year, 12, 31)
+    else:
+        end = date(year, start_month + 3, 1) - timedelta(days=1)
+    return start, end
+
+
+def ifta_in_quarter(record, year, quarter):
+    entry = parse_equipment_date((record or {}).get("Date"))
+    if entry is None:
+        return False
+    start, end = ifta_quarter_range(year, quarter)
+    return start <= entry <= end
+
+
+def _ensure_ifta_worksheet(spreadsheet, title, columns):
+    """Create an IFTA tab with a header when it is missing. Never alter an existing header."""
+    cols = list(columns)
+    ws = _worksheet_or_none(spreadsheet, title)
+    created = False
+    if ws is None:
+        ws = spreadsheet.add_worksheet(title=title, rows=400, cols=max(len(cols), 8))
+        ws.append_row(cols, value_input_option="RAW")
+        created = True
+    else:
+        header = [_cell(c) for c in ws.row_values(1)]
+        if not header:
+            ws.append_row(cols, value_input_option="RAW")
+            created = True
+    return ws, created
+
+
+def ensure_ifta_trips_worksheet(spreadsheet):
+    return _ensure_ifta_worksheet(spreadsheet, IFTA_TRIPS_SHEET_TITLE, IFTA_TRIPS_COLUMNS)
+
+
+def ensure_ifta_fuel_worksheet(spreadsheet):
+    return _ensure_ifta_worksheet(spreadsheet, IFTA_FUEL_SHEET_TITLE, IFTA_FUEL_COLUMNS)
+
+
+def load_ifta_trip_records(spreadsheet=None, unit_id=None):
+    ws, _created = ensure_ifta_trips_worksheet(spreadsheet or _gsheets_spreadsheet())
+    records = records_from_worksheet(ws, IFTA_TRIPS_COLUMNS)
+    if unit_id:
+        wanted = _cell(unit_id)
+        records = [r for r in records if _cell(r.get("Unit")) == wanted]
+    return records
+
+
+def load_ifta_fuel_records(spreadsheet=None, unit_id=None):
+    ws, _created = ensure_ifta_fuel_worksheet(spreadsheet or _gsheets_spreadsheet())
+    records = records_from_worksheet(ws, IFTA_FUEL_COLUMNS)
+    if unit_id:
+        wanted = _cell(unit_id)
+        records = [r for r in records if _cell(r.get("Unit")) == wanted]
+    return records
+
+
+def _ifta_row_sort_key(record):
+    entry = parse_equipment_date((record or {}).get("Date"))
+    stamp = _cell((record or {}).get("Timestamp"))
+    stamp_dt = datetime.min
+    if stamp:
+        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y/%m/%d %H:%M:%S", "%m/%d/%Y %H:%M:%S"):
+            try:
+                stamp_dt = datetime.strptime(stamp, fmt)
+                break
+            except ValueError:
+                continue
+    entry_dt = datetime(entry.year, entry.month, entry.day) if entry is not None else datetime.min
+    return (entry_dt, stamp_dt)
+
+
+def build_ifta_trip_record(entry_date, unit_id, driver, jurisdiction, start_odometer, end_odometer, notes, when=None):
+    miles = ifta_trip_miles(start_odometer, end_odometer)
+    if miles is None:
+        raise ValueError("Start and End Odometer are required")
+    if miles < 0:
+        raise ValueError("Miles must be 0 or greater (End Odometer cannot be less than Start Odometer)")
+    when = when or datetime.now(ZoneInfo("America/Los_Angeles"))
+    return {
+        "Timestamp": when.strftime("%Y-%m-%d %H:%M:%S"),
+        "Date": format_equipment_date(entry_date),
+        "Unit": _cell(unit_id),
+        "Driver": _cell(driver),
+        "Jurisdiction": parse_ifta_jurisdiction(jurisdiction) or IFTA_DEFAULT_JURISDICTION,
+        "Start Odometer": format_ifta_number(start_odometer),
+        "End Odometer": format_ifta_number(end_odometer),
+        "Miles": format_ifta_number(miles),
+        "Notes": _cell(notes),
+    }
+
+
+def build_ifta_fuel_record(entry_date, unit_id, jurisdiction, gallons, price_per_gal, total_cost, vendor, receipt, notes, when=None):
+    gallons_n = parse_ifta_number(gallons)
+    if gallons_n is None or gallons_n < 0:
+        raise ValueError("Gallons is required and must be 0 or greater")
+    gallons_n, price_n, total_n = ifta_fuel_amounts(gallons, price_per_gal, total_cost)
+    when = when or datetime.now(ZoneInfo("America/Los_Angeles"))
+    return {
+        "Timestamp": when.strftime("%Y-%m-%d %H:%M:%S"),
+        "Date": format_equipment_date(entry_date),
+        "Unit": _cell(unit_id),
+        "Jurisdiction": parse_ifta_jurisdiction(jurisdiction) or IFTA_DEFAULT_JURISDICTION,
+        "Gallons": format_ifta_number(gallons_n, 3),
+        "Price/Gal": format_ifta_number(price_n, 3) if price_n is not None else "",
+        "Total Cost": format_ifta_number(total_n, 2) if total_n is not None else "",
+        "Vendor/Location": _cell(vendor),
+        "Receipt #": _cell(receipt),
+        "Notes": _cell(notes),
+    }
+
+
+def save_ifta_trip_record(record, spreadsheet=None):
+    ws, _created = ensure_ifta_trips_worksheet(spreadsheet or _gsheets_spreadsheet())
+    header = [_cell(c) for c in ws.row_values(1)]
+    if not header:
+        raise RuntimeError("IFTA Trips worksheet has no header")
+    ws.append_row([str(record.get(c, "")) for c in header], value_input_option="RAW")
+    return "Google Sheets (IFTA Trips)"
+
+
+def save_ifta_fuel_record(record, spreadsheet=None):
+    ws, _created = ensure_ifta_fuel_worksheet(spreadsheet or _gsheets_spreadsheet())
+    header = [_cell(c) for c in ws.row_values(1)]
+    if not header:
+        raise RuntimeError("IFTA Fuel worksheet has no header")
+    ws.append_row([str(record.get(c, "")) for c in header], value_input_option="RAW")
+    return "Google Sheets (IFTA Fuel)"
+
+
+def ifta_mpg(miles, gallons):
+    miles_n = parse_ifta_number(miles) or 0
+    gallons_n = parse_ifta_number(gallons) or 0
+    if gallons_n <= 0:
+        return None
+    return miles_n / gallons_n
+
+
+def build_ifta_quarterly_summary(trips, fuel, year, quarter, unit_id=None):
+    """Miles and gallons by jurisdiction, unit totals, fleet totals, and overall MPG."""
+    year = int(year)
+    quarter = int(quarter)
+    start, end = ifta_quarter_range(year, quarter)
+    trip_rows = [r for r in (trips or []) if ifta_in_quarter(r, year, quarter)]
+    fuel_rows = [r for r in (fuel or []) if ifta_in_quarter(r, year, quarter)]
+    wanted = _cell(unit_id)
+
+    def _accumulate(rows, field, unit_filter=None):
+        totals = {}
+        for record in rows:
+            if unit_filter and _cell(record.get("Unit")) != unit_filter:
+                continue
+            code = parse_ifta_jurisdiction(record.get("Jurisdiction")) or "—"
+            totals[code] = totals.get(code, 0) + (parse_ifta_number(record.get(field)) or 0)
+        return totals
+
+    fleet_miles = _accumulate(trip_rows, "Miles")
+    fleet_gallons = _accumulate(fuel_rows, "Gallons")
+    unit_miles = _accumulate(trip_rows, "Miles", wanted) if wanted else dict(fleet_miles)
+    unit_gallons = _accumulate(fuel_rows, "Gallons", wanted) if wanted else dict(fleet_gallons)
+
+    def _rows(miles_map, gallons_map):
+        codes = sorted(set(miles_map) | set(gallons_map), key=lambda code: (code == "—", code))
+        rows = []
+        total_miles = 0
+        total_gallons = 0
+        for code in codes:
+            miles_n = miles_map.get(code, 0)
+            gallons_n = gallons_map.get(code, 0)
+            total_miles += miles_n
+            total_gallons += gallons_n
+            rows.append({
+                "Jurisdiction": code,
+                "Jurisdiction Label": ifta_jurisdiction_label(code) if code != "—" else "—",
+                "Miles": miles_n,
+                "Gallons": gallons_n,
+                "MPG": ifta_mpg(miles_n, gallons_n),
+            })
+        return rows, total_miles, total_gallons, ifta_mpg(total_miles, total_gallons)
+
+    unit_rows, unit_total_miles, unit_total_gallons, unit_mpg = _rows(unit_miles, unit_gallons)
+    fleet_rows, fleet_total_miles, fleet_total_gallons, fleet_mpg = _rows(fleet_miles, fleet_gallons)
+    units = sorted({_cell(r.get("Unit")) for r in trip_rows + fuel_rows if _cell(r.get("Unit"))})
+    return {
+        "year": year,
+        "quarter": quarter,
+        "start": start,
+        "end": end,
+        "unit_id": wanted,
+        "units": units,
+        "unit_rows": unit_rows,
+        "unit_total_miles": unit_total_miles,
+        "unit_total_gallons": unit_total_gallons,
+        "unit_mpg": unit_mpg,
+        "fleet_rows": fleet_rows,
+        "fleet_total_miles": fleet_total_miles,
+        "fleet_total_gallons": fleet_total_gallons,
+        "fleet_mpg": fleet_mpg,
+    }
+
+
+def build_ifta_summary_csv(summary):
+    import csv
+    from io import StringIO
+    buf = StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(["Year", "Quarter", "Scope", "Unit", "Jurisdiction", "Miles", "Gallons", "MPG"])
+    year = summary.get("year")
+    quarter = "Q" + str(summary.get("quarter"))
+    unit_id = _cell(summary.get("unit_id")) or "—"
+
+    def _emit(scope, unit_name, rows, total_miles, total_gallons, mpg):
+        for row in rows:
+            writer.writerow([
+                year, quarter, scope, unit_name, row["Jurisdiction"],
+                format_ifta_number(row["Miles"], 1),
+                format_ifta_number(row["Gallons"], 3),
+                format_ifta_number(row["MPG"], 2) if row["MPG"] is not None else "",
+            ])
+        writer.writerow([
+            year, quarter, scope, unit_name, "TOTAL",
+            format_ifta_number(total_miles, 1),
+            format_ifta_number(total_gallons, 3),
+            format_ifta_number(mpg, 2) if mpg is not None else "",
+        ])
+
+    _emit("Unit", unit_id, summary.get("unit_rows") or [], summary.get("unit_total_miles"), summary.get("unit_total_gallons"), summary.get("unit_mpg"))
+    _emit("Fleet", "Fleet", summary.get("fleet_rows") or [], summary.get("fleet_total_miles"), summary.get("fleet_total_gallons"), summary.get("fleet_mpg"))
+    return buf.getvalue()
+
+
+def ifta_summary_pdf_filename(summary):
+    year = str(summary.get("year") or "")
+    quarter = "Q" + str(summary.get("quarter") or "")
+    unit_id = _cell(summary.get("unit_id"))
+    bits = ["CVH_IFTA"]
+    if unit_id:
+        bits.append(unit_id)
+    bits.append(quarter)
+    bits.append(year)
+    return "_".join(bits) + ".pdf"
+
+
+def build_ifta_summary_pdf(summary, logo_path=None):
+    """One-page letter PDF of an IFTA quarterly summary, in the flag-logo report style."""
+    from io import BytesIO
+    from reportlab.lib import colors
+    from reportlab.lib.enums import TA_LEFT
+    from reportlab.lib.pagesizes import letter
+    from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+    from reportlab.lib.units import inch
+    from reportlab.platypus import (
+        HRFlowable, Image, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle,
+    )
+
+    def _esc(value):
+        text = _cell(value)
+        return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+    logo_path = logo_path if logo_path is not None else safety_meeting_report_logo_path()
+    buf = BytesIO()
+    title = "IFTA Quarterly Summary"
+    doc = SimpleDocTemplate(
+        buf, pagesize=letter,
+        leftMargin=0.7 * inch, rightMargin=0.7 * inch,
+        topMargin=0.55 * inch, bottomMargin=0.55 * inch,
+        title=title, author="Central Valley Helicopters",
+    )
+    ss = getSampleStyleSheet()
+    company = ParagraphStyle("co", parent=ss["Normal"], fontSize=9, leading=11, alignment=TA_LEFT, textColor=colors.HexColor("#222222"))
+    company_sm = ParagraphStyle("cosm", parent=company, fontSize=8, leading=10, textColor=colors.HexColor("#333333"))
+    title_style = ParagraphStyle("t", parent=ss["Title"], fontSize=15, leading=18, spaceAfter=2, spaceBefore=4, alignment=TA_LEFT)
+    heading = ParagraphStyle("h", parent=ss["Heading2"], fontSize=11, leading=14, spaceBefore=8, spaceAfter=4)
+    body = ParagraphStyle("n", parent=ss["Normal"], fontSize=9, leading=12)
+    small = ParagraphStyle("c", parent=body, fontSize=8.5, leading=11)
+    story = []
+    logo_flow = None
+    if logo_path:
+        try:
+            logo_flow = Image(logo_path, width=1.25 * inch, height=1.25 * inch * 214 / 320)
+        except Exception:
+            logo_flow = None
+    company_lines = [
+        Paragraph("<b>Cline Air Services LLC dba Central Valley Helicopters</b>", company),
+        Paragraph("891 Prater Rd, Ellensburg, WA 98926", company_sm),
+        Paragraph("Phone: (509) 968-9300", company_sm),
+        Paragraph("Email: cvh@centralvalleyheli.com", company_sm),
+    ]
+    company_block = Table([[line] for line in company_lines], colWidths=[5.8 * inch])
+    company_block.setStyle(TableStyle([
+        ("LEFTPADDING", (0, 0), (-1, -1), 0),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+        ("TOPPADDING", (0, 0), (-1, -1), 0),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 1),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+    ]))
+    if logo_flow is not None:
+        head = Table([[logo_flow, company_block]], colWidths=[1.4 * inch, 5.8 * inch])
+        head.setStyle(TableStyle([
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("LEFTPADDING", (0, 0), (-1, -1), 0),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+            ("TOPPADDING", (0, 0), (-1, -1), 0),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+        ]))
+        story.append(head)
+    else:
+        for line in company_lines:
+            story.append(line)
+    story.append(Spacer(1, 4))
+    story.append(HRFlowable(width="100%", thickness=1, color=colors.HexColor("#8B0000"), spaceBefore=2, spaceAfter=8))
+    story.append(Paragraph(title, title_style))
+    quarter = "Q" + str(summary.get("quarter"))
+    start = format_equipment_date(summary.get("start"))
+    end = format_equipment_date(summary.get("end"))
+    unit_id = _cell(summary.get("unit_id")) or "—"
+    story.append(Paragraph("<b>Period:</b> " + _esc(quarter + " " + str(summary.get("year")) + "  (" + start + " to " + end + ")"), body))
+    story.append(Paragraph("<b>Unit:</b> " + _esc(unit_id), body))
+    if summary.get("units"):
+        story.append(Paragraph("<b>Fleet units in this quarter:</b> " + _esc(", ".join(summary.get("units"))), body))
+
+    def _mpg(value):
+        return format_ifta_number(value, 2) if value is not None else "—"
+
+    def _table(title_text, rows, total_miles, total_gallons, mpg):
+        story.append(Paragraph(title_text, heading))
+        data = [[
+            Paragraph("<b>Jurisdiction</b>", small),
+            Paragraph("<b>Miles</b>", small),
+            Paragraph("<b>Gallons</b>", small),
+            Paragraph("<b>MPG</b>", small),
+        ]]
+        for row in rows:
+            data.append([
+                Paragraph(_esc(row.get("Jurisdiction Label") or row.get("Jurisdiction")), small),
+                Paragraph(_esc(format_ifta_number(row.get("Miles"), 1)), small),
+                Paragraph(_esc(format_ifta_number(row.get("Gallons"), 3)), small),
+                Paragraph(_esc(_mpg(row.get("MPG"))), small),
+            ])
+        data.append([
+            Paragraph("<b>Total</b>", small),
+            Paragraph("<b>" + _esc(format_ifta_number(total_miles, 1)) + "</b>", small),
+            Paragraph("<b>" + _esc(format_ifta_number(total_gallons, 3)) + "</b>", small),
+            Paragraph("<b>" + _esc(_mpg(mpg)) + "</b>", small),
+        ])
+        table = Table(data, colWidths=[2.8 * inch, 1.4 * inch, 1.4 * inch, 1.4 * inch])
+        table.setStyle(TableStyle([
+            ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#DDE6F0")),
+            ("BACKGROUND", (0, -1), (-1, -1), colors.HexColor("#F3F4F6")),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("LEFTPADDING", (0, 0), (-1, -1), 5),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 5),
+            ("TOPPADDING", (0, 0), (-1, -1), 4),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+            ("ALIGN", (1, 1), (-1, -1), "RIGHT"),
+        ]))
+        story.append(table)
+
+    _table("Unit miles and fuel", summary.get("unit_rows") or [], summary.get("unit_total_miles"), summary.get("unit_total_gallons"), summary.get("unit_mpg"))
+    _table("Fleet totals", summary.get("fleet_rows") or [], summary.get("fleet_total_miles"), summary.get("fleet_total_gallons"), summary.get("fleet_mpg"))
+    story.append(Spacer(1, 8))
+    story.append(Paragraph("<b>Overall fleet MPG:</b> " + _esc(_mpg(summary.get("fleet_mpg"))), body))
+    doc.build(story)
+    return buf.getvalue()
+
+
+def show_ifta_page(unit, spreadsheet):
+    """Phone-friendly IFTA trip, fuel, and quarterly summary page for one unit."""
+    unit_id = _cell(unit.get("Unit ID")) or _cell(unit.get("Name"))
+    name = _cell(unit.get("Name")) or unit_id
+    st.title("IFTA")
+    st.subheader(name)
+    st.caption("Trip miles and fuel purchases are saved to the IFTA Trips and IFTA Fuel tabs.")
+    if st.button("Back", key="ifta_back", use_container_width=True):
+        st.session_state.ifta_unit_id = None
+        st.rerun()
+
+    if st.session_state.get("ifta_trip_saved"):
+        st.success(st.session_state.pop("ifta_trip_saved"))
+    if st.session_state.get("ifta_fuel_saved"):
+        st.success(st.session_state.pop("ifta_fuel_saved"))
+
+    try:
+        trips = load_ifta_trip_records(spreadsheet)
+        fuel = load_ifta_fuel_records(spreadsheet)
+    except Exception as exc:
+        st.error(f"Could not load IFTA records: {exc}")
+        return
+
+    if "ifta_view" not in st.session_state:
+        st.session_state.ifta_view = IFTA_VIEW_TRIPS
+    st.radio("IFTA section", [IFTA_VIEW_TRIPS, IFTA_VIEW_FUEL, IFTA_VIEW_SUMMARY], horizontal=False, key="ifta_view")
+    view = st.session_state.ifta_view
+    today = datetime.now(ZoneInfo("America/Los_Angeles")).date()
+    jurisdiction_options = ifta_jurisdiction_options()
+    default_label = ifta_jurisdiction_label(IFTA_DEFAULT_JURISDICTION)
+
+    if view == IFTA_VIEW_TRIPS:
+        _show_ifta_trips_form(unit_id, trips, spreadsheet, today, jurisdiction_options, default_label)
+    elif view == IFTA_VIEW_FUEL:
+        _show_ifta_fuel_form(unit_id, fuel, spreadsheet, today, jurisdiction_options, default_label)
+    else:
+        _show_ifta_summary(unit_id, trips, fuel, today)
+
+
+def _show_ifta_trips_form(unit_id, trips, spreadsheet, today, jurisdiction_options, default_label):
+    unit_trips = [r for r in trips if _cell(r.get("Unit")) == unit_id]
+    latest = sorted(unit_trips, key=_ifta_row_sort_key, reverse=True)
+    last_end = _cell(latest[0].get("End Odometer")) if latest else ""
+    gen = int(st.session_state.get("ifta_trip_gen_" + unit_id) or 0)
+    prefix = "ifta_trip_" + unit_id + "_" + str(gen) + "_"
+    st.markdown("**New trip**")
+    st.date_input("Date", value=today, format="YYYY-MM-DD", key=prefix + "date")
+    st.markdown("**Unit:** " + unit_id)
+    driver_options = [""] + list(REPORTERS)
+    st.selectbox("Driver", driver_options, key=prefix + "driver")
+    default_index = jurisdiction_options.index(default_label) if default_label in jurisdiction_options else 0
+    st.selectbox("Jurisdiction", jurisdiction_options, index=default_index, key=prefix + "jurisdiction")
+    st.text_input("Start Odometer", value=last_end, key=prefix + "start")
+    st.text_input("End Odometer", key=prefix + "end")
+    miles = ifta_trip_miles(st.session_state.get(prefix + "start"), st.session_state.get(prefix + "end"))
+    if miles is None:
+        st.markdown("**Miles:** —")
+    elif miles < 0:
+        st.markdown("**Miles:** " + format_ifta_number(miles) + "  (must be 0 or greater)")
+    else:
+        st.markdown("**Miles:** " + format_ifta_number(miles))
+    st.text_input("Notes", key=prefix + "notes")
+    if st.button("Save trip", type="primary", key=prefix + "save", use_container_width=True):
+        try:
+            record = build_ifta_trip_record(
+                st.session_state.get(prefix + "date"),
+                unit_id,
+                st.session_state.get(prefix + "driver", ""),
+                st.session_state.get(prefix + "jurisdiction"),
+                st.session_state.get(prefix + "start"),
+                st.session_state.get(prefix + "end"),
+                st.session_state.get(prefix + "notes", ""),
+            )
+            save_ifta_trip_record(record, spreadsheet=spreadsheet)
+        except Exception as exc:
+            st.error(f"Could not save the IFTA trip: {exc}")
+        else:
+            st.session_state.ifta_trip_saved = "Saved IFTA trip for " + unit_id + " on " + (record.get("Date") or "today") + "."
+            st.session_state["ifta_trip_gen_" + unit_id] = gen + 1
+            st.rerun()
+
+    st.markdown("---")
+    st.subheader("Trip history")
+    if not latest:
+        st.info("No trips recorded yet for this unit.")
+        return
+    for item in latest:
+        title = (_cell(item.get("Date")) or "Trip") + " — " + (ifta_jurisdiction_label(item.get("Jurisdiction")) or "—")
+        if _cell(item.get("Miles")):
+            title = title + "  (" + _cell(item.get("Miles")) + " mi)"
+        with st.expander(title):
+            st.markdown("**Date:** " + (_cell(item.get("Date")) or "—"))
+            st.markdown("**Driver:** " + (_cell(item.get("Driver")) or "—"))
+            st.markdown("**Jurisdiction:** " + (ifta_jurisdiction_label(item.get("Jurisdiction")) or "—"))
+            st.markdown("**Start Odometer:** " + (_cell(item.get("Start Odometer")) or "—"))
+            st.markdown("**End Odometer:** " + (_cell(item.get("End Odometer")) or "—"))
+            st.markdown("**Miles:** " + (_cell(item.get("Miles")) or "—"))
+            st.markdown("**Notes:** " + (_cell(item.get("Notes")) or "—"))
+
+
+def _show_ifta_fuel_form(unit_id, fuel, spreadsheet, today, jurisdiction_options, default_label):
+    unit_fuel = [r for r in fuel if _cell(r.get("Unit")) == unit_id]
+    latest = sorted(unit_fuel, key=_ifta_row_sort_key, reverse=True)
+    gen = int(st.session_state.get("ifta_fuel_gen_" + unit_id) or 0)
+    prefix = "ifta_fuel_" + unit_id + "_" + str(gen) + "_"
+    st.markdown("**New fuel purchase**")
+    st.date_input("Date", value=today, format="YYYY-MM-DD", key=prefix + "date")
+    st.markdown("**Unit:** " + unit_id)
+    default_index = jurisdiction_options.index(default_label) if default_label in jurisdiction_options else 0
+    st.selectbox("Jurisdiction", jurisdiction_options, index=default_index, key=prefix + "jurisdiction")
+    st.text_input("Gallons", key=prefix + "gallons")
+    st.text_input("Price/Gal", key=prefix + "price")
+    st.text_input("Total Cost", key=prefix + "total")
+    gallons_n, price_n, total_n = ifta_fuel_amounts(
+        st.session_state.get(prefix + "gallons"),
+        st.session_state.get(prefix + "price"),
+        st.session_state.get(prefix + "total"),
+    )
+    if gallons_n is not None and (price_n is not None or total_n is not None):
+        bits = []
+        if price_n is not None and not _cell(st.session_state.get(prefix + "price")):
+            bits.append("Price/Gal " + format_ifta_number(price_n, 3))
+        if total_n is not None and not _cell(st.session_state.get(prefix + "total")):
+            bits.append("Total Cost " + format_ifta_number(total_n, 2))
+        if bits:
+            st.caption("Computed: " + " · ".join(bits))
+    st.text_input("Vendor/Location", key=prefix + "vendor")
+    st.text_input("Receipt #", key=prefix + "receipt")
+    st.text_input("Notes", key=prefix + "notes")
+    if st.button("Save fuel purchase", type="primary", key=prefix + "save", use_container_width=True):
+        try:
+            record = build_ifta_fuel_record(
+                st.session_state.get(prefix + "date"),
+                unit_id,
+                st.session_state.get(prefix + "jurisdiction"),
+                st.session_state.get(prefix + "gallons"),
+                st.session_state.get(prefix + "price"),
+                st.session_state.get(prefix + "total"),
+                st.session_state.get(prefix + "vendor", ""),
+                st.session_state.get(prefix + "receipt", ""),
+                st.session_state.get(prefix + "notes", ""),
+            )
+            save_ifta_fuel_record(record, spreadsheet=spreadsheet)
+        except Exception as exc:
+            st.error(f"Could not save the IFTA fuel purchase: {exc}")
+        else:
+            st.session_state.ifta_fuel_saved = "Saved IFTA fuel purchase for " + unit_id + " on " + (record.get("Date") or "today") + "."
+            st.session_state["ifta_fuel_gen_" + unit_id] = gen + 1
+            st.rerun()
+
+    st.markdown("---")
+    st.subheader("Fuel history")
+    if not latest:
+        st.info("No fuel purchases recorded yet for this unit.")
+        return
+    for item in latest:
+        title = (_cell(item.get("Date")) or "Fuel") + " — " + (ifta_jurisdiction_label(item.get("Jurisdiction")) or "—")
+        if _cell(item.get("Gallons")):
+            title = title + "  (" + _cell(item.get("Gallons")) + " gal)"
+        with st.expander(title):
+            st.markdown("**Date:** " + (_cell(item.get("Date")) or "—"))
+            st.markdown("**Jurisdiction:** " + (ifta_jurisdiction_label(item.get("Jurisdiction")) or "—"))
+            st.markdown("**Gallons:** " + (_cell(item.get("Gallons")) or "—"))
+            st.markdown("**Price/Gal:** " + (_cell(item.get("Price/Gal")) or "—"))
+            st.markdown("**Total Cost:** " + (_cell(item.get("Total Cost")) or "—"))
+            st.markdown("**Vendor/Location:** " + (_cell(item.get("Vendor/Location")) or "—"))
+            st.markdown("**Receipt #:** " + (_cell(item.get("Receipt #")) or "—"))
+            st.markdown("**Notes:** " + (_cell(item.get("Notes")) or "—"))
+
+
+def _show_ifta_summary(unit_id, trips, fuel, today):
+    trip_years = {parse_equipment_date(r.get("Date")).year for r in trips if parse_equipment_date(r.get("Date"))}
+    fuel_years = {parse_equipment_date(r.get("Date")).year for r in fuel if parse_equipment_date(r.get("Date"))}
+    years = sorted(trip_years | fuel_years | {today.year}, reverse=True)
+    default_year = today.year
+    default_quarter = ((today.month - 1) // 3) + 1
+    if "ifta_sum_year" not in st.session_state or st.session_state.get("ifta_sum_year") not in years:
+        st.session_state.ifta_sum_year = default_year
+    year = st.selectbox("Year", years, key="ifta_sum_year")
+    quarters = [1, 2, 3, 4]
+    if st.session_state.get("ifta_sum_quarter") not in quarters:
+        st.session_state.ifta_sum_quarter = default_quarter
+    quarter = st.selectbox("Quarter", quarters, format_func=lambda value: "Q" + str(value), key="ifta_sum_quarter")
+    summary = build_ifta_quarterly_summary(trips, fuel, year, quarter, unit_id=unit_id)
+    start = format_equipment_date(summary["start"])
+    end = format_equipment_date(summary["end"])
+    st.caption(start + " to " + end)
+
+    def _mpg(value):
+        return format_ifta_number(value, 2) if value is not None else "—"
+
+    st.markdown("**" + unit_id + "**")
+    if not summary["unit_rows"]:
+        st.info("No IFTA trips or fuel purchases for this unit in " + "Q" + str(quarter) + " " + str(year) + ".")
+    else:
+        for row in summary["unit_rows"]:
+            st.markdown(
+                "**" + row["Jurisdiction Label"] + ":** "
+                + format_ifta_number(row["Miles"], 1) + " mi · "
+                + format_ifta_number(row["Gallons"], 3) + " gal · "
+                + "MPG " + _mpg(row["MPG"])
+            )
+        st.markdown(
+            "**Unit total:** "
+            + format_ifta_number(summary["unit_total_miles"], 1) + " mi · "
+            + format_ifta_number(summary["unit_total_gallons"], 3) + " gal · "
+            + "MPG " + _mpg(summary["unit_mpg"])
+        )
+
+    st.markdown("**Fleet totals**")
+    if summary["units"]:
+        st.caption("Units in this quarter: " + ", ".join(summary["units"]))
+    st.markdown(
+        "**Fleet total:** "
+        + format_ifta_number(summary["fleet_total_miles"], 1) + " mi · "
+        + format_ifta_number(summary["fleet_total_gallons"], 3) + " gal · "
+        + "MPG " + _mpg(summary["fleet_mpg"])
+    )
+    csv_text = build_ifta_summary_csv(summary)
+    st.download_button(
+        "Download CSV",
+        data=csv_text,
+        file_name="CVH_IFTA_" + unit_id + "_Q" + str(quarter) + "_" + str(year) + ".csv",
+        mime="text/csv",
+        key="ifta_csv_" + unit_id + "_" + str(year) + "_" + str(quarter),
+        use_container_width=True,
+    )
+    try:
+        pdf_bytes = build_ifta_summary_pdf(summary)
+    except Exception as exc:
+        st.warning("Could not build the IFTA PDF: " + str(exc))
+    else:
+        st.download_button(
+            "Download PDF",
+            data=pdf_bytes,
+            file_name=ifta_summary_pdf_filename(summary),
+            mime="application/pdf",
+            key="ifta_pdf_" + unit_id + "_" + str(year) + "_" + str(quarter),
+            use_container_width=True,
+        )
+
+
 def show_equipment_page():
+    try:
+        spreadsheet = _gsheets_spreadsheet()
+        units = [u for u in load_equipment_records(spreadsheet) if is_active_equipment(u) and _cell(u.get("Unit ID"))]
+        squawks = load_squawk_records(spreadsheet)
+    except Exception as e:
+        st.title("Equipment Squawks")
+        st.error(f"Could not load equipment or squawks: {e}")
+        return
+
+    ifta_id = _cell(st.session_state.get("ifta_unit_id"))
+    if ifta_id:
+        ifta_unit = next((u for u in units if _cell(u.get("Unit ID")) == ifta_id), None)
+        if ifta_unit is not None:
+            show_ifta_page(ifta_unit, spreadsheet)
+            return
+        st.session_state.ifta_unit_id = None
+
     st.title("Equipment Squawks")
     st.caption(
         "Tap a unit and save a squawk to the Google Sheet. "
         "Edit names on the Equipment tab of the CVH FRAT Log if the list changes."
     )
     st.link_button("Open CVH FRAT Log (Equipment and Squawks tabs)", frat_sheet_url(), use_container_width=True)
-    try:
-        spreadsheet = _gsheets_spreadsheet()
-        units = [u for u in load_equipment_records(spreadsheet) if is_active_equipment(u) and _cell(u.get("Unit ID"))]
-        squawks = load_squawk_records(spreadsheet)
-    except Exception as e:
-        st.error(f"Could not load equipment or squawks: {e}")
-        return
 
     if not units:
         st.warning("No active equipment found. Add units on the Equipment tab (Unit ID, Name, Type, Active).")
@@ -2252,7 +2998,11 @@ def show_equipment_page():
         open_items = open_squawks_for(unit_id, squawks)
         grounded = equipment_has_grounding(unit_id, squawks)
         name = _cell(unit.get("Name")) or unit_id
-        name_col, info_col, squawk_col = st.columns([3.2, 1, 1])
+        if unit_has_ifta(unit):
+            name_col, info_col, ifta_col, squawk_col = st.columns([2.4, 1, 1, 1])
+        else:
+            name_col, info_col, squawk_col = st.columns([3.2, 1, 1])
+            ifta_col = None
         with name_col:
             st.markdown("**" + name + "**")
             if unit_id and unit_id != name:
@@ -2279,13 +3029,24 @@ def show_equipment_page():
                 st.session_state.info_unit_id = None if info_id == unit_id else unit_id
                 st.session_state.squawk_unit_id = None
                 st.session_state.edit_unit_id = None
+                st.session_state.ifta_unit_id = None
                 st.rerun()
+        if ifta_col is not None:
+            with ifta_col:
+                if st.button("IFTA", key=f"ifta_btn_{unit_id}", use_container_width=True):
+                    clear_equipment_edit_widgets(st.session_state.get("edit_unit_id"))
+                    st.session_state.ifta_unit_id = unit_id
+                    st.session_state.info_unit_id = None
+                    st.session_state.squawk_unit_id = None
+                    st.session_state.edit_unit_id = None
+                    st.rerun()
         with squawk_col:
             if st.button("Squawk", key=f"squawk_btn_{unit_id}", use_container_width=True):
                 clear_equipment_edit_widgets(st.session_state.get("edit_unit_id"))
                 st.session_state.squawk_unit_id = unit_id
                 st.session_state.info_unit_id = None
                 st.session_state.edit_unit_id = None
+                st.session_state.ifta_unit_id = None
                 st.rerun()
         if info_id == unit_id:
             show_equipment_info(unit, squawks, spreadsheet=spreadsheet)
