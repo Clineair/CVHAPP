@@ -371,9 +371,11 @@ IFTA_TRIPS_COLUMNS = [
     "Timestamp", "Date", "Unit", "Driver", "Jurisdiction",
     "Start Odometer", "End Odometer", "Miles", "Notes",
 ]
+# Live IFTA Fuel already exists with "Receipt #"; keep that header and store Yes/No in it.
+IFTA_RECEIPT_COLUMN = "Receipt #"
 IFTA_FUEL_COLUMNS = [
     "Timestamp", "Date", "Unit", "Jurisdiction", "Gallons",
-    "Price/Gal", "Total Cost", "Vendor/Location", "Receipt #", "Notes",
+    "Price/Gal", "Total Cost", "Vendor/Location", IFTA_RECEIPT_COLUMN, "Notes",
 ]
 IFTA_DEFAULT_JURISDICTION = "WA"
 # IFTA member jurisdictions: 48 contiguous US states and 10 Canadian provinces.
@@ -2646,6 +2648,40 @@ def ensure_ifta_fuel_worksheet(spreadsheet):
     return _ensure_ifta_worksheet(spreadsheet, IFTA_FUEL_SHEET_TITLE, IFTA_FUEL_COLUMNS)
 
 
+def format_ifta_have_receipt(value):
+    """Store Yes if they have a receipt, otherwise No."""
+    if isinstance(value, bool):
+        return "Yes" if value else "No"
+    text = _cell(value).strip()
+    if not text:
+        return "No"
+    if text.lower() in {"no", "n", "false", "0", "✗", "x"}:
+        return "No"
+    # "Yes", "✓", or a leftover receipt number from before the checkbox.
+    return "Yes"
+
+
+def ifta_have_receipt_checked(value):
+    return format_ifta_have_receipt(value) == "Yes"
+
+
+def ifta_have_receipt_display(value):
+    """Show a saved receipt flag as a check or cross."""
+    return "✓" if ifta_have_receipt_checked(value) else "✗"
+
+
+def ifta_receipt_from_record(record):
+    if not record:
+        return ""
+    if IFTA_RECEIPT_COLUMN in record:
+        return record.get(IFTA_RECEIPT_COLUMN)
+    for key in ("Have Receipt", "Receipt", "Receipt #"):
+        if key in record:
+            return record.get(key)
+    return ""
+
+
+
 def load_ifta_trip_records(spreadsheet=None, unit_id=None):
     ws, _created = ensure_ifta_trips_worksheet(spreadsheet or _gsheets_spreadsheet())
     records = records_from_worksheet(ws, IFTA_TRIPS_COLUMNS)
@@ -2714,7 +2750,7 @@ def build_ifta_fuel_record(entry_date, unit_id, jurisdiction, gallons, price_per
         "Price/Gal": format_ifta_number(price_n, 3) if price_n is not None else "",
         "Total Cost": format_ifta_number(total_n, 2) if total_n is not None else "",
         "Vendor/Location": _cell(vendor),
-        "Receipt #": _cell(receipt),
+        IFTA_RECEIPT_COLUMN: format_ifta_have_receipt(receipt),
         "Notes": _cell(notes),
     }
 
@@ -3100,7 +3136,7 @@ def _show_ifta_fuel_form(unit_id, fuel, spreadsheet, today, jurisdiction_options
         if bits:
             st.caption("Computed: " + " · ".join(bits))
     st.text_input("Vendor/Location", key=prefix + "vendor")
-    st.text_input("Receipt #", key=prefix + "receipt")
+    st.checkbox("Have receipt", key=prefix + "receipt")
     st.text_input("Notes", key=prefix + "notes")
     if st.button("Save fuel purchase", type="primary", key=prefix + "save", use_container_width=True):
         try:
@@ -3139,7 +3175,7 @@ def _show_ifta_fuel_form(unit_id, fuel, spreadsheet, today, jurisdiction_options
             st.markdown("**Price/Gal:** " + (_cell(item.get("Price/Gal")) or "—"))
             st.markdown("**Total Cost:** " + (_cell(item.get("Total Cost")) or "—"))
             st.markdown("**Vendor/Location:** " + (_cell(item.get("Vendor/Location")) or "—"))
-            st.markdown("**Receipt #:** " + (_cell(item.get("Receipt #")) or "—"))
+            st.markdown("**Have receipt:** " + ifta_have_receipt_display(ifta_receipt_from_record(item)))
             st.markdown("**Notes:** " + (_cell(item.get("Notes")) or "—"))
 
 

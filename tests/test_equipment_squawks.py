@@ -22,7 +22,7 @@ def _exec_equipment_helpers():
         "STATUS_RESOLVED", "REPORTERS", "ACTIVE_VALUES", "HEADER_PAGES",
         "OFFICIAL_EQUIPMENT_NAMES", "REGISTRATION_EXPIRE_COL", "ANNUAL_MAINT_COL",
         "TONNAGE_APPLIES_COL", "TONNAGE_EXPIRE_COL", "TONNAGE_DEFAULT_UNITS", "DATE_STATUS_COLORS",
-        "IFTA_UNITS", "DRIVERS", "IFTA_TRIPS_SHEET_TITLE", "IFTA_FUEL_SHEET_TITLE", "IFTA_TRIPS_COLUMNS", "IFTA_FUEL_COLUMNS", "IFTA_DEFAULT_JURISDICTION", "IFTA_JURISDICTIONS",
+        "IFTA_UNITS", "DRIVERS", "IFTA_TRIPS_SHEET_TITLE", "IFTA_FUEL_SHEET_TITLE", "IFTA_TRIPS_COLUMNS", "IFTA_FUEL_COLUMNS", "IFTA_RECEIPT_COLUMN", "IFTA_DEFAULT_JURISDICTION", "IFTA_JURISDICTIONS",
         "DOM_AIRCRAFT", "DOM_ACTION_ANNUAL",
         "PARTS", "CORE_FACTORS", "PART_FACTORS", "PART_STOPS", "CONFIG_FIELDS",
         "ALL_FACTOR_KEYS", "ALL_STOP_KEYS", "FRAT_COLUMNS",
@@ -65,6 +65,7 @@ def _exec_equipment_helpers():
         "update_n480ml_grease_checkpoint",
         "unit_has_ifta", "ifta_jurisdiction_label", "ifta_jurisdiction_options", "parse_ifta_jurisdiction",
         "parse_ifta_number", "format_ifta_number", "ifta_trip_miles", "ifta_fuel_amounts",
+        "format_ifta_have_receipt", "ifta_have_receipt_checked", "ifta_have_receipt_display", "ifta_receipt_from_record",
         "ifta_quarter_range", "ifta_in_quarter", "_ensure_ifta_worksheet", "ensure_ifta_trips_worksheet", "ensure_ifta_fuel_worksheet",
         "load_ifta_trip_records", "load_ifta_fuel_records", "build_ifta_trip_record", "build_ifta_fuel_record",
         "save_ifta_trip_record", "save_ifta_fuel_record", "ifta_mpg", "build_ifta_quarterly_summary",
@@ -514,6 +515,36 @@ class PlaceholderAndLogicTests(unittest.TestCase):
         self.assertEqual(self.s["combine_maint_status"]("ok", "soon"), "soon")
         self.assertEqual(self.s["combine_maint_status"]("ok", None), "ok")
         self.assertIsNone(self.s["combine_maint_status"](None, None))
+
+
+    def test_ifta_have_receipt_yes_no_and_keeps_receipt_hash_header(self):
+        from datetime import date
+        self.assertEqual(self.s["IFTA_RECEIPT_COLUMN"], "Receipt #")
+        self.assertEqual(self.s["IFTA_FUEL_COLUMNS"][8], "Receipt #")
+        fmt = self.s["format_ifta_have_receipt"]
+        self.assertEqual(fmt(True), "Yes")
+        self.assertEqual(fmt(False), "No")
+        self.assertEqual(fmt("Yes"), "Yes")
+        self.assertEqual(fmt("No"), "No")
+        self.assertEqual(fmt(""), "No")
+        self.assertEqual(fmt(None), "No")
+        self.assertEqual(fmt("R-100"), "Yes")  # leftover receipt number still means they had one
+        self.assertTrue(self.s["ifta_have_receipt_checked"]("Yes"))
+        self.assertFalse(self.s["ifta_have_receipt_checked"]("No"))
+        self.assertEqual(self.s["ifta_have_receipt_display"]("Yes"), "✓")
+        self.assertEqual(self.s["ifta_have_receipt_display"]("No"), "✗")
+        self.assertEqual(self.s["ifta_have_receipt_display"](""), "✗")
+        rec = self.s["build_ifta_fuel_record"](
+            date(2026, 11, 10), "Heli2", "WA", "10", "4", "",
+            "Shell", True, "",
+        )
+        self.assertEqual(rec["Receipt #"], "Yes")
+        self.assertEqual(self.s["ifta_receipt_from_record"](rec), "Yes")
+        rec_no = self.s["build_ifta_fuel_record"](
+            date(2026, 11, 10), "Heli2", "WA", "10", "4", "",
+            "Shell", False, "",
+        )
+        self.assertEqual(rec_no["Receipt #"], "No")
 
     def test_ifta_drivers_dropdown_order_and_trips_header_unchanged(self):
         self.assertEqual(self.s["DRIVERS"], [
@@ -1236,17 +1267,19 @@ class FakeSheetBehaviorTests(unittest.TestCase):
 
         fuel = self.s["build_ifta_fuel_record"](
             date(2026, 11, 10), "Heli2", "WA", "100", "4.50", "",
-            "Shell Ellensburg", "R-100", "", when=when,
+            "Shell Ellensburg", True, "", when=when,
         )
         self.assertEqual(fuel["Gallons"], "100.000")
         self.assertEqual(fuel["Price/Gal"], "4.500")
         self.assertEqual(fuel["Total Cost"], "450.00")
+        self.assertEqual(fuel["Receipt #"], "Yes")
         self.s["save_ifta_fuel_record"](fuel, self.book)
         or_fuel = self.s["build_ifta_fuel_record"](
             date(2026, 11, 11), "Heli2", "OR", "40", "", "180",
-            "Chevron", "R-101", "",
+            "Chevron", False, "",
             when=datetime(2026, 11, 11, 10, 0, 0, tzinfo=ZoneInfo("America/Los_Angeles")),
         )
+        self.assertEqual(or_fuel["Receipt #"], "No")
         self.assertEqual(or_fuel["Price/Gal"], "4.500")
         self.assertEqual(or_fuel["Total Cost"], "180.00")
         self.s["save_ifta_fuel_record"](or_fuel, self.book)
@@ -1292,12 +1325,41 @@ class FakeSheetBehaviorTests(unittest.TestCase):
         doc.close()
 
         self.assertEqual(self.book.sheets["IFTA Trips"].rows[0], self.s["IFTA_TRIPS_COLUMNS"])
+        self.assertEqual(self.s["IFTA_RECEIPT_COLUMN"], "Receipt #")
+        self.assertEqual(self.s["IFTA_FUEL_COLUMNS"][8], "Receipt #")
         self.assertEqual(self.book.sheets["IFTA Fuel"].rows[0], self.s["IFTA_FUEL_COLUMNS"])
+        self.assertEqual(self.book.sheets["IFTA Fuel"].rows[1][self.s["IFTA_FUEL_COLUMNS"].index("Receipt #")], "Yes")
+        self.assertEqual(self.book.sheets["IFTA Fuel"].rows[2][self.s["IFTA_FUEL_COLUMNS"].index("Receipt #")], "No")
         for title, (header, rows_before, writes_before) in snapshots.items():
             self.assertEqual(self.book.sheets[title].rows[0], header)
             self.assertEqual(self.book.sheets[title].writes, writes_before)
         self.assertEqual(self.book.sheet1.rows, frat_before)
         self.assertEqual(self.book.sheet1.writes, frat_writes)
+        self._assert_frat_untouched()
+
+
+    def test_ifta_fuel_have_receipt_does_not_alter_existing_header(self):
+        from datetime import date
+        header = [
+            "Timestamp", "Date", "Unit", "Jurisdiction", "Gallons",
+            "Price/Gal", "Total Cost", "Vendor/Location", "Receipt #", "Notes",
+        ]
+        ws = self.book.add_worksheet("IFTA Fuel", 20, 10)
+        ws.append_row(header)
+        writes_after_header = list(ws.writes)
+        record = self.s["build_ifta_fuel_record"](
+            date(2026, 11, 10), "Heli2", "WA", "20", "4", "",
+            "Shell", True, "note",
+        )
+        self.s["save_ifta_fuel_record"](record, self.book)
+        self.assertEqual(ws.rows[0], header)
+        self.assertEqual(ws.rows[1][header.index("Receipt #")], "Yes")
+        # Header cells were not updated after the initial append.
+        self.assertFalse(any(w[0] == "update_cell" and w[1] == 1 for w in ws.writes[len(writes_after_header):]))
+        loaded = self.s["load_ifta_fuel_records"](self.book, unit_id="Heli2")
+        self.assertEqual(len(loaded), 1)
+        self.assertEqual(loaded[0]["Receipt #"], "Yes")
+        self.assertEqual(self.s["ifta_have_receipt_display"](loaded[0]["Receipt #"]), "✓")
         self._assert_frat_untouched()
 
     def test_ifta_ensure_does_not_alter_an_existing_custom_header(self):
@@ -1743,18 +1805,30 @@ class HeaderAndEquipmentPageTests(unittest.TestCase):
         next(t for t in at.text_input if t.label == "Gallons").set_value("100")
         next(t for t in at.text_input if t.label == "Price/Gal").set_value("4.50")
         at.run()
+        labels = [t.label for t in at.text_input]
+        self.assertIn("Vendor/Location", labels)
+        self.assertNotIn("Receipt #", labels)
+        self.assertTrue(any(c.label == "Have receipt" for c in at.checkbox))
         next(t for t in at.text_input if t.label == "Vendor/Location").set_value("Shell Ellensburg")
-        next(t for t in at.text_input if t.label == "Receipt #").set_value("R-100")
+        next(c for c in at.checkbox if c.label == "Have receipt").check()
         next(b for b in at.button if b.label == "Save fuel purchase").click().run()
         self.assertFalse(list(at.exception))
         self.assertTrue(any("Saved IFTA fuel purchase for Heli2" in (s.value or "") for s in at.success))
         fuel_header = book.sheets["IFTA Fuel"].rows[0]
+        self.assertEqual(fuel_header, [
+            "Timestamp", "Date", "Unit", "Jurisdiction", "Gallons",
+            "Price/Gal", "Total Cost", "Vendor/Location", "Receipt #", "Notes",
+        ])
         fuel = book.sheets["IFTA Fuel"].rows[1]
         self.assertEqual(fuel[fuel_header.index("Unit")], "Heli2")
         self.assertEqual(fuel[fuel_header.index("Gallons")], "100.000")
         self.assertEqual(fuel[fuel_header.index("Price/Gal")], "4.500")
         self.assertEqual(fuel[fuel_header.index("Total Cost")], "450.00")
         self.assertEqual(fuel[fuel_header.index("Vendor/Location")], "Shell Ellensburg")
+        self.assertEqual(fuel[fuel_header.index("Receipt #")], "Yes")
+        md = " ".join(m.value or "" for m in at.markdown)
+        self.assertIn("**Have receipt:** ✓", md)
+        self.assertNotIn("Receipt #", md)
         self.assertEqual(book.sheets["Sheet1"].rows, [])
 
         next(r for r in at.radio).set_value("Quarterly summary").run()
