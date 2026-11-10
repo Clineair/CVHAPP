@@ -15,7 +15,7 @@ APP = Path(__file__).resolve().parents[1] / "app.py"
 def _exec_equipment_helpers():
     names = {
         "PILOTS", "ACCOUNTABLE_EXEC", "DIRECTOR_MAINTENANCE", "APPROVERS",
-        "EQUIPMENT_SHEET_TITLE", "SQUAWKS_SHEET_TITLE", "SAFETY_MEETINGS_SHEET_TITLE", "SAFETY_MEETING_ITEMS", "SAFETY_MEETING_ATTENDEES", "AIRCRAFT_MAINT_SHEET_TITLE", "AIRCRAFT_MAINT_COLUMNS", "AIRCRAFT_MAINT_PROFILES",
+        "EQUIPMENT_SHEET_TITLE", "SQUAWKS_SHEET_TITLE", "SAFETY_MEETINGS_SHEET_TITLE", "SAFETY_MEETING_ITEMS", "SAFETY_MEETING_ATTENDEES", "SAFETY_MEETING_VIEW", "SAFETY_MEETING_RECORD", "AIRCRAFT_MAINT_SHEET_TITLE", "AIRCRAFT_MAINT_COLUMNS", "AIRCRAFT_MAINT_PROFILES",
         "GREASE_CHECKPOINT_OFFSETS", "N480ML_MAINT_SHEET_TITLE",
         "EQUIPMENT_INFO_COLUMNS", "EQUIPMENT_COLUMNS", "EQUIPMENT_EDIT_COLUMNS", "SQUAWK_COLUMNS", "EQUIPMENT_TYPES",
         "SQUAWK_CATEGORIES", "SQUAWK_SEVERITIES", "SEVERITY_GROUNDED", "STATUS_OPEN",
@@ -39,6 +39,10 @@ def _exec_equipment_helpers():
         "safety_meeting_columns", "format_safety_meeting_attendees", "_safety_item_key", "ensure_safety_meetings_worksheet",
         "load_safety_meeting_records", "build_safety_meeting_record", "save_safety_meeting_record",
         "update_safety_meeting_discussion", "_safety_meeting_sort_key",
+        "safety_meeting_entry_date", "parse_safety_meeting_attendees", "safety_meeting_item_done",
+        "filter_safety_meetings", "safety_meeting_years", "safety_meeting_months_for_year",
+        "safety_meeting_option_label", "safety_meeting_pdf_filename",
+        "safety_meeting_report_logo_path", "build_safety_meeting_pdf", "safety_meeting_identity",
         "aircraft_maint_profile", "parse_hobbs", "format_hobbs", "next_hobbs",
         "hobbs_flag", "hobbs_status_markup", "ensure_aircraft_maint_worksheet",
         "load_aircraft_maint_records", "latest_aircraft_maint_record",
@@ -652,6 +656,76 @@ class FakeSheetBehaviorTests(unittest.TestCase):
         sorted_rows = sorted(rows, key=self.s["_safety_meeting_sort_key"], reverse=True)
         self.assertEqual([r["Timestamp"] for r in sorted_rows], ["2026-11-10 08:00:00", "2026-10-01 09:00:00"])
 
+
+    def test_safety_meeting_viewer_filters_and_pdf_are_one_page(self):
+        from datetime import date, datetime
+        from zoneinfo import ZoneInfo
+        import fitz
+
+        earlier = self.s["build_safety_meeting_record"](
+            date(2026, 10, 15), "Anthony Root",
+            self.s["format_safety_meeting_attendees"](["Ron Cline"], "Visitor One"),
+            {"PPE": {"done": True, "note": "Gloves restocked"}},
+            "October notes.",
+            when=datetime(2026, 10, 15, 8, 0, 0, tzinfo=ZoneInfo("America/Los_Angeles")),
+        )
+        later = self.s["build_safety_meeting_record"](
+            date(2026, 11, 10), "Ronald A Cline",
+            self.s["format_safety_meeting_attendees"](["Ron Cline", "Carl Mulvaney"], "Guest Pilot"),
+            {"Aircraft Fire Extinguishers": {"done": True, "note": "Cabin bottle OK"}},
+            "Talked about winter ops.",
+            when=datetime(2026, 11, 10, 9, 30, 0, tzinfo=ZoneInfo("America/Los_Angeles")),
+        )
+        self.s["ensure_safety_meetings_worksheet"](self.book)
+        header_before = list(self.book.sheets["Safety Meetings"].rows[0])
+        frat_before = [list(r) for r in self.book.sheet1.rows]
+        frat_writes = list(self.book.sheet1.writes)
+        self.s["save_safety_meeting_record"](earlier, self.book)
+        self.s["save_safety_meeting_record"](later, self.book)
+        rows = self.s["load_safety_meeting_records"](self.book)
+
+        checked, other = self.s["parse_safety_meeting_attendees"](later["Attendees"])
+        self.assertEqual(checked, ["Ron Cline", "Carl Mulvaney"])
+        self.assertEqual(other, "Guest Pilot")
+        self.assertTrue(self.s["safety_meeting_item_done"](later, "Aircraft Fire Extinguishers"))
+        self.assertFalse(self.s["safety_meeting_item_done"](later, "PPE"))
+        self.assertEqual(self.s["safety_meeting_years"](rows), [2026])
+        self.assertEqual(self.s["safety_meeting_months_for_year"](rows, 2026), [10, 11])
+        november = self.s["filter_safety_meetings"](rows, year=2026, month=11)
+        self.assertEqual([r["Meeting Date"] for r in november], ["2026-11-10"])
+        newest_first = self.s["filter_safety_meetings"](rows)
+        self.assertEqual([r["Meeting Date"] for r in newest_first], ["2026-11-10", "2026-10-15"])
+        self.assertEqual(self.s["safety_meeting_pdf_filename"](later), "CVH_Monthly_Safety_Meeting_2026-11-10.pdf")
+
+        logo = self.s["safety_meeting_report_logo_path"]()
+        self.assertTrue(logo)
+        self.assertTrue(logo.endswith("flaglogo.png") or logo.endswith("flaglogo_report.png"))
+        pdf = self.s["build_safety_meeting_pdf"](later, logo_path="/workspace/invoices/logo/flaglogo.png")
+        self.assertGreater(len(pdf), 1000)
+        self.assertTrue(pdf.startswith(b"%PDF"))
+        doc = fitz.open(stream=pdf, filetype="pdf")
+        self.assertEqual(doc.page_count, 1)
+        extracted = "\n".join(page.get_text() for page in doc)
+        self.assertIn("Monthly Safety Meeting", extracted)
+        self.assertIn("Central Valley Helicopters", extracted)
+        self.assertIn("2026-11-10", extracted)
+        self.assertIn("Ronald A Cline", extracted)
+        self.assertIn("Aircraft Fire Extinguishers", extracted)
+        self.assertIn("Done / Reviewed", extracted)
+        self.assertIn("Cabin bottle OK", extracted)
+        self.assertIn("Review Equipment", extracted)
+        self.assertIn("Not reviewed", extracted)
+        self.assertIn("Ron Cline", extracted)
+        self.assertIn("Carl Mulvaney", extracted)
+        self.assertIn("Guest Pilot", extracted)
+        self.assertIn("Talked about winter ops.", extracted)
+        self.assertEqual(self.book.sheets["Safety Meetings"].rows[0], header_before)
+        self.assertEqual(self.book.sheet1.rows, frat_before)
+        self.assertEqual(self.book.sheet1.writes, frat_writes)
+        self._assert_frat_untouched()
+        self.assertTrue(doc[0].get_images(), "expected the flag logo on the PDF page")
+        doc.close()
+
     def test_safety_meeting_update_rejects_missing_row(self):
         self.s["ensure_safety_meetings_worksheet"](self.book)
         with self.assertRaisesRegex(ValueError, "Timestamp"):
@@ -1039,7 +1113,13 @@ class HeaderAndEquipmentPageTests(unittest.TestCase):
             self.assertIn(item, names)
         self.assertEqual(sum(1 for c in at.checkbox if c.label == "Done / Reviewed"), 5)
         self.assertTrue(any(t.label == "Discussion notes for this meeting" for t in at.text_area))
+        radios = list(at.radio)
+        self.assertTrue(radios, "expected View / Record radio")
+        radios[0].set_value("View meetings").run()
+        self.assertFalse(list(at.exception))
         self.assertTrue(any("No meetings recorded yet." in (i.value or "") for i in at.info))
+        next(r for r in at.radio).set_value("Record a meeting").run()
+        self.assertFalse(list(at.exception))
 
         next(d for d in at.date_input if d.label == "Meeting Date").set_value(date(2026, 11, 10))
         next(s for s in at.selectbox if "Recorded By" in (s.label or "")).select("Ronald A Cline")
@@ -1053,7 +1133,22 @@ class HeaderAndEquipmentPageTests(unittest.TestCase):
         next(b for b in at.button if b.label == "Save meeting").click().run()
         self.assertFalse(list(at.exception))
         self.assertTrue(any("Saved safety meeting for 2026-11-10" in (s.value or "") for s in at.success))
-        self.assertTrue(any(e.label and "2026-11-10" in e.label for e in at.expander))
+        self.assertFalse(list(at.expander))
+        self.assertTrue(any(s.label == "Year" for s in at.selectbox))
+        self.assertTrue(any(s.label == "Month" for s in at.selectbox))
+        self.assertTrue(any(s.label == "Meeting" for s in at.selectbox))
+        md = " ".join(m.value or "" for m in at.markdown)
+        self.assertIn("**Meeting Date:** 2026-11-10", md)
+        self.assertIn("**Recorded By:** Ronald A Cline", md)
+        self.assertIn("**Aircraft Fire Extinguishers:** Done / Reviewed — Cabin bottle OK", md)
+        self.assertIn("**Review Equipment:** Not reviewed", md)
+        self.assertIn("**Review Employee Licenses / Certificates:** Not reviewed", md)
+        self.assertIn("**First Aid Kits:** Not reviewed", md)
+        self.assertIn("**PPE:** Not reviewed", md)
+        self.assertIn("✓ Ron Cline", md)
+        self.assertIn("✓ Carl Mulvaney", md)
+        self.assertIn("**Other attendees:** Guest Pilot", md)
+        self.assertTrue(any(b.label == "Download PDF" for b in list(at.button) + list(at.download_button)))
         book = at.session_state["_workbook"]
         self.assertIn("Safety Meetings", book.sheets)
         rows = book.sheets["Safety Meetings"].rows
@@ -1063,8 +1158,6 @@ class HeaderAndEquipmentPageTests(unittest.TestCase):
         self.assertEqual(data[header.index("Meeting Date")], "2026-11-10")
         self.assertEqual(data[header.index("Recorded By")], "Ronald A Cline")
         self.assertEqual(data[header.index("Attendees")], "Ron Cline, Carl Mulvaney, Guest Pilot")
-        info_md = " ".join(m.value or "" for m in at.markdown)
-        self.assertIn("**Attendees:** Ron Cline, Carl Mulvaney, Guest Pilot", info_md)
         self.assertEqual(data[header.index("Aircraft Fire Extinguishers Done")], "Yes")
         self.assertEqual(data[header.index("Aircraft Fire Extinguishers Note")], "Cabin bottle OK")
         self.assertEqual(data[header.index("Discussion Notes")], "Talked about winter ops.")
@@ -1082,6 +1175,47 @@ class HeaderAndEquipmentPageTests(unittest.TestCase):
         self.assertEqual(data[header.index("Discussion Notes")], "Talked about winter ops. Added follow-up.")
         self.assertEqual(data[header.index("Aircraft Fire Extinguishers Done")], "Yes")
         self.assertEqual(len(book.sheets["Safety Meetings"].rows), 2)
+
+
+    def test_safety_meeting_viewer_filters_month_and_keeps_headers(self):
+        from datetime import date
+        from streamlit.testing.v1 import AppTest
+        at = AppTest.from_string(equipment_offline_app(), default_timeout=30).run()
+        at.button(key="nav_monthly_safety").click().run()
+        self.assertFalse(list(at.exception))
+        next(d for d in at.date_input if d.label == "Meeting Date").set_value(date(2026, 10, 15))
+        next(s for s in at.selectbox if "Recorded By" in (s.label or "")).select("Anthony Root")
+        next(c for c in at.checkbox if c.label == "Ron Cline").check()
+        next(t for t in at.text_area if t.label == "Discussion notes for this meeting").set_value("October notes.")
+        next(b for b in at.button if b.label == "Save meeting").click().run()
+        self.assertFalse(list(at.exception))
+        next(r for r in at.radio).set_value("Record a meeting").run()
+        next(d for d in at.date_input if d.label == "Meeting Date").set_value(date(2026, 11, 10))
+        next(s for s in at.selectbox if "Recorded By" in (s.label or "")).select("Ronald A Cline")
+        next(c for c in at.checkbox if c.label == "Carl Mulvaney").check()
+        next(t for t in at.text_input if t.label == "Other attendees (optional)").set_value("Guest Pilot")
+        next(t for t in at.text_area if t.label == "Discussion notes for this meeting").set_value("November notes.")
+        next(b for b in at.button if b.label == "Save meeting").click().run()
+        self.assertFalse(list(at.exception))
+        md = " ".join(m.value or "" for m in at.markdown)
+        self.assertIn("**Meeting Date:** 2026-11-10", md)
+        self.assertIn("November notes.", " ".join(t.value or "" for t in at.text_area))
+        month = next(s for s in at.selectbox if s.label == "Month")
+        month.select(10).run()
+        self.assertFalse(list(at.exception))
+        md = " ".join(m.value or "" for m in at.markdown)
+        self.assertIn("**Meeting Date:** 2026-10-15", md)
+        self.assertIn("**Recorded By:** Anthony Root", md)
+        self.assertIn("October notes.", " ".join(t.value or "" for t in at.text_area))
+        self.assertIn("✓ Ron Cline", md)
+        self.assertNotIn("2026-11-10", md)
+        book = at.session_state["_workbook"]
+        header = book.sheets["Safety Meetings"].rows[0]
+        self.assertEqual(header[0:4], ["Timestamp", "Meeting Date", "Recorded By", "Attendees"])
+        self.assertEqual(book.sheets["Sheet1"].rows, [])
+        self.assertNotIn("Equipment", book.sheets)
+        self.assertNotIn("Squawks", book.sheets)
+        self.assertNotIn("Aircraft Maint", book.sheets)
 
     def test_dom_annual_n893pc_form_and_n480ml_placeholder(self):
         from streamlit.testing.v1 import AppTest
