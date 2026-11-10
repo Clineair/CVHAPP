@@ -22,6 +22,7 @@ def _exec_equipment_helpers():
         "STATUS_RESOLVED", "REPORTERS", "ACTIVE_VALUES", "HEADER_PAGES",
         "OFFICIAL_EQUIPMENT_NAMES", "REGISTRATION_EXPIRE_COL", "ANNUAL_MAINT_COL",
         "TONNAGE_APPLIES_COL", "TONNAGE_EXPIRE_COL", "TONNAGE_DEFAULT_UNITS", "DATE_STATUS_COLORS",
+        "IFTA_UNITS", "IFTA_TRIPS_SHEET_TITLE", "IFTA_FUEL_SHEET_TITLE", "IFTA_TRIPS_COLUMNS", "IFTA_FUEL_COLUMNS", "IFTA_DEFAULT_JURISDICTION", "IFTA_JURISDICTIONS",
         "DOM_AIRCRAFT", "DOM_ACTION_ANNUAL",
         "PARTS", "CORE_FACTORS", "PART_FACTORS", "PART_STOPS", "CONFIG_FIELDS",
         "ALL_FACTOR_KEYS", "ALL_STOP_KEYS", "FRAT_COLUMNS",
@@ -53,6 +54,12 @@ def _exec_equipment_helpers():
         "ensure_n480ml_maint_worksheet", "load_n480ml_maint_records",
         "build_n480ml_maint_record", "save_n480ml_maint_record",
         "update_n480ml_grease_checkpoint",
+        "unit_has_ifta", "ifta_jurisdiction_label", "ifta_jurisdiction_options", "parse_ifta_jurisdiction",
+        "parse_ifta_number", "format_ifta_number", "ifta_trip_miles", "ifta_fuel_amounts",
+        "ifta_quarter_range", "ifta_in_quarter", "_ensure_ifta_worksheet", "ensure_ifta_trips_worksheet", "ensure_ifta_fuel_worksheet",
+        "load_ifta_trip_records", "load_ifta_fuel_records", "build_ifta_trip_record", "build_ifta_fuel_record",
+        "save_ifta_trip_record", "save_ifta_fuel_record", "ifta_mpg", "build_ifta_quarterly_summary",
+        "build_ifta_summary_csv", "ifta_summary_pdf_filename", "build_ifta_summary_pdf",
     }
     nodes = [n for n in TREE.body if
              (isinstance(n, ast.Assign) and any(isinstance(t, ast.Name) and t.id in names for t in n.targets))
@@ -926,6 +933,163 @@ class FakeSheetBehaviorTests(unittest.TestCase):
 
 
 
+
+    def test_ifta_tabs_trips_fuel_summary_and_pdf_leave_existing_headers_alone(self):
+        from datetime import date, datetime
+        from zoneinfo import ZoneInfo
+        import fitz
+        import csv
+        from io import StringIO
+
+        self.assertEqual(self.s["IFTA_UNITS"], ("Heli2",))
+        self.assertTrue(self.s["unit_has_ifta"]({"Unit ID": "Heli2", "Name": "Heli2"}))
+        self.assertTrue(self.s["unit_has_ifta"]("Heli2"))
+        self.assertFalse(self.s["unit_has_ifta"]({"Unit ID": "Heli1", "Name": "Heli1"}))
+        self.assertFalse(self.s["unit_has_ifta"]("Heli3"))
+        self.assertEqual(self.s["parse_ifta_jurisdiction"]("WA — Washington"), "WA")
+        self.assertEqual(self.s["parse_ifta_jurisdiction"]("Washington"), "WA")
+        self.assertEqual(self.s["parse_ifta_jurisdiction"]("bc"), "BC")
+        self.assertEqual(self.s["ifta_trip_miles"]("10000", "10450"), 450)
+        self.assertIsNone(self.s["ifta_trip_miles"]("10000", ""))
+        gallons, price, total = self.s["ifta_fuel_amounts"]("100", "4.50", "")
+        self.assertEqual(gallons, 100)
+        self.assertEqual(price, 4.5)
+        self.assertEqual(total, 450)
+        gallons, price, total = self.s["ifta_fuel_amounts"]("50", "", "200")
+        self.assertEqual(price, 4)
+        self.assertEqual(total, 200)
+        start, end = self.s["ifta_quarter_range"](2026, 1)
+        self.assertEqual((start, end), (date(2026, 1, 1), date(2026, 3, 31)))
+        start, end = self.s["ifta_quarter_range"](2026, 4)
+        self.assertEqual((start, end), (date(2026, 10, 1), date(2026, 12, 31)))
+
+        with self.assertRaisesRegex(ValueError, "0 or greater"):
+            self.s["build_ifta_trip_record"](
+                date(2026, 11, 10), "Heli2", "Anthony Root", "WA", "200", "100", "",
+            )
+        with self.assertRaisesRegex(ValueError, "required"):
+            self.s["build_ifta_trip_record"](
+                date(2026, 11, 10), "Heli2", "Anthony Root", "WA", "200", "", "",
+            )
+
+        # Existing tabs must stay untouched when IFTA tabs are created and written.
+        self.s["ensure_equipment_worksheet"](self.book)
+        self.s["ensure_squawks_worksheet"](self.book)
+        self.s["ensure_safety_meetings_worksheet"](self.book)
+        self.s["ensure_aircraft_maint_worksheet"](self.book)
+        snapshots = {}
+        for title in ("Equipment", "Squawks", "Safety Meetings", "Aircraft Maint"):
+            ws = self.book.sheets[title]
+            snapshots[title] = (list(ws.rows[0]), list(ws.rows), list(ws.writes))
+        frat_before = [list(r) for r in self.book.sheet1.rows]
+        frat_writes = list(self.book.sheet1.writes)
+
+        trips_ws, created_trips = self.s["ensure_ifta_trips_worksheet"](self.book)
+        fuel_ws, created_fuel = self.s["ensure_ifta_fuel_worksheet"](self.book)
+        self.assertTrue(created_trips)
+        self.assertTrue(created_fuel)
+        self.assertEqual(trips_ws.rows[0], self.s["IFTA_TRIPS_COLUMNS"])
+        self.assertEqual(fuel_ws.rows[0], self.s["IFTA_FUEL_COLUMNS"])
+        trips2, created_trips2 = self.s["ensure_ifta_trips_worksheet"](self.book)
+        self.assertFalse(created_trips2)
+        self.assertIs(trips2, trips_ws)
+
+        when = datetime(2026, 11, 10, 9, 0, 0, tzinfo=ZoneInfo("America/Los_Angeles"))
+        trip = self.s["build_ifta_trip_record"](
+            date(2026, 11, 10), "Heli2", "Anthony Root", "WA — Washington",
+            "10000", "10450", "Ellensburg to Yakima", when=when,
+        )
+        self.assertEqual(trip["Miles"], "450")
+        self.assertEqual(trip["Jurisdiction"], "WA")
+        self.assertEqual(trip["Unit"], "Heli2")
+        self.s["save_ifta_trip_record"](trip, self.book)
+
+        or_trip = self.s["build_ifta_trip_record"](
+            date(2026, 11, 11), "Heli2", "Ronald A Cline", "OR",
+            "10450", "10600", "", when=datetime(2026, 11, 11, 9, 0, 0, tzinfo=ZoneInfo("America/Los_Angeles")),
+        )
+        self.assertEqual(or_trip["Miles"], "150")
+        self.s["save_ifta_trip_record"](or_trip, self.book)
+
+        fuel = self.s["build_ifta_fuel_record"](
+            date(2026, 11, 10), "Heli2", "WA", "100", "4.50", "",
+            "Shell Ellensburg", "R-100", "", when=when,
+        )
+        self.assertEqual(fuel["Gallons"], "100.000")
+        self.assertEqual(fuel["Price/Gal"], "4.500")
+        self.assertEqual(fuel["Total Cost"], "450.00")
+        self.s["save_ifta_fuel_record"](fuel, self.book)
+        or_fuel = self.s["build_ifta_fuel_record"](
+            date(2026, 11, 11), "Heli2", "OR", "40", "", "180",
+            "Chevron", "R-101", "",
+            when=datetime(2026, 11, 11, 10, 0, 0, tzinfo=ZoneInfo("America/Los_Angeles")),
+        )
+        self.assertEqual(or_fuel["Price/Gal"], "4.500")
+        self.assertEqual(or_fuel["Total Cost"], "180.00")
+        self.s["save_ifta_fuel_record"](or_fuel, self.book)
+
+        trips = self.s["load_ifta_trip_records"](self.book, unit_id="Heli2")
+        fuel_rows = self.s["load_ifta_fuel_records"](self.book, unit_id="Heli2")
+        self.assertEqual(len(trips), 2)
+        self.assertEqual(len(fuel_rows), 2)
+        summary = self.s["build_ifta_quarterly_summary"](trips, fuel_rows, 2026, 4, unit_id="Heli2")
+        self.assertEqual(summary["unit_total_miles"], 600)
+        self.assertEqual(summary["unit_total_gallons"], 140)
+        self.assertAlmostEqual(summary["unit_mpg"], 600 / 140)
+        self.assertEqual(summary["fleet_total_miles"], 600)
+        self.assertEqual(summary["fleet_total_gallons"], 140)
+        by_code = {row["Jurisdiction"]: row for row in summary["unit_rows"]}
+        self.assertEqual(by_code["WA"]["Miles"], 450)
+        self.assertEqual(by_code["WA"]["Gallons"], 100)
+        self.assertEqual(by_code["OR"]["Miles"], 150)
+        self.assertEqual(by_code["OR"]["Gallons"], 40)
+        q1 = self.s["build_ifta_quarterly_summary"](trips, fuel_rows, 2026, 1, unit_id="Heli2")
+        self.assertEqual(q1["unit_total_miles"], 0)
+        self.assertEqual(q1["unit_total_gallons"], 0)
+
+        csv_text = self.s["build_ifta_summary_csv"](summary)
+        rows = list(csv.reader(StringIO(csv_text)))
+        self.assertEqual(rows[0], ["Year", "Quarter", "Scope", "Unit", "Jurisdiction", "Miles", "Gallons", "MPG"])
+        self.assertTrue(any(row[4] == "WA" and row[2] == "Unit" for row in rows[1:]))
+        self.assertTrue(any(row[4] == "TOTAL" and row[2] == "Fleet" for row in rows[1:]))
+        self.assertEqual(self.s["ifta_summary_pdf_filename"](summary), "CVH_IFTA_Heli2_Q4_2026.pdf")
+
+        pdf = self.s["build_ifta_summary_pdf"](summary, logo_path="/workspace/invoices/logo/flaglogo.png")
+        self.assertTrue(pdf.startswith(b"%PDF"))
+        doc = fitz.open(stream=pdf, filetype="pdf")
+        self.assertEqual(doc.page_count, 1)
+        extracted = "\n".join(page.get_text() for page in doc)
+        self.assertIn("IFTA Quarterly Summary", extracted)
+        self.assertIn("Central Valley Helicopters", extracted)
+        self.assertIn("Heli2", extracted)
+        self.assertIn("Washington", extracted)
+        self.assertIn("Oregon", extracted)
+        self.assertIn("Fleet", extracted)
+        self.assertTrue(doc[0].get_images(), "expected the flag logo on the PDF page")
+        doc.close()
+
+        self.assertEqual(self.book.sheets["IFTA Trips"].rows[0], self.s["IFTA_TRIPS_COLUMNS"])
+        self.assertEqual(self.book.sheets["IFTA Fuel"].rows[0], self.s["IFTA_FUEL_COLUMNS"])
+        for title, (header, rows_before, writes_before) in snapshots.items():
+            self.assertEqual(self.book.sheets[title].rows[0], header)
+            self.assertEqual(self.book.sheets[title].writes, writes_before)
+        self.assertEqual(self.book.sheet1.rows, frat_before)
+        self.assertEqual(self.book.sheet1.writes, frat_writes)
+        self._assert_frat_untouched()
+
+    def test_ifta_ensure_does_not_alter_an_existing_custom_header(self):
+        ws = self.book.add_worksheet("IFTA Trips", 20, 8)
+        ws.append_row(["Timestamp", "Date", "Custom"])
+        writes = list(ws.writes)
+        out, created = self.s["ensure_ifta_trips_worksheet"](self.book)
+        self.assertFalse(created)
+        self.assertIs(out, ws)
+        self.assertEqual(ws.rows[0], ["Timestamp", "Date", "Custom"])
+        self.assertEqual(ws.writes, writes)
+        self._assert_frat_untouched()
+        self.assertNotIn("IFTA Fuel", self.book.sheets)
+        self.assertNotIn("Equipment", self.book.sheets)
+
 def equipment_offline_app():
     """Same offline FRAT stub, plus an in-memory spreadsheet for Equipment/Squawks."""
     tree = ast.parse(SOURCE)
@@ -1003,6 +1167,13 @@ class HeaderAndEquipmentPageTests(unittest.TestCase):
         info_buttons = [b for b in at.button if b.label == "INFO"]
         self.assertEqual(len(squawk_buttons), 30)
         self.assertEqual(len(info_buttons), 30)
+        ifta_buttons = [b for b in at.button if b.label == "IFTA"]
+        self.assertEqual(len(ifta_buttons), 1)
+        action_labels = [b.label for b in at.button if b.label in {"INFO", "IFTA", "Squawk"}]
+        heli2_start = action_labels.index("INFO") + 2  # Heli1 INFO, Heli1 Squawk, then Heli2 INFO
+        self.assertEqual(action_labels[0:2], ["INFO", "Squawk"])
+        self.assertEqual(action_labels[2:5], ["INFO", "IFTA", "Squawk"])
+        self.assertEqual(action_labels[5:7], ["INFO", "Squawk"])
         names = [m.value for m in at.markdown if m.value and m.value.startswith("**") and m.value.endswith("**")]
         official = [
             "Heli1", "Heli2", "Heli3", "Heli4", "F250", "F350", "PW", "Ram", "FS Truck",
@@ -1216,6 +1387,90 @@ class HeaderAndEquipmentPageTests(unittest.TestCase):
         self.assertNotIn("Equipment", book.sheets)
         self.assertNotIn("Squawks", book.sheets)
         self.assertNotIn("Aircraft Maint", book.sheets)
+
+
+    def test_heli2_ifta_page_saves_trip_and_fuel_and_shows_summary(self):
+        from datetime import date
+        from streamlit.testing.v1 import AppTest
+        at = AppTest.from_string(equipment_offline_app(), default_timeout=30).run()
+        at.button(key="nav_equipment").click().run()
+        self.assertFalse(list(at.exception))
+        self.assertEqual(len([b for b in at.button if b.label == "IFTA"]), 1)
+        at.button(key="ifta_btn_Heli2").click().run()
+        self.assertFalse(list(at.exception))
+        self.assertTrue(any(t.value == "IFTA" for t in at.title))
+        self.assertTrue(any(t.value == "Heli2" for t in at.subheader))
+        self.assertTrue(any(b.label == "Back" for b in at.button))
+        self.assertTrue(any(d.label == "Date" for d in at.date_input))
+        self.assertTrue(any(s.label == "Driver" for s in at.selectbox))
+        self.assertTrue(any(s.label == "Jurisdiction" for s in at.selectbox))
+        labels = [t.label for t in at.text_input]
+        self.assertIn("Start Odometer", labels)
+        self.assertIn("End Odometer", labels)
+        self.assertNotIn("Gallons", labels)
+        next(d for d in at.date_input if d.label == "Date").set_value(date(2026, 11, 10))
+        next(s for s in at.selectbox if s.label == "Driver").select("Anthony Root")
+        jur = next(s for s in at.selectbox if s.label == "Jurisdiction")
+        self.assertTrue(str(jur.value).startswith("WA"))
+        next(t for t in at.text_input if t.label == "Start Odometer").set_value("10000")
+        next(t for t in at.text_input if t.label == "End Odometer").set_value("10450")
+        at.run()
+        md = " ".join(m.value or "" for m in at.markdown)
+        self.assertIn("**Miles:** 450", md)
+        next(t for t in at.text_input if t.label == "Notes").set_value("Ellensburg to Yakima")
+        next(b for b in at.button if b.label == "Save trip").click().run()
+        self.assertFalse(list(at.exception))
+        self.assertTrue(any("Saved IFTA trip for Heli2" in (s.value or "") for s in at.success))
+        book = at.session_state["_workbook"]
+        self.assertIn("IFTA Trips", book.sheets)
+        self.assertIn("IFTA Fuel", book.sheets)
+        self.assertEqual(len(book.sheets["IFTA Fuel"].rows), 1)  # header only until a fuel save
+        trip_header = book.sheets["IFTA Trips"].rows[0]
+        trip = book.sheets["IFTA Trips"].rows[1]
+        self.assertEqual(trip[trip_header.index("Unit")], "Heli2")
+        self.assertEqual(trip[trip_header.index("Date")], "2026-11-10")
+        self.assertEqual(trip[trip_header.index("Driver")], "Anthony Root")
+        self.assertEqual(trip[trip_header.index("Jurisdiction")], "WA")
+        self.assertEqual(trip[trip_header.index("Miles")], "450")
+        self.assertEqual(book.sheets["Sheet1"].rows, [])
+        self.assertNotIn("Safety Meetings", book.sheets)
+        self.assertNotIn("Aircraft Maint", book.sheets)
+
+        next(r for r in at.radio).set_value("Fuel purchase log").run()
+        self.assertFalse(list(at.exception))
+        self.assertTrue(any(t.label == "Gallons" for t in at.text_input))
+        next(d for d in at.date_input if d.label == "Date").set_value(date(2026, 11, 10))
+        next(t for t in at.text_input if t.label == "Gallons").set_value("100")
+        next(t for t in at.text_input if t.label == "Price/Gal").set_value("4.50")
+        at.run()
+        next(t for t in at.text_input if t.label == "Vendor/Location").set_value("Shell Ellensburg")
+        next(t for t in at.text_input if t.label == "Receipt #").set_value("R-100")
+        next(b for b in at.button if b.label == "Save fuel purchase").click().run()
+        self.assertFalse(list(at.exception))
+        self.assertTrue(any("Saved IFTA fuel purchase for Heli2" in (s.value or "") for s in at.success))
+        fuel_header = book.sheets["IFTA Fuel"].rows[0]
+        fuel = book.sheets["IFTA Fuel"].rows[1]
+        self.assertEqual(fuel[fuel_header.index("Unit")], "Heli2")
+        self.assertEqual(fuel[fuel_header.index("Gallons")], "100.000")
+        self.assertEqual(fuel[fuel_header.index("Price/Gal")], "4.500")
+        self.assertEqual(fuel[fuel_header.index("Total Cost")], "450.00")
+        self.assertEqual(fuel[fuel_header.index("Vendor/Location")], "Shell Ellensburg")
+        self.assertEqual(book.sheets["Sheet1"].rows, [])
+
+        next(r for r in at.radio).set_value("Quarterly summary").run()
+        self.assertFalse(list(at.exception))
+        md = " ".join(m.value or "" for m in at.markdown)
+        self.assertIn("WA — Washington", md)
+        self.assertIn("450.0 mi", md)
+        self.assertIn("100.000 gal", md)
+        self.assertIn("Fleet total", md)
+        self.assertTrue(any(b.label == "Download CSV" for b in list(at.button) + list(at.download_button)))
+        self.assertTrue(any(b.label == "Download PDF" for b in list(at.button) + list(at.download_button)))
+        # Opening IFTA must not change Equipment or Squawks headers.
+        if "Equipment" in book.sheets:
+            self.assertEqual(book.sheets["Equipment"].rows[0][0:4], ["Unit ID", "Name", "Type", "Active"])
+        if "Squawks" in book.sheets:
+            self.assertEqual(book.sheets["Squawks"].rows[0][0], "Timestamp")
 
     def test_dom_annual_n893pc_form_and_n480ml_placeholder(self):
         from streamlit.testing.v1 import AppTest
