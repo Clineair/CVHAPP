@@ -273,6 +273,16 @@ SAFETY_MEETING_ITEMS = [
     "First Aid Kits",
     "PPE",
 ]
+# Add a name here to show another attendee checkbox on the Monthly Safety Meeting form.
+SAFETY_MEETING_ATTENDEES = [
+    "Ron Cline",
+    "Anthony Root",
+    "Carl Mulvaney",
+    "Barry Markham",
+    "Gary Grant",
+    "Robert Rackley",
+    "Skylar Fingerle",
+]
 AIRCRAFT_MAINT_SHEET_TITLE = "Aircraft Maint"
 AIRCRAFT_MAINT_COLUMNS = [
     "Timestamp", "Aircraft", "Entry Date", "Hobbs",
@@ -782,6 +792,16 @@ def load_safety_meeting_records(spreadsheet=None):
     return records_from_worksheet(ws, safety_meeting_columns())
 
 
+def format_safety_meeting_attendees(selected, other=""):
+    """Checked names in list order, then any Other attendees, as a comma-separated string."""
+    selected_set = {_cell(name) for name in (selected or [])}
+    names = [name for name in SAFETY_MEETING_ATTENDEES if name in selected_set]
+    other_text = _cell(other)
+    if other_text:
+        names.append(other_text)
+    return ", ".join(names)
+
+
 def build_safety_meeting_record(meeting_date, recorded_by, attendees, item_states, discussion, when=None):
     when = when or datetime.now(ZoneInfo("America/Los_Angeles"))
     record = {
@@ -876,7 +896,10 @@ def show_safety_meetings_page():
     st.date_input("Meeting Date", value=today, format="YYYY-MM-DD", key=f"safety_date_{gen}")
     recorded_options = [""] + list(REPORTERS)
     st.selectbox("Recorded By (optional)", recorded_options, key=f"safety_recorded_by_{gen}")
-    st.text_input("Attendees (optional)", key=f"safety_attendees_{gen}")
+    st.markdown("**Attendees**")
+    for name in SAFETY_MEETING_ATTENDEES:
+        st.checkbox(name, key=f"safety_attendee_{_safety_item_key(name)}_{gen}")
+    st.text_input("Other attendees (optional)", key=f"safety_attendees_other_{gen}")
 
     st.subheader("Checklist")
     st.caption("Check Done / Reviewed and add a short note if needed.")
@@ -897,10 +920,18 @@ def show_safety_meetings_page():
                 "done": bool(st.session_state.get(f"safety_done_{slug}_{gen}")),
                 "note": st.session_state.get(f"safety_note_{slug}_{gen}", ""),
             }
+        selected_attendees = [
+            name for name in SAFETY_MEETING_ATTENDEES
+            if st.session_state.get(f"safety_attendee_{_safety_item_key(name)}_{gen}")
+        ]
+        attendees = format_safety_meeting_attendees(
+            selected_attendees,
+            st.session_state.get(f"safety_attendees_other_{gen}", ""),
+        )
         record = build_safety_meeting_record(
             st.session_state.get(f"safety_date_{gen}"),
             st.session_state.get(f"safety_recorded_by_{gen}", ""),
-            st.session_state.get(f"safety_attendees_{gen}", ""),
+            attendees,
             item_states,
             st.session_state.get(f"safety_discussion_{gen}", ""),
         )
@@ -928,8 +959,8 @@ def show_safety_meetings_page():
         if stamp:
             title = title + "  (" + stamp + ")"
         with st.expander(title):
-            if _cell(meeting.get("Attendees")):
-                st.markdown("**Attendees:** " + _cell(meeting.get("Attendees")))
+            attendees = _cell(meeting.get("Attendees"))
+            st.markdown("**Attendees:** " + (attendees if attendees else "—"))
             for item in SAFETY_MEETING_ITEMS:
                 done = _cell(meeting.get(item + " Done"))
                 note = _cell(meeting.get(item + " Note"))

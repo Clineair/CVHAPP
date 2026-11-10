@@ -15,7 +15,7 @@ APP = Path(__file__).resolve().parents[1] / "app.py"
 def _exec_equipment_helpers():
     names = {
         "PILOTS", "ACCOUNTABLE_EXEC", "DIRECTOR_MAINTENANCE", "APPROVERS",
-        "EQUIPMENT_SHEET_TITLE", "SQUAWKS_SHEET_TITLE", "SAFETY_MEETINGS_SHEET_TITLE", "SAFETY_MEETING_ITEMS", "AIRCRAFT_MAINT_SHEET_TITLE", "AIRCRAFT_MAINT_COLUMNS", "AIRCRAFT_MAINT_PROFILES",
+        "EQUIPMENT_SHEET_TITLE", "SQUAWKS_SHEET_TITLE", "SAFETY_MEETINGS_SHEET_TITLE", "SAFETY_MEETING_ITEMS", "SAFETY_MEETING_ATTENDEES", "AIRCRAFT_MAINT_SHEET_TITLE", "AIRCRAFT_MAINT_COLUMNS", "AIRCRAFT_MAINT_PROFILES",
         "EQUIPMENT_INFO_COLUMNS", "EQUIPMENT_COLUMNS", "EQUIPMENT_EDIT_COLUMNS", "SQUAWK_COLUMNS", "EQUIPMENT_TYPES",
         "SQUAWK_CATEGORIES", "SQUAWK_SEVERITIES", "SEVERITY_GROUNDED", "STATUS_OPEN",
         "STATUS_RESOLVED", "REPORTERS", "ACTIVE_VALUES", "HEADER_PAGES",
@@ -35,7 +35,7 @@ def _exec_equipment_helpers():
         "ensure_squawks_worksheet", "load_equipment_records",
         "load_squawk_records", "build_squawk_record", "save_squawk_record", "resolve_squawk",
         "update_equipment_record",
-        "safety_meeting_columns", "_safety_item_key", "ensure_safety_meetings_worksheet",
+        "safety_meeting_columns", "format_safety_meeting_attendees", "_safety_item_key", "ensure_safety_meetings_worksheet",
         "load_safety_meeting_records", "build_safety_meeting_record", "save_safety_meeting_record",
         "update_safety_meeting_discussion", "_safety_meeting_sort_key",
         "aircraft_maint_profile", "parse_hobbs", "format_hobbs", "next_hobbs",
@@ -297,6 +297,28 @@ class PlaceholderAndLogicTests(unittest.TestCase):
         finally:
             items[:] = original
 
+    def test_safety_meeting_attendee_list_order_and_format(self):
+        names = self.s["SAFETY_MEETING_ATTENDEES"]
+        self.assertEqual(names, [
+            "Ron Cline",
+            "Anthony Root",
+            "Carl Mulvaney",
+            "Barry Markham",
+            "Gary Grant",
+            "Robert Rackley",
+            "Skylar Fingerle",
+        ])
+        fmt = self.s["format_safety_meeting_attendees"]
+        # Checked names are saved in list order, not click order; Other is appended.
+        self.assertEqual(
+            fmt(["Carl Mulvaney", "Ron Cline", "Unknown"], "Guest Pilot"),
+            "Ron Cline, Carl Mulvaney, Guest Pilot",
+        )
+        self.assertEqual(fmt(["Skylar Fingerle"], ""), "Skylar Fingerle")
+        self.assertEqual(fmt([], "Visitor"), "Visitor")
+        self.assertEqual(fmt([], "  "), "")
+        # Existing Attendees column name is unchanged.
+        self.assertEqual(self.s["safety_meeting_columns"]()[3], "Attendees")
 
     def test_hobbs_next_values_and_color_flags(self):
         from datetime import date
@@ -855,7 +877,18 @@ class HeaderAndEquipmentPageTests(unittest.TestCase):
         self.assertTrue(any(t.value == "Monthly Safety Meeting" for t in at.title))
         self.assertTrue(any(d.label == "Meeting Date" for d in at.date_input))
         self.assertTrue(any("Recorded By" in (s.label or "") for s in at.selectbox))
-        self.assertTrue(any("Attendees" in (t.label or "") for t in at.text_input))
+        self.assertFalse(any(t.label == "Attendees (optional)" for t in at.text_input))
+        attendee_labels = [c.label for c in at.checkbox if c.label != "Done / Reviewed"]
+        self.assertEqual(attendee_labels, [
+            "Ron Cline",
+            "Anthony Root",
+            "Carl Mulvaney",
+            "Barry Markham",
+            "Gary Grant",
+            "Robert Rackley",
+            "Skylar Fingerle",
+        ])
+        self.assertTrue(any(t.label == "Other attendees (optional)" for t in at.text_input))
         names = " ".join(m.value or "" for m in at.markdown)
         for item in (
             "Aircraft Fire Extinguishers",
@@ -871,8 +904,10 @@ class HeaderAndEquipmentPageTests(unittest.TestCase):
 
         next(d for d in at.date_input if d.label == "Meeting Date").set_value(date(2026, 11, 10))
         next(s for s in at.selectbox if "Recorded By" in (s.label or "")).select("Ronald A Cline")
-        next(t for t in at.text_input if "Attendees" in (t.label or "")).set_value("Ron, Carl")
-        at.checkbox[0].check()
+        next(c for c in at.checkbox if c.label == "Ron Cline").check()
+        next(c for c in at.checkbox if c.label == "Carl Mulvaney").check()
+        next(t for t in at.text_input if t.label == "Other attendees (optional)").set_value("Guest Pilot")
+        next(c for c in at.checkbox if c.label == "Done / Reviewed").check()
         notes = [t for t in at.text_input if t.label == "Note (optional)"]
         notes[0].set_value("Cabin bottle OK")
         next(t for t in at.text_area if t.label == "Discussion notes for this meeting").set_value("Talked about winter ops.")
@@ -888,7 +923,9 @@ class HeaderAndEquipmentPageTests(unittest.TestCase):
         data = rows[1]
         self.assertEqual(data[header.index("Meeting Date")], "2026-11-10")
         self.assertEqual(data[header.index("Recorded By")], "Ronald A Cline")
-        self.assertEqual(data[header.index("Attendees")], "Ron, Carl")
+        self.assertEqual(data[header.index("Attendees")], "Ron Cline, Carl Mulvaney, Guest Pilot")
+        info_md = " ".join(m.value or "" for m in at.markdown)
+        self.assertIn("**Attendees:** Ron Cline, Carl Mulvaney, Guest Pilot", info_md)
         self.assertEqual(data[header.index("Aircraft Fire Extinguishers Done")], "Yes")
         self.assertEqual(data[header.index("Aircraft Fire Extinguishers Note")], "Cabin bottle OK")
         self.assertEqual(data[header.index("Discussion Notes")], "Talked about winter ops.")
