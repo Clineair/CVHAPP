@@ -3,7 +3,8 @@ import streamlit as st
 import numpy as np
 import matplotlib.pyplot as plt
 import requests
-from datetime import datetime
+from datetime import datetime, date, time as dt_time, timedelta
+import uuid
 from zoneinfo import ZoneInfo
 
 # ────────────────────────────────────────────────
@@ -20,9 +21,9 @@ st.markdown("""
     <link rel="icon" href="https://img.icons8.com/color/48/000000/helicopter.png" type="image/png">
 """, unsafe_allow_html=True)
 
-# CVH Logo and header navigation (logo left, four buttons right)
+# CVH Logo and header navigation (logo left, header buttons right)
 LOGO_URL = "flaglogo.png"
-HEADER_PAGES = ["Monthly Safety Meeting", "Yearly Items", "Equipment", "DOM"]
+HEADER_PAGES = ["Monthly Safety Meeting", "Yearly Items", "Equipment", "DOM", "EMPLOYEES"]
 
 # Button Colors and compact wrapping header buttons for phones
 st.markdown("""
@@ -31,7 +32,7 @@ st.markdown("""
     .stButton button[data-baseweb="button"][kind="secondary"] { background-color: #FFC107 !important; color: black !important; } /* Yellow - Driver */
     .stButton button[data-baseweb="button"][kind="tertiary"] { background-color: #DC3545 !important; color: white !important; } /* Red - Emergency */
     .stButton button { white-space: normal; line-height: 1.15; height: auto; min-height: 2.75rem; }
-    /* Keep the flag logo and the four header buttons on one row on phones. */
+    /* Keep the flag logo and the header buttons on one row on phones. */
     [data-testid="stMainBlockContainer"] [data-testid="stHorizontalBlock"]:has(img),
     [data-testid="stMainBlockContainer"] [data-testid="stHorizontalBlock"]:has(img) [data-testid="stHorizontalBlock"] {
         flex-direction: row !important;
@@ -73,17 +74,22 @@ with header_right:
         shown = ("● " + label) if active else label
         if st.button(shown, key=key, use_container_width=True, type="primary"):
             st.session_state.current_mode = page
+            if page == "EMPLOYEES":
+                st.session_state.employees_selected = None
+                st.session_state.employees_show_calendar = False
             st.rerun()
     hr1, hr2 = st.columns(2)
     with hr1:
         _header_btn("Monthly Safety Meeting", "Monthly Safety Meeting", "nav_monthly_safety")
     with hr2:
         _header_btn("Yearly Items", "Yearly Items", "nav_yearly_items")
-    hr3, hr4 = st.columns(2)
+    hr3, hr4, hr5 = st.columns(3)
     with hr3:
         _header_btn("Equipment", "Equipment", "nav_equipment")
     with hr4:
         _header_btn("DOM", "DOM", "nav_dom")
+    with hr5:
+        _header_btn("EMPLOYEES", "EMPLOYEES", "nav_employees")
 
 # ────────────────────────────────────────────────
 # Session State
@@ -357,6 +363,7 @@ OFFICIAL_EQUIPMENT_NAMES = [
 # Add a unit ID here to show an IFTA button on the Equipment page, between INFO and Squawk.
 IFTA_UNITS = ("Heli2",)
 # Drivers for the IFTA Trips form, in Ron's listed order.
+# Do not add names here unless Ron authorizes them as drivers.
 DRIVERS = [
     "Robert Rackley",
     "Barry Markham",
@@ -365,6 +372,33 @@ DRIVERS = [
     "Ron Cline",
     "Gary Grant",
 ]
+# Employees page roster, in Ron's listed order. Separate from DRIVERS;
+# Skylar Fingerle is not an authorized addition to the driver dropdown.
+EMPLOYEES = [
+    "Ron Cline",
+    "Carl Mulvaney",
+    "Anthony Root",
+    "Barry Markham",
+    "Robert Rackley",
+    "Gary Grant",
+    "Skylar Fingerle",
+]
+TIME_OFF_SHEET_TITLE = "Time Off"
+TIME_OFF_COLUMNS = [
+    "Timestamp", "Entry ID", "Action", "Employee", "Type",
+    "Start Date", "End Date", "Start Time", "End Time", "Notes", "Status",
+]
+TIME_OFF_TYPES = ("Full day off", "Partial day", "Vacation")
+TIME_OFF_TYPE_FULL = "Full day off"
+TIME_OFF_TYPE_PARTIAL = "Partial day"
+TIME_OFF_TYPE_VACATION = "Vacation"
+TIME_OFF_STATUS_ACTIVE = "Active"
+TIME_OFF_STATUS_CANCELLED = "Cancelled"
+TIME_OFF_ACTION_CREATE = "Create"
+TIME_OFF_ACTION_CANCEL = "Cancel"
+TIME_OFF_MAX_PAST_DAYS = 730
+TIME_OFF_MAX_FUTURE_DAYS = 730
+TIME_OFF_MAX_SPAN_DAYS = 180
 IFTA_TRIPS_SHEET_TITLE = "IFTA Trips"
 IFTA_FUEL_SHEET_TITLE = "IFTA Fuel"
 IFTA_TRIPS_COLUMNS = [
@@ -1868,6 +1902,672 @@ def show_placeholder_page(title):
     st.title(title)
     st.info("Coming soon - Ron to define contents")
 
+
+def employee_button_key(name):
+    """Stable Streamlit key for an Employees page person button."""
+    parts = []
+    for ch in _cell(name):
+        if ch.isalnum():
+            parts.append(ch)
+        elif not parts or parts[-1] != "_":
+            parts.append("_")
+    return "employee_btn_" + "".join(parts).strip("_")
+
+
+def new_time_off_entry_id(when=None):
+    """Readable unique id for an append-only time-off request."""
+    when = when or datetime.now(ZoneInfo("America/Los_Angeles"))
+    return "TO-" + when.strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:4]
+
+
+def parse_time_off_time(value):
+    """Parse a Pacific clock time. Blank stays blank; unparseable is ignored."""
+    if value is None or value == "":
+        return None
+    if isinstance(value, dt_time):
+        return value.replace(second=0, microsecond=0)
+    if hasattr(value, "hour") and hasattr(value, "minute") and not hasattr(value, "year"):
+        return dt_time(int(value.hour), int(value.minute))
+    if hasattr(value, "hour") and hasattr(value, "minute") and hasattr(value, "year"):
+        return dt_time(value.hour, value.minute)
+    text = _cell(value).strip().upper().replace(".", "")
+    text = text.replace("PT", "").strip()
+    if not text:
+        return None
+    for fmt in ("%H:%M", "%H:%M:%S", "%I:%M %p", "%I:%M%p", "%I %p"):
+        try:
+            return datetime.strptime(text, fmt).time().replace(second=0, microsecond=0)
+        except ValueError:
+            continue
+    return None
+
+
+def format_time_off_time(value):
+    """Store times as HH:MM (24-hour Pacific)."""
+    parsed = parse_time_off_time(value)
+    if parsed is None:
+        return ""
+    return parsed.strftime("%H:%M")
+
+
+def format_time_off_time_display(value):
+    """Display a stored time as h:mm AM/PM PT."""
+    parsed = parse_time_off_time(value)
+    if parsed is None:
+        return ""
+    hour = parsed.hour % 12 or 12
+    suffix = "AM" if parsed.hour < 12 else "PM"
+    return str(hour) + ":" + parsed.strftime("%M") + " " + suffix + " PT"
+
+
+def time_off_date_bounds(today=None):
+    today = today or datetime.now(ZoneInfo("America/Los_Angeles")).date()
+    return today - timedelta(days=TIME_OFF_MAX_PAST_DAYS), today + timedelta(days=TIME_OFF_MAX_FUTURE_DAYS)
+
+
+def time_off_shift_month(year, month, delta):
+    total = int(year) * 12 + (int(month) - 1) + int(delta)
+    return total // 12, total % 12 + 1
+
+
+def time_off_calendar_weeks(year, month):
+    """Sunday-start weeks that cover the given month."""
+    first = date(int(year), int(month), 1)
+    if int(month) == 12:
+        last = date(int(year), 12, 31)
+    else:
+        last = date(int(year), int(month) + 1, 1) - timedelta(days=1)
+    start = first - timedelta(days=(first.weekday() + 1) % 7)
+    weeks = []
+    day = start
+    while day <= last:
+        weeks.append([day + timedelta(days=i) for i in range(7)])
+        day += timedelta(days=7)
+    return weeks
+
+
+def time_off_short_name(name):
+    parts = _cell(name).split()
+    if len(parts) >= 2:
+        return parts[0] + " " + parts[-1][0] + "."
+    return _cell(name)
+
+
+def time_off_type_label(value):
+    kind = _cell(value)
+    if kind == TIME_OFF_TYPE_FULL:
+        return "Full day"
+    if kind == TIME_OFF_TYPE_PARTIAL:
+        return "Partial"
+    if kind == TIME_OFF_TYPE_VACATION:
+        return "Vacation"
+    return kind
+
+
+def time_off_start_date(record):
+    return parse_equipment_date((record or {}).get("Start Date"))
+
+
+def time_off_end_date(record):
+    end = parse_equipment_date((record or {}).get("End Date"))
+    return end or time_off_start_date(record)
+
+
+def time_off_span_days(start, end):
+    if start is None or end is None:
+        return 0
+    return (end - start).days + 1
+
+
+def time_off_covers_date(record, day):
+    start = time_off_start_date(record)
+    end = time_off_end_date(record)
+    if start is None or end is None or day is None:
+        return False
+    return start <= day <= end
+
+
+def _time_off_sort_key(record):
+    stamp = _cell((record or {}).get("Timestamp"))
+    stamp_dt = datetime.min
+    if stamp:
+        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y/%m/%d %H:%M:%S", "%m/%d/%Y %H:%M:%S"):
+            try:
+                stamp_dt = datetime.strptime(stamp, fmt)
+                break
+            except ValueError:
+                continue
+    start = time_off_start_date(record)
+    start_dt = datetime(start.year, start.month, start.day) if start is not None else datetime.min
+    return (stamp_dt, start_dt, _cell((record or {}).get("Entry ID")))
+
+
+def time_off_entry_id(record):
+    return _cell((record or {}).get("Entry ID"))
+
+
+def time_off_is_active(record):
+    status = _cell((record or {}).get("Status"))
+    if status:
+        return status == TIME_OFF_STATUS_ACTIVE
+    return _cell((record or {}).get("Action")) != TIME_OFF_ACTION_CANCEL
+
+
+def latest_time_off_record(records, entry_id):
+    wanted = _cell(entry_id)
+    rows = [r for r in (records or []) if time_off_entry_id(r) == wanted]
+    if not rows:
+        return None
+    return max(rows, key=_time_off_sort_key)
+
+
+def current_time_off_records(records):
+    """Latest row per Entry ID, in start-date order."""
+    latest = {}
+    for record in records or []:
+        entry_id = time_off_entry_id(record)
+        if not entry_id:
+            continue
+        prev = latest.get(entry_id)
+        if prev is None or _time_off_sort_key(record) >= _time_off_sort_key(prev):
+            latest[entry_id] = record
+    rows = list(latest.values())
+    rows.sort(key=lambda r: (
+        time_off_start_date(r) or date.min,
+        time_off_end_date(r) or date.min,
+        _cell(r.get("Employee")),
+        time_off_entry_id(r),
+    ))
+    return rows
+
+
+def active_time_off_records(records):
+    return [r for r in current_time_off_records(records) if time_off_is_active(r)]
+
+
+def time_off_for_date(records, day, employee=None):
+    wanted = _cell(employee)
+    rows = []
+    for record in active_time_off_records(records):
+        if wanted and _cell(record.get("Employee")) != wanted:
+            continue
+        if time_off_covers_date(record, day):
+            rows.append(record)
+    return rows
+
+
+def time_off_for_month(records, year, month, employee=None, include_cancelled=False):
+    first = date(int(year), int(month), 1)
+    if int(month) == 12:
+        last = date(int(year), 12, 31)
+    else:
+        last = date(int(year), int(month) + 1, 1) - timedelta(days=1)
+    wanted = _cell(employee)
+    source = current_time_off_records(records) if include_cancelled else active_time_off_records(records)
+    rows = []
+    for record in source:
+        if wanted and _cell(record.get("Employee")) != wanted:
+            continue
+        start = time_off_start_date(record)
+        end = time_off_end_date(record)
+        if start is None:
+            continue
+        if end is None:
+            end = start
+        if end < first or start > last:
+            continue
+        if not include_cancelled and not time_off_is_active(record):
+            continue
+        rows.append(record)
+    return rows
+
+
+def time_off_identity(record):
+    return (
+        _cell((record or {}).get("Employee")),
+        _cell((record or {}).get("Type")),
+        format_equipment_date((record or {}).get("Start Date")),
+        format_equipment_date((record or {}).get("End Date")),
+        format_time_off_time((record or {}).get("Start Time")),
+        format_time_off_time((record or {}).get("End Time")),
+    )
+
+
+def time_off_duplicate_active(records, record, ignore_entry_id=None):
+    identity = time_off_identity(record)
+    skip = _cell(ignore_entry_id)
+    for existing in active_time_off_records(records):
+        if skip and time_off_entry_id(existing) == skip:
+            continue
+        if time_off_identity(existing) == identity:
+            return True
+    return False
+
+
+def time_off_summary_text(record, include_employee=True):
+    employee = _cell((record or {}).get("Employee"))
+    kind = _cell((record or {}).get("Type"))
+    start = format_equipment_date((record or {}).get("Start Date"))
+    end = format_equipment_date((record or {}).get("End Date"))
+    bits = []
+    if include_employee and employee:
+        bits.append(employee)
+    if kind == TIME_OFF_TYPE_PARTIAL:
+        start_t = format_time_off_time_display((record or {}).get("Start Time"))
+        end_t = format_time_off_time_display((record or {}).get("End Time"))
+        when = start or "—"
+        if start_t and end_t:
+            when += ", " + start_t.replace(" PT", "") + "–" + end_t
+        elif start_t or end_t:
+            when += ", " + (start_t or end_t)
+        bits.append(kind)
+        bits.append(when)
+    elif kind == TIME_OFF_TYPE_VACATION and start and end and start != end:
+        bits.append(kind)
+        bits.append(start + " to " + end)
+    else:
+        bits.append(kind or "Time off")
+        bits.append(start or "—")
+    notes = _cell((record or {}).get("Notes"))
+    text = " — ".join(bits)
+    if notes:
+        text += " — " + notes
+    return text
+
+
+def time_off_month_grid_markup(year, month, records, today=None, employee=None):
+    """HTML month grid with names and types; multi-day entries appear on each day."""
+    today = today or datetime.now(ZoneInfo("America/Los_Angeles")).date()
+    weeks = time_off_calendar_weeks(year, month)
+    css = (
+        "<style>"
+        ".toff-cal{width:100%;border-collapse:collapse;table-layout:fixed;font-size:0.72rem;}"
+        ".toff-cal th{text-align:center;padding:0.2rem 0;color:#4b5563;font-weight:600;}"
+        ".toff-cal td{border:1px solid #e5e7eb;vertical-align:top;padding:0.2rem;height:4.4rem;}"
+        ".toff-cal .muted{color:#9ca3af;background:#f9fafb;}"
+        ".toff-cal .today{border:2px solid #007BFF;}"
+        ".toff-cal .daynum{font-weight:700;display:block;}"
+        ".toff-cal .ev{margin-top:0.12rem;line-height:1.15;}"
+        ".toff-full{background:#fef3c7;}"
+        ".toff-part{background:#e0f2fe;}"
+        ".toff-vac{background:#ede9fe;}"
+        "</style>"
+    )
+    rows = ["<table class='toff-cal'><thead><tr>"]
+    for label in ("Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"):
+        rows.append("<th>" + label + "</th>")
+    rows.append("</tr></thead><tbody>")
+    for week in weeks:
+        rows.append("<tr>")
+        for day in week:
+            classes = []
+            if day.month != int(month):
+                classes.append("muted")
+            if day == today:
+                classes.append("today")
+            attr = " class='" + " ".join(classes) + "'" if classes else ""
+            cell = ["<td" + attr + "><span class='daynum'>" + str(day.day) + "</span>"]
+            if day.month == int(month):
+                for record in time_off_for_date(records, day, employee=employee):
+                    kind = _cell(record.get("Type"))
+                    ev_class = "ev"
+                    if kind == TIME_OFF_TYPE_FULL:
+                        ev_class += " toff-full"
+                    elif kind == TIME_OFF_TYPE_PARTIAL:
+                        ev_class += " toff-part"
+                    elif kind == TIME_OFF_TYPE_VACATION:
+                        ev_class += " toff-vac"
+                    label = time_off_short_name(record.get("Employee")) + " — " + time_off_type_label(kind)
+                    if kind == TIME_OFF_TYPE_PARTIAL:
+                        start_t = format_time_off_time_display(record.get("Start Time"))
+                        end_t = format_time_off_time_display(record.get("End Time"))
+                        if start_t and end_t:
+                            label += " " + start_t.replace(" PT", "") + "–" + end_t.replace(" PT", "")
+                    safe = (
+                        label.replace("&", "&amp;")
+                        .replace("<", "&lt;")
+                        .replace(">", "&gt;")
+                    )
+                    cell.append("<div class='" + ev_class + "'>" + safe + "</div>")
+            cell.append("</td>")
+            rows.append("".join(cell))
+        rows.append("</tr>")
+    rows.append("</tbody></table>")
+    return css + "".join(rows)
+
+
+def ensure_time_off_worksheet(spreadsheet):
+    """Create the Time Off tab with a header when it is missing.
+
+    Never alters an existing header, and never writes FRAT or other tabs.
+    """
+    cols = list(TIME_OFF_COLUMNS)
+    ws = _worksheet_or_none(spreadsheet, TIME_OFF_SHEET_TITLE)
+    created = False
+    if ws is None:
+        ws = spreadsheet.add_worksheet(title=TIME_OFF_SHEET_TITLE, rows=400, cols=max(len(cols), 12))
+        ws.append_row(cols, value_input_option="RAW")
+        created = True
+    else:
+        header = [_cell(c) for c in ws.row_values(1)]
+        if not header:
+            ws.append_row(cols, value_input_option="RAW")
+            created = True
+    return ws, created
+
+
+def load_time_off_records(spreadsheet=None):
+    ws, _created = ensure_time_off_worksheet(spreadsheet or _gsheets_spreadsheet())
+    return records_from_worksheet(ws, TIME_OFF_COLUMNS)
+
+
+def load_time_off_records_readonly(spreadsheet=None):
+    """Read the Time Off tab without creating or changing it."""
+    ws = _worksheet_or_none(spreadsheet or _gsheets_spreadsheet(), TIME_OFF_SHEET_TITLE)
+    if ws is None:
+        return []
+    header = [_cell(c) for c in ws.row_values(1)]
+    if not header:
+        return []
+    return records_from_worksheet(ws, TIME_OFF_COLUMNS)
+
+
+def build_time_off_record(
+    employee,
+    kind,
+    start_date,
+    end_date=None,
+    start_time=None,
+    end_time=None,
+    notes="",
+    when=None,
+    entry_id=None,
+    today=None,
+    existing=None,
+):
+    employee = _cell(employee)
+    kind = _cell(kind)
+    if employee not in list(EMPLOYEES):
+        raise ValueError("Employee is required")
+    if kind not in TIME_OFF_TYPES:
+        raise ValueError("Type is required")
+    start = parse_equipment_date(start_date)
+    end = parse_equipment_date(end_date) if end_date not in (None, "") else None
+    if start is None:
+        raise ValueError("Date is required")
+    if kind == TIME_OFF_TYPE_VACATION:
+        if end is None:
+            raise ValueError("End date is required")
+        if end < start:
+            raise ValueError("End date must be on or after the start date")
+        if time_off_span_days(start, end) > TIME_OFF_MAX_SPAN_DAYS:
+            raise ValueError("Vacation can be at most " + str(TIME_OFF_MAX_SPAN_DAYS) + " days")
+    else:
+        if end is not None and end != start:
+            raise ValueError("Full day and partial day entries use a single date")
+        end = start
+    today = today or datetime.now(ZoneInfo("America/Los_Angeles")).date()
+    low, high = time_off_date_bounds(today=today)
+    if start < low or end > high:
+        raise ValueError("Dates must be within about two years of today")
+    start_t = ""
+    end_t = ""
+    if kind == TIME_OFF_TYPE_PARTIAL:
+        start_parsed = parse_time_off_time(start_time)
+        end_parsed = parse_time_off_time(end_time)
+        if start_parsed is None or end_parsed is None:
+            raise ValueError("Start and end times are required for a partial day")
+        if end_parsed <= start_parsed:
+            raise ValueError("End time must be after start time")
+        start_t = format_time_off_time(start_parsed)
+        end_t = format_time_off_time(end_parsed)
+    when = when or datetime.now(ZoneInfo("America/Los_Angeles"))
+    record = {
+        "Timestamp": when.strftime("%Y-%m-%d %H:%M:%S"),
+        "Entry ID": _cell(entry_id) or new_time_off_entry_id(when=when),
+        "Action": TIME_OFF_ACTION_CREATE,
+        "Employee": employee,
+        "Type": kind,
+        "Start Date": format_equipment_date(start),
+        "End Date": format_equipment_date(end),
+        "Start Time": start_t,
+        "End Time": end_t,
+        "Notes": _cell(notes),
+        "Status": TIME_OFF_STATUS_ACTIVE,
+    }
+    if existing is not None and time_off_duplicate_active(existing, record):
+        raise ValueError("This time off is already listed")
+    return record
+
+
+def build_time_off_cancel_record(record, when=None):
+    if not record or not time_off_entry_id(record):
+        raise ValueError("Nothing to cancel")
+    if not time_off_is_active(record):
+        raise ValueError("This time off is already cancelled")
+    when = when or datetime.now(ZoneInfo("America/Los_Angeles"))
+    cancelled = dict(record)
+    cancelled["Timestamp"] = when.strftime("%Y-%m-%d %H:%M:%S")
+    cancelled["Action"] = TIME_OFF_ACTION_CANCEL
+    cancelled["Status"] = TIME_OFF_STATUS_CANCELLED
+    cancelled["Entry ID"] = time_off_entry_id(record)
+    return cancelled
+
+
+def save_time_off_record(record, spreadsheet=None):
+    ws, _created = ensure_time_off_worksheet(spreadsheet or _gsheets_spreadsheet())
+    header = [_cell(c) for c in ws.row_values(1)]
+    if not header:
+        raise RuntimeError("Time Off worksheet has no header")
+    ws.append_row([str(record.get(c, "")) for c in header], value_input_option="RAW")
+    return "Google Sheets (Time Off)"
+
+
+def show_time_off_calendar_page():
+    """Shared in-app time-off calendar with a month grid, agenda, and list form."""
+    st.title("Calendar")
+    st.caption(
+        "Shared time-off list so everyone can keep track. These are listed time-off "
+        "requests, not automatically approved leave. Do not include medical or other "
+        "sensitive details in the note."
+    )
+    if st.button("Back", key="employees_calendar_back", use_container_width=True):
+        st.session_state.employees_show_calendar = False
+        st.rerun()
+
+    today = datetime.now(ZoneInfo("America/Los_Angeles")).date()
+    try:
+        records = load_time_off_records_readonly()
+        load_ok = True
+    except Exception as exc:
+        records = []
+        load_ok = False
+        st.error("Could not load time off: " + str(exc))
+
+    if st.session_state.get("time_off_year") is None or st.session_state.get("time_off_month") is None:
+        st.session_state.time_off_year = today.year
+        st.session_state.time_off_month = today.month
+    year = int(st.session_state.time_off_year)
+    month = int(st.session_state.time_off_month)
+
+    nav1, nav2, nav3 = st.columns(3)
+    with nav1:
+        if st.button("Previous", key="time_off_prev", use_container_width=True):
+            y, m = time_off_shift_month(year, month, -1)
+            st.session_state.time_off_year = y
+            st.session_state.time_off_month = m
+            st.rerun()
+    with nav2:
+        if st.button("Today", key="time_off_today", use_container_width=True):
+            st.session_state.time_off_year = today.year
+            st.session_state.time_off_month = today.month
+            st.rerun()
+    with nav3:
+        if st.button("Next", key="time_off_next", use_container_width=True):
+            y, m = time_off_shift_month(year, month, 1)
+            st.session_state.time_off_year = y
+            st.session_state.time_off_month = m
+            st.rerun()
+    st.subheader(date(year, month, 1).strftime("%B %Y"))
+
+    filter_options = ["All employees"] + list(EMPLOYEES)
+    if st.session_state.get("time_off_filter") not in filter_options:
+        st.session_state.time_off_filter = "All employees"
+    filt_col, ref_col = st.columns([3, 1])
+    with filt_col:
+        shown = st.selectbox("Show", filter_options, key="time_off_filter")
+    with ref_col:
+        st.markdown("<div style='height:1.55rem'></div>", unsafe_allow_html=True)
+        if st.button("Refresh", key="time_off_refresh", use_container_width=True):
+            st.session_state.time_off_refreshed = "Refreshed from the shared list."
+            st.rerun()
+    if st.session_state.get("time_off_refreshed"):
+        st.success(st.session_state.pop("time_off_refreshed"))
+    if st.session_state.get("time_off_saved"):
+        st.success(st.session_state.pop("time_off_saved"))
+
+    employee_filter = None if shown == "All employees" else shown
+    if load_ok:
+        st.markdown(
+            time_off_month_grid_markup(year, month, records, today=today, employee=employee_filter),
+            unsafe_allow_html=True,
+        )
+    else:
+        st.info("Calendar grid is unavailable until the list can be loaded.")
+
+    st.markdown("---")
+    st.subheader("Agenda")
+    st.caption("Time off that falls in this month. Cancel keeps a history row instead of deleting.")
+    month_rows = time_off_for_month(records, year, month, employee=employee_filter) if load_ok else []
+    if not load_ok:
+        pass
+    elif not month_rows:
+        st.info("No listed time off in " + date(year, month, 1).strftime("%B %Y") + ".")
+    else:
+        for record in month_rows:
+            entry_id = time_off_entry_id(record)
+            st.markdown("**" + time_off_summary_text(record) + "**")
+            pending = _cell(st.session_state.get("time_off_confirm_cancel"))
+            if pending == entry_id:
+                st.warning(
+                    "Cancel this listed request? It will be marked cancelled and kept in history, not deleted."
+                )
+                c1, c2 = st.columns(2)
+                with c1:
+                    if st.button("Confirm cancel", key="time_off_confirm_" + entry_id, use_container_width=True):
+                        try:
+                            save_time_off_record(build_time_off_cancel_record(record))
+                        except Exception as exc:
+                            st.error("Could not cancel: " + str(exc))
+                        else:
+                            st.session_state.time_off_confirm_cancel = None
+                            st.session_state.time_off_saved = "Cancelled the listed request."
+                            st.rerun()
+                with c2:
+                    if st.button("Never mind", key="time_off_never_" + entry_id, use_container_width=True):
+                        st.session_state.time_off_confirm_cancel = None
+                        st.rerun()
+            else:
+                if st.button("Cancel request", key="time_off_cancel_" + entry_id, use_container_width=True):
+                    st.session_state.time_off_confirm_cancel = entry_id
+                    st.rerun()
+
+    if load_ok:
+        cancelled = [
+            r for r in time_off_for_month(
+                records, year, month, employee=employee_filter, include_cancelled=True
+            )
+            if not time_off_is_active(r)
+        ]
+        if cancelled:
+            with st.expander("Cancelled requests this month"):
+                for record in cancelled:
+                    st.markdown(time_off_summary_text(record) + " — Cancelled")
+
+    st.markdown("---")
+    gen = int(st.session_state.get("time_off_form_gen") or 0)
+    prefix = "to_form_" + str(gen) + "_"
+    with st.expander("List time off", expanded=True):
+        st.caption("This lists a request on the shared calendar. It is not an approval.")
+        st.selectbox("Employee", [""] + list(EMPLOYEES), key=prefix + "employee")
+        st.selectbox("Type", list(TIME_OFF_TYPES), key=prefix + "type")
+        kind = _cell(st.session_state.get(prefix + "type")) or TIME_OFF_TYPE_FULL
+        default_day = today
+        if date(year, month, 1) <= today <= (
+            date(year, 12, 31) if month == 12 else date(year, month + 1, 1) - timedelta(days=1)
+        ):
+            default_day = today
+        else:
+            default_day = date(year, month, 1)
+        if kind == TIME_OFF_TYPE_VACATION:
+            st.date_input("Start Date", value=default_day, format="YYYY-MM-DD", key=prefix + "start")
+            st.date_input("End Date", value=default_day, format="YYYY-MM-DD", key=prefix + "end")
+        else:
+            st.date_input("Date", value=default_day, format="YYYY-MM-DD", key=prefix + "start")
+        if kind == TIME_OFF_TYPE_PARTIAL:
+            st.time_input("Start Time (Pacific)", value=dt_time(8, 0), key=prefix + "start_time")
+            st.time_input("End Time (Pacific)", value=dt_time(12, 0), key=prefix + "end_time")
+            st.caption("Partial-day times are Pacific Time and must be on the same date, with the end after the start.")
+        st.text_input(
+            "Note (optional — do not include medical or other sensitive details)",
+            key=prefix + "notes",
+        )
+        if st.button("Save request", type="primary", key=prefix + "save", use_container_width=True):
+            try:
+                latest = load_time_off_records_readonly()
+                record = build_time_off_record(
+                    st.session_state.get(prefix + "employee", ""),
+                    st.session_state.get(prefix + "type", ""),
+                    st.session_state.get(prefix + "start"),
+                    end_date=st.session_state.get(prefix + "end") if kind == TIME_OFF_TYPE_VACATION else None,
+                    start_time=st.session_state.get(prefix + "start_time") if kind == TIME_OFF_TYPE_PARTIAL else None,
+                    end_time=st.session_state.get(prefix + "end_time") if kind == TIME_OFF_TYPE_PARTIAL else None,
+                    notes=st.session_state.get(prefix + "notes", ""),
+                    existing=latest,
+                    today=today,
+                )
+                save_time_off_record(record)
+            except Exception as exc:
+                st.error("Could not save time off: " + str(exc))
+            else:
+                st.session_state.time_off_form_gen = gen + 1
+                st.session_state.time_off_saved = "Saved the listed time-off request."
+                st.rerun()
+
+
+def show_employees_page():
+    """Employee buttons at the top, Calendar below, and blank per-person pages."""
+    selected = _cell(st.session_state.get("employees_selected"))
+    show_cal = bool(st.session_state.get("employees_show_calendar"))
+    names = list(EMPLOYEES)
+    for i in range(0, len(names), 2):
+        cols = st.columns(2)
+        for col, name in zip(cols, names[i:i + 2]):
+            with col:
+                shown = ("● " + name) if selected == name else name
+                if st.button(shown, key=employee_button_key(name), use_container_width=True, type="primary"):
+                    st.session_state.employees_selected = name
+                    st.session_state.employees_show_calendar = False
+                    st.rerun()
+
+    cal_label = "● Calendar" if show_cal else "Calendar"
+    if st.button(cal_label, key="employees_calendar", use_container_width=True, type="primary"):
+        st.session_state.employees_show_calendar = True
+        st.session_state.employees_selected = None
+        st.rerun()
+
+    if show_cal:
+        show_time_off_calendar_page()
+        return
+
+    if selected:
+        st.title(selected)
+        if st.button("Back", key="employees_back", use_container_width=True):
+            st.session_state.employees_selected = None
+            st.rerun()
+        return
+
+    st.title("Employees")
 
 YEARLY_ITEMS_SHEET_TITLE = "Yearly Items"
 YEARLY_ITEMS_COLUMNS = [
@@ -4497,7 +5197,7 @@ elif st.session_state.current_mode == "Driver":
             st.success(item) 
 
 # ────────────────────────────────────────────────
-# HEADER PAGES (Equipment, Monthly Safety Meeting, Yearly Items, DOM)
+# HEADER PAGES (Equipment, Monthly Safety Meeting, Yearly Items, DOM, EMPLOYEES)
 # ────────────────────────────────────────────────
 elif st.session_state.current_mode == "Equipment":
     show_equipment_page()
@@ -4510,6 +5210,9 @@ elif st.session_state.current_mode == "Yearly Items":
 
 elif st.session_state.current_mode == "DOM":
     show_dom_page()
+
+elif st.session_state.current_mode == "EMPLOYEES":
+    show_employees_page()
 
 # ────────────────────────────────────────────────
 # EMERGENCY CHECKLIST
