@@ -22,7 +22,7 @@ def _exec_equipment_helpers():
         "STATUS_RESOLVED", "REPORTERS", "ACTIVE_VALUES", "HEADER_PAGES",
         "OFFICIAL_EQUIPMENT_NAMES", "REGISTRATION_EXPIRE_COL", "ANNUAL_MAINT_COL",
         "TONNAGE_APPLIES_COL", "TONNAGE_EXPIRE_COL", "TONNAGE_DEFAULT_UNITS", "DATE_STATUS_COLORS",
-        "IFTA_UNITS", "IFTA_TRIPS_SHEET_TITLE", "IFTA_FUEL_SHEET_TITLE", "IFTA_TRIPS_COLUMNS", "IFTA_FUEL_COLUMNS", "IFTA_DEFAULT_JURISDICTION", "IFTA_JURISDICTIONS",
+        "IFTA_UNITS", "DRIVERS", "IFTA_TRIPS_SHEET_TITLE", "IFTA_FUEL_SHEET_TITLE", "IFTA_TRIPS_COLUMNS", "IFTA_FUEL_COLUMNS", "IFTA_DEFAULT_JURISDICTION", "IFTA_JURISDICTIONS",
         "DOM_AIRCRAFT", "DOM_ACTION_ANNUAL",
         "PARTS", "CORE_FACTORS", "PART_FACTORS", "PART_STOPS", "CONFIG_FIELDS",
         "ALL_FACTOR_KEYS", "ALL_STOP_KEYS", "FRAT_COLUMNS",
@@ -44,6 +44,10 @@ def _exec_equipment_helpers():
         "filter_safety_meetings", "safety_meeting_years", "safety_meeting_months_for_year",
         "safety_meeting_option_label", "safety_meeting_pdf_filename",
         "safety_meeting_report_logo_path", "build_safety_meeting_pdf", "safety_meeting_identity",
+        "load_safety_meeting_records_readonly", "safety_meeting_months_with_entries",
+        "safety_meeting_month_status", "current_month_has_safety_meeting",
+        "safety_meeting_header_color", "safety_meeting_month_strip_markup",
+        "apply_monthly_safety_header_style",
         "aircraft_maint_profile", "parse_hobbs", "format_hobbs", "next_hobbs",
         "hobbs_flag", "hobbs_status_markup", "ensure_aircraft_maint_worksheet",
         "load_aircraft_maint_records", "latest_aircraft_maint_record",
@@ -393,6 +397,63 @@ class PlaceholderAndLogicTests(unittest.TestCase):
         self.assertEqual(n480["amber_hours"], 10)
         self.assertNotIn("oil_interval", n480)
 
+    def test_safety_meeting_month_status_and_header_color(self):
+        from datetime import date, datetime
+        from zoneinfo import ZoneInfo
+        today = date(2026, 11, 10)
+        when_march = datetime(2026, 3, 12, 9, 0, 0, tzinfo=ZoneInfo("America/Los_Angeles"))
+        when_nov = datetime(2026, 11, 10, 9, 0, 0, tzinfo=ZoneInfo("America/Los_Angeles"))
+        march = self.s["build_safety_meeting_record"](
+            date(2026, 3, 12), "Ronald A Cline", "Ron Cline", {}, "March notes.",
+            when=when_march,
+        )
+        november = self.s["build_safety_meeting_record"](
+            date(2026, 11, 10), "Ronald A Cline", "Ron Cline", {}, "November notes.",
+            when=when_nov,
+        )
+        meetings = [march, november]
+        status = self.s["safety_meeting_month_status"]
+        self.assertEqual(status(2026, 3, meetings, today=today), "ok")
+        self.assertEqual(status(2026, 11, meetings, today=today), "ok")
+        self.assertEqual(status(2026, 1, meetings, today=today), "expired")
+        self.assertEqual(status(2026, 10, meetings, today=today), "expired")
+        self.assertIsNone(status(2026, 12, meetings, today=today))
+        self.assertEqual(status(2025, 6, meetings, today=today), "expired")
+        self.assertIsNone(status(2027, 1, meetings, today=today))
+        self.assertTrue(self.s["current_month_has_safety_meeting"](meetings, today=today))
+        self.assertFalse(self.s["current_month_has_safety_meeting"]([march], today=today))
+        self.assertFalse(self.s["current_month_has_safety_meeting"]([], today=today))
+        self.assertEqual(self.s["safety_meeting_header_color"](meetings, today=today), "#15803d")
+        self.assertEqual(self.s["safety_meeting_header_color"]([march], today=today), "#b91c1c")
+        self.assertEqual(self.s["safety_meeting_header_color"]([], today=today), "#b91c1c")
+        self.assertEqual(self.s["DATE_STATUS_COLORS"]["ok"], "#15803d")
+        self.assertEqual(self.s["DATE_STATUS_COLORS"]["expired"], "#b91c1c")
+        self.assertEqual(self.s["DATE_STATUS_COLORS"][None], "#6b7280")
+        html = self.s["safety_meeting_month_strip_markup"](2026, meetings, today=today)
+        self.assertIn("safety-month-strip", html)
+        for label in ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"):
+            self.assertIn(">" + label + "</span>", html)
+        self.assertEqual(html.count("#15803d"), 2)
+        self.assertEqual(html.count("#b91c1c"), 9)
+        self.assertEqual(html.count("#6b7280"), 1)
+        self.assertEqual(self.s["safety_meeting_months_with_entries"](meetings, 2026), {3, 11})
+        self.assertEqual(self.s["safety_meeting_months_with_entries"](meetings, 2025), set())
+
+
+    def test_ifta_drivers_dropdown_order_and_trips_header_unchanged(self):
+        self.assertEqual(self.s["DRIVERS"], [
+            "Robert Rackley",
+            "Barry Markham",
+            "Anthony Root",
+            "Carl Mulvaney",
+            "Ron Cline",
+            "Gary Grant",
+        ])
+        self.assertEqual(self.s["IFTA_TRIPS_COLUMNS"], [
+            "Timestamp", "Date", "Unit", "Driver", "Jurisdiction",
+            "Start Odometer", "End Odometer", "Miles", "Notes",
+        ])
+
 
 
 class FakeSheetBehaviorTests(unittest.TestCase):
@@ -741,6 +802,45 @@ class FakeSheetBehaviorTests(unittest.TestCase):
             self.s["update_safety_meeting_discussion"]("1999-01-01 00:00:00", "notes", self.book)
         self._assert_frat_untouched()
 
+
+
+    def test_readonly_safety_meeting_load_does_not_create_or_alter_tabs(self):
+        frat_before = [list(r) for r in self.book.sheet1.rows]
+        frat_writes = list(self.book.sheet1.writes)
+        rows = self.s["load_safety_meeting_records_readonly"](self.book)
+        self.assertEqual(rows, [])
+        self.assertNotIn("Safety Meetings", self.book.sheets)
+        self.assertEqual(self.book.added, [])
+        self._assert_frat_untouched()
+        self.assertEqual(self.book.sheet1.rows, frat_before)
+        self.assertEqual(self.book.sheet1.writes, frat_writes)
+
+        ws, created = self.s["ensure_safety_meetings_worksheet"](self.book)
+        self.assertTrue(created)
+        header = list(ws.rows[0])
+        writes_after_ensure = list(ws.writes)
+        rows_after_ensure = [list(r) for r in ws.rows]
+        loaded = self.s["load_safety_meeting_records_readonly"](self.book)
+        self.assertEqual(loaded, [])
+        self.assertEqual(ws.rows[0], header)
+        self.assertEqual(ws.rows, rows_after_ensure)
+        self.assertEqual(ws.writes, writes_after_ensure)
+        self.assertEqual(self.book.sheet1.writes, frat_writes)
+        self.assertEqual(self.book.added.count("Safety Meetings"), 1)
+
+        from datetime import date
+        record = self.s["build_safety_meeting_record"](
+            date(2026, 11, 10), "Ronald A Cline", "Ron Cline", {}, "November notes.",
+        )
+        self.s["save_safety_meeting_record"](record, self.book)
+        writes_after_save = list(ws.writes)
+        rows_after_save = [list(r) for r in ws.rows]
+        loaded = self.s["load_safety_meeting_records_readonly"](self.book)
+        self.assertEqual(len(loaded), 1)
+        self.assertEqual(loaded[0]["Meeting Date"], "2026-11-10")
+        self.assertEqual(ws.writes, writes_after_save)
+        self.assertEqual(ws.rows, rows_after_save)
+        self._assert_frat_untouched()
 
     def test_aircraft_maint_tab_appends_only_and_computes_next(self):
         from datetime import date
@@ -1389,6 +1489,73 @@ class HeaderAndEquipmentPageTests(unittest.TestCase):
         self.assertNotIn("Aircraft Maint", book.sheets)
 
 
+
+    def test_monthly_safety_header_and_month_strip_colors(self):
+        from datetime import date
+        from streamlit.testing.v1 import AppTest
+        at = AppTest.from_string(equipment_offline_app(), default_timeout=30).run()
+        self.assertFalse(list(at.exception))
+        md = " ".join(m.value or "" for m in at.markdown)
+        self.assertIn(".st-key-nav_monthly_safety", md)
+        self.assertIn("#b91c1c", md)
+        self.assertNotIn("background-color:#15803d", md.replace(" ", ""))
+
+        at.button(key="nav_monthly_safety").click().run()
+        self.assertFalse(list(at.exception))
+        next(r for r in at.radio).set_value("View meetings").run()
+        self.assertFalse(list(at.exception))
+        self.assertTrue(any("No meetings recorded yet." in (i.value or "") for i in at.info))
+        self.assertTrue(any("Green = meeting recorded. Red = no meeting yet. Gray = future month." in (c.value or "") for c in at.caption))
+        md = " ".join(m.value or "" for m in at.markdown)
+        self.assertIn("safety-month-strip", md)
+        for label in ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"):
+            self.assertIn(label, md)
+        self.assertIn("#b91c1c", md)
+        self.assertIn("#6b7280", md)
+        self.assertNotIn("#15803d", md)
+        self.assertIn(".st-key-nav_monthly_safety", md)
+        self.assertIn("#b91c1c", md)
+
+        next(r for r in at.radio).set_value("Record a meeting").run()
+        self.assertFalse(list(at.exception))
+        next(d for d in at.date_input if d.label == "Meeting Date").set_value(date(2026, 3, 12))
+        next(s for s in at.selectbox if "Recorded By" in (s.label or "")).select("Ronald A Cline")
+        next(c for c in at.checkbox if c.label == "Ron Cline").check()
+        next(t for t in at.text_area if t.label == "Discussion notes for this meeting").set_value("March notes.")
+        next(b for b in at.button if b.label == "Save meeting").click().run()
+        self.assertFalse(list(at.exception))
+
+        # March meeting is not the current Pacific month, so the header stays red.
+        md = " ".join((m.value or "").replace(" ", "") for m in at.markdown)
+        self.assertIn("background-color:#b91c1c", md)
+        self.assertNotIn("background-color:#15803d", md)
+        strip = " ".join(m.value or "" for m in at.markdown)
+        self.assertIn("safety-month-strip", strip)
+        self.assertIn("#15803d", strip)
+        self.assertIn("#b91c1c", strip)
+        self.assertIn("#6b7280", strip)
+
+        next(r for r in at.radio).set_value("Record a meeting").run()
+        next(d for d in at.date_input if d.label == "Meeting Date").set_value(date(2026, 11, 10))
+        next(s for s in at.selectbox if "Recorded By" in (s.label or "")).select("Ronald A Cline")
+        next(c for c in at.checkbox if c.label == "Carl Mulvaney").check()
+        next(t for t in at.text_area if t.label == "Discussion notes for this meeting").set_value("November notes.")
+        next(b for b in at.button if b.label == "Save meeting").click().run()
+        self.assertFalse(list(at.exception))
+        md_compact = " ".join((m.value or "").replace(" ", "") for m in at.markdown)
+        self.assertIn("background-color:#15803d", md_compact)
+        self.assertIn(".st-key-nav_monthly_safety", " ".join(m.value or "" for m in at.markdown))
+        md = " ".join(m.value or "" for m in at.markdown)
+        self.assertIn("safety-month-strip", md)
+        for label in ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"):
+            self.assertIn(label, md)
+        self.assertGreaterEqual(md.count("#15803d"), 2)
+        self.assertIn("#b91c1c", md)
+        self.assertIn("#6b7280", md)
+        self.assertTrue(any(s.label == "Year" for s in at.selectbox))
+        self.assertNotIn("Equipment", at.session_state["_workbook"].sheets)
+        self.assertEqual(at.session_state["_workbook"].sheets["Sheet1"].rows, [])
+
     def test_heli2_ifta_page_saves_trip_and_fuel_and_shows_summary(self):
         from datetime import date
         from streamlit.testing.v1 import AppTest
@@ -1403,6 +1570,15 @@ class HeaderAndEquipmentPageTests(unittest.TestCase):
         self.assertTrue(any(b.label == "Back" for b in at.button))
         self.assertTrue(any(d.label == "Date" for d in at.date_input))
         self.assertTrue(any(s.label == "Driver" for s in at.selectbox))
+        driver = next(s for s in at.selectbox if s.label == "Driver")
+        self.assertEqual(list(driver.options), [
+            "Robert Rackley",
+            "Barry Markham",
+            "Anthony Root",
+            "Carl Mulvaney",
+            "Ron Cline",
+            "Gary Grant",
+        ])
         self.assertTrue(any(s.label == "Jurisdiction" for s in at.selectbox))
         labels = [t.label for t in at.text_input]
         self.assertIn("Start Odometer", labels)

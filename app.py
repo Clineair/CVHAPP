@@ -354,6 +354,15 @@ OFFICIAL_EQUIPMENT_NAMES = [
 
 # Add a unit ID here to show an IFTA button on the Equipment page, between INFO and Squawk.
 IFTA_UNITS = ("Heli2",)
+# Drivers for the IFTA Trips form, in Ron's listed order.
+DRIVERS = [
+    "Robert Rackley",
+    "Barry Markham",
+    "Anthony Root",
+    "Carl Mulvaney",
+    "Ron Cline",
+    "Gary Grant",
+]
 IFTA_TRIPS_SHEET_TITLE = "IFTA Trips"
 IFTA_FUEL_SHEET_TITLE = "IFTA Fuel"
 IFTA_TRIPS_COLUMNS = [
@@ -957,6 +966,95 @@ def safety_meeting_entry_date(record):
     return parse_equipment_date((record or {}).get("Meeting Date"))
 
 
+def load_safety_meeting_records_readonly(spreadsheet=None):
+    """Read the Safety Meetings tab without creating or changing it."""
+    ws = _worksheet_or_none(spreadsheet or _gsheets_spreadsheet(), SAFETY_MEETINGS_SHEET_TITLE)
+    if ws is None:
+        return []
+    header = [_cell(c) for c in ws.row_values(1)]
+    if not header:
+        return []
+    return records_from_worksheet(ws, safety_meeting_columns())
+
+
+def safety_meeting_months_with_entries(meetings, year):
+    months = set()
+    for record in meetings or []:
+        entry = safety_meeting_entry_date(record)
+        if entry is not None and entry.year == int(year):
+            months.add(entry.month)
+    return months
+
+
+def safety_meeting_month_status(year, month, meetings, today=None):
+    """'ok' if that month has a saved meeting, 'expired' if a past or current month does not, None if future."""
+    today = today or datetime.now(ZoneInfo("America/Los_Angeles")).date()
+    year = int(year)
+    month = int(month)
+    if month in safety_meeting_months_with_entries(meetings, year):
+        return "ok"
+    if year > today.year or (year == today.year and month > today.month):
+        return None
+    return "expired"
+
+
+def current_month_has_safety_meeting(meetings, today=None):
+    today = today or datetime.now(ZoneInfo("America/Los_Angeles")).date()
+    return safety_meeting_month_status(today.year, today.month, meetings, today=today) == "ok"
+
+
+def safety_meeting_header_color(meetings, today=None):
+    """Green if this Pacific month has a meeting, red if not."""
+    today = today or datetime.now(ZoneInfo("America/Los_Angeles")).date()
+    status = safety_meeting_month_status(today.year, today.month, meetings, today=today)
+    return DATE_STATUS_COLORS[status]
+
+
+def safety_meeting_month_strip_markup(year, meetings, today=None):
+    """Phone-friendly Jan–Dec status strip: green has a meeting, red missing, gray future."""
+    import calendar
+    today = today or datetime.now(ZoneInfo("America/Los_Angeles")).date()
+    parts = [
+        '<div class="safety-month-strip" style="display:flex;flex-wrap:wrap;gap:0.35rem;'
+        'margin:0.4rem 0 0.7rem 0;">'
+    ]
+    for month in range(1, 13):
+        status = safety_meeting_month_status(year, month, meetings, today=today)
+        color = DATE_STATUS_COLORS[status]
+        label = calendar.month_abbr[month]
+        parts.append(
+            '<span style="background:' + color + ';color:#fff;padding:0.3rem 0.5rem;'
+            'border-radius:6px;font-weight:600;font-size:0.85rem;line-height:1.2;">'
+            + label + "</span>"
+        )
+    parts.append("</div>")
+    return "".join(parts)
+
+
+def apply_monthly_safety_header_style(spreadsheet=None, today=None):
+    """Color the Monthly Safety Meeting header button from the current Pacific month."""
+    try:
+        meetings = load_safety_meeting_records_readonly(spreadsheet)
+        color = safety_meeting_header_color(meetings, today=today)
+    except Exception:
+        return None
+    css = (
+        "<style>"
+        ".st-key-nav_monthly_safety button,"
+        ".st-key-nav_monthly_safety button[data-baseweb='button'][kind='primary'],"
+        "[data-testid='stMainBlockContainer'] [data-testid='stHorizontalBlock']:has(img) "
+        ".st-key-nav_monthly_safety button{"
+        "background-color:" + color + " !important;"
+        "color:#ffffff !important;"
+        "border-color:" + color + " !important;"
+        "}"
+        "</style>"
+    )
+    st.markdown(css, unsafe_allow_html=True)
+    return color
+
+
+
 def parse_safety_meeting_attendees(attendees):
     """Split the stored Attendees string into checked names and Other attendees."""
     parts = [p.strip() for p in _cell(attendees).split(",") if p.strip()]
@@ -1252,8 +1350,11 @@ def _show_safety_meeting_viewer(meetings, spreadsheet):
     import calendar
     st.subheader("View saved meetings")
     st.caption("Read from the Safety Meetings tab. Newest meetings are listed first.")
+    today = datetime.now(ZoneInfo("America/Los_Angeles")).date()
     if not meetings:
         st.info("No meetings recorded yet.")
+        st.caption("Green = meeting recorded. Red = no meeting yet. Gray = future month.")
+        st.markdown(safety_meeting_month_strip_markup(today.year, meetings, today=today), unsafe_allow_html=True)
         return
 
     years = safety_meeting_years(meetings)
@@ -1274,6 +1375,8 @@ def _show_safety_meeting_viewer(meetings, spreadsheet):
     if default_year not in years:
         default_year = years[0]
     year = st.selectbox("Year", years, index=years.index(default_year), key="safety_view_year_" + str(view_gen))
+    st.caption("Green = meeting recorded. Red = no meeting yet. Gray = future month.")
+    st.markdown(safety_meeting_month_strip_markup(year, meetings, today=today), unsafe_allow_html=True)
     months = safety_meeting_months_for_year(meetings, year)
     if not months:
         st.info("No meetings recorded in " + str(year) + ".")
@@ -2761,8 +2864,7 @@ def _show_ifta_trips_form(unit_id, trips, spreadsheet, today, jurisdiction_optio
     st.markdown("**New trip**")
     st.date_input("Date", value=today, format="YYYY-MM-DD", key=prefix + "date")
     st.markdown("**Unit:** " + unit_id)
-    driver_options = [""] + list(REPORTERS)
-    st.selectbox("Driver", driver_options, key=prefix + "driver")
+    st.selectbox("Driver", list(DRIVERS), key=prefix + "driver")
     default_index = jurisdiction_options.index(default_label) if default_label in jurisdiction_options else 0
     st.selectbox("Jurisdiction", jurisdiction_options, index=default_index, key=prefix + "jurisdiction")
     st.text_input("Start Odometer", value=last_end, key=prefix + "start")
@@ -3423,6 +3525,9 @@ def compute_hover_ceiling(da_ft, weight_lbs, aircraft):
     ige = data["hover_ceiling_ige_max_gw"] - (da_ft / 1000 * 500) - ((weight_lbs - 2000) / 100 * 100)
     oge = data["hover_ceiling_oge_max_gw"] - (da_ft / 1000 * 800) - ((weight_lbs - 2000) / 100 * 150)
     return max(0, ige), max(0, oge)
+
+# Color the Monthly Safety Meeting header button from the current Pacific month.
+apply_monthly_safety_header_style()
 
 # ────────────────────────────────────────────────
 # Pilot Mode
