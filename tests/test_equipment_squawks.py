@@ -23,7 +23,7 @@ def _exec_equipment_helpers():
         "OFFICIAL_EQUIPMENT_NAMES", "REGISTRATION_EXPIRE_COL", "ANNUAL_MAINT_COL",
         "TONNAGE_APPLIES_COL", "TONNAGE_EXPIRE_COL", "TONNAGE_DEFAULT_UNITS", "DATE_STATUS_COLORS",
         "IFTA_UNITS", "DRIVERS", "EMPLOYEES", "IFTA_TRIPS_SHEET_TITLE", "IFTA_FUEL_SHEET_TITLE", "IFTA_TRIPS_COLUMNS", "IFTA_FUEL_COLUMNS", "IFTA_RECEIPT_COLUMN", "IFTA_DEFAULT_JURISDICTION", "IFTA_JURISDICTIONS",
-        "DOM_AIRCRAFT", "DOM_ACTION_ANNUAL", "YEARLY_ITEMS_SHEET_TITLE", "YEARLY_ITEMS_COLUMNS", "YEARLY_ITEM_GROUPS",
+        "DOM_AIRCRAFT", "DOM_ACTION_ANNUAL", "YEARLY_ITEMS_SHEET_TITLE", "YEARLY_ITEMS_COLUMNS", "YEARLY_ITEM_GROUPS", "TIME_OFF_SHEET_TITLE", "TIME_OFF_COLUMNS", "TIME_OFF_TYPES", "TIME_OFF_TYPE_FULL", "TIME_OFF_TYPE_PARTIAL", "TIME_OFF_TYPE_VACATION", "TIME_OFF_STATUS_ACTIVE", "TIME_OFF_STATUS_CANCELLED", "TIME_OFF_ACTION_CREATE", "TIME_OFF_ACTION_CANCEL", "TIME_OFF_MAX_PAST_DAYS", "TIME_OFF_MAX_FUTURE_DAYS", "TIME_OFF_MAX_SPAN_DAYS",
         "PARTS", "CORE_FACTORS", "PART_FACTORS", "PART_STOPS", "CONFIG_FIELDS",
         "ALL_FACTOR_KEYS", "ALL_STOP_KEYS", "FRAT_COLUMNS",
     }
@@ -79,12 +79,24 @@ def _exec_equipment_helpers():
         "yearly_group_status", "yearly_group_statuses", "yearly_item_years",
         "yearly_item_status_markup", "apply_yearly_group_button_styles",
         "employee_button_key",
+        "new_time_off_entry_id", "parse_time_off_time", "format_time_off_time",
+        "format_time_off_time_display", "time_off_date_bounds", "time_off_shift_month",
+        "time_off_calendar_weeks", "time_off_short_name", "time_off_type_label",
+        "time_off_start_date", "time_off_end_date", "time_off_span_days",
+        "time_off_covers_date", "_time_off_sort_key", "time_off_entry_id",
+        "time_off_is_active", "latest_time_off_record", "current_time_off_records",
+        "active_time_off_records", "time_off_for_date", "time_off_for_month",
+        "time_off_identity", "time_off_duplicate_active", "time_off_summary_text",
+        "time_off_month_grid_markup", "ensure_time_off_worksheet",
+        "load_time_off_records", "load_time_off_records_readonly",
+        "build_time_off_record", "build_time_off_cancel_record", "save_time_off_record",
     }
     nodes = [n for n in TREE.body if
              (isinstance(n, ast.Assign) and any(isinstance(t, ast.Name) and t.id in names for t in n.targets))
              or (isinstance(n, ast.FunctionDef) and n.name in functions)]
-    from datetime import date, timedelta
-    scope = {"datetime": datetime, "date": date, "timedelta": timedelta, "ZoneInfo": ZoneInfo}
+    from datetime import date, time as dt_time, timedelta
+    import uuid
+    scope = {"datetime": datetime, "date": date, "dt_time": dt_time, "timedelta": timedelta, "ZoneInfo": ZoneInfo, "uuid": uuid}
     exec(compile(ast.Module(body=nodes, type_ignores=[]), str(APP), "exec"), scope)
     return scope
 
@@ -686,6 +698,139 @@ class PlaceholderAndLogicTests(unittest.TestCase):
             ["Monthly Safety Meeting", "Yearly Items", "Equipment", "DOM", "EMPLOYEES"],
         )
 
+
+
+    def test_time_off_records_validation_grid_and_cancel_history(self):
+        from datetime import date, time, datetime
+        from zoneinfo import ZoneInfo
+        s = self.s
+        self.assertEqual(s["TIME_OFF_SHEET_TITLE"], "Time Off")
+        self.assertEqual(s["TIME_OFF_COLUMNS"], [
+            "Timestamp", "Entry ID", "Action", "Employee", "Type",
+            "Start Date", "End Date", "Start Time", "End Time", "Notes", "Status",
+        ])
+        self.assertEqual(s["TIME_OFF_TYPES"], ("Full day off", "Partial day", "Vacation"))
+        self.assertEqual(s["DRIVERS"], [
+            "Robert Rackley",
+            "Barry Markham",
+            "Anthony Root",
+            "Carl Mulvaney",
+            "Ron Cline",
+            "Gary Grant",
+        ])
+        self.assertNotIn("Skylar Fingerle", s["DRIVERS"])
+        self.assertEqual(s["EMPLOYEES"][-1], "Skylar Fingerle")
+
+        weeks = s["time_off_calendar_weeks"](2026, 11)
+        self.assertEqual(weeks[0][0], date(2026, 11, 1))
+        self.assertEqual(weeks[0][0].weekday(), 6)  # Sunday
+        self.assertEqual(weeks[-1][1], date(2026, 11, 30))
+        self.assertEqual(s["time_off_shift_month"](2026, 1, -1), (2025, 12))
+        self.assertEqual(s["time_off_shift_month"](2026, 12, 1), (2027, 1))
+        self.assertEqual(s["time_off_short_name"]("Ron Cline"), "Ron C.")
+        self.assertEqual(s["parse_time_off_time"]("9:00 AM"), time(9, 0))
+        self.assertEqual(s["format_time_off_time"]("9:00 AM"), "09:00")
+        self.assertEqual(s["format_time_off_time_display"]("13:30"), "1:30 PM PT")
+
+        today = date(2026, 11, 10)
+        when = datetime(2026, 11, 10, 9, 0, tzinfo=ZoneInfo("America/Los_Angeles"))
+        full = s["build_time_off_record"](
+            "Ron Cline", "Full day off", date(2026, 11, 20),
+            notes="Family event", when=when, entry_id="TO-TEST-FULL", today=today,
+        )
+        self.assertEqual(full["Status"], "Active")
+        self.assertEqual(full["Action"], "Create")
+        self.assertEqual(full["Start Date"], "2026-11-20")
+        self.assertEqual(full["End Date"], "2026-11-20")
+        self.assertEqual(full["Start Time"], "")
+        self.assertEqual(full["Notes"], "Family event")
+
+        partial = s["build_time_off_record"](
+            "Gary Grant", "Partial day", date(2026, 11, 12),
+            start_time=time(9, 0), end_time=time(13, 0),
+            when=when, entry_id="TO-TEST-PART", today=today,
+        )
+        self.assertEqual(partial["Start Time"], "09:00")
+        self.assertEqual(partial["End Time"], "13:00")
+
+        vacation = s["build_time_off_record"](
+            "Skylar Fingerle", "Vacation", date(2026, 12, 20),
+            end_date=date(2026, 12, 27), when=when, entry_id="TO-TEST-VAC", today=today,
+        )
+        self.assertEqual(vacation["Start Date"], "2026-12-20")
+        self.assertEqual(vacation["End Date"], "2026-12-27")
+        self.assertTrue(s["time_off_covers_date"](vacation, date(2026, 12, 20)))
+        self.assertTrue(s["time_off_covers_date"](vacation, date(2026, 12, 27)))
+        self.assertTrue(s["time_off_covers_date"](vacation, date(2026, 12, 23)))
+        self.assertFalse(s["time_off_covers_date"](vacation, date(2026, 12, 19)))
+        self.assertFalse(s["time_off_covers_date"](vacation, date(2026, 12, 28)))
+        self.assertEqual(s["time_off_span_days"](date(2026, 12, 20), date(2026, 12, 27)), 8)
+
+        with self.assertRaisesRegex(ValueError, "Employee is required"):
+            s["build_time_off_record"]("", "Full day off", today, today=today)
+        with self.assertRaisesRegex(ValueError, "Employee is required"):
+            s["build_time_off_record"]("Not An Employee", "Full day off", today, today=today)
+        with self.assertRaisesRegex(ValueError, "Type is required"):
+            s["build_time_off_record"]("Ron Cline", "Sick", today, today=today)
+        with self.assertRaisesRegex(ValueError, "End date must be on or after"):
+            s["build_time_off_record"](
+                "Ron Cline", "Vacation", date(2026, 12, 20), end_date=date(2026, 12, 19), today=today,
+            )
+        with self.assertRaisesRegex(ValueError, "End time must be after start time"):
+            s["build_time_off_record"](
+                "Ron Cline", "Partial day", today, start_time=time(13, 0), end_time=time(9, 0), today=today,
+            )
+        with self.assertRaisesRegex(ValueError, "Start and end times are required"):
+            s["build_time_off_record"]("Ron Cline", "Partial day", today, today=today)
+        with self.assertRaisesRegex(ValueError, "within about two years"):
+            s["build_time_off_record"](
+                "Ron Cline", "Full day off", date(2010, 1, 1), today=today,
+            )
+        long_end = today + __import__("datetime").timedelta(days=s["TIME_OFF_MAX_SPAN_DAYS"])
+        # span of MAX+1 days should fail; start today, end today+180 is 181 days inclusive
+        with self.assertRaisesRegex(ValueError, "at most 180 days"):
+            s["build_time_off_record"](
+                "Ron Cline", "Vacation", today,
+                end_date=today + __import__("datetime").timedelta(days=s["TIME_OFF_MAX_SPAN_DAYS"]),
+                today=today,
+            )
+
+        existing = [full, partial, vacation]
+        with self.assertRaisesRegex(ValueError, "already listed"):
+            s["build_time_off_record"](
+                "Ron Cline", "Full day off", date(2026, 11, 20),
+                when=when, today=today, existing=existing,
+            )
+
+        markup = s["time_off_month_grid_markup"](2026, 12, existing, today=today)
+        self.assertIn("Skylar F.", markup)
+        self.assertIn("Vacation", markup)
+        self.assertIn(">20<", markup)
+        self.assertIn(">27<", markup)
+        self.assertIn(">23<", markup)
+        nov = s["time_off_month_grid_markup"](2026, 11, existing, today=today)
+        self.assertIn("Ron C.", nov)
+        self.assertIn("Gary G.", nov)
+        self.assertIn("9:00 AM–1:00 PM", nov)
+        self.assertNotIn("Skylar F.", nov)
+        filtered = s["time_off_month_grid_markup"](2026, 11, existing, today=today, employee="Ron Cline")
+        self.assertIn("Ron C.", filtered)
+        self.assertNotIn("Gary G.", filtered)
+
+        cancelled = s["build_time_off_cancel_record"](full, when=datetime(2026, 11, 10, 10, 0))
+        self.assertEqual(cancelled["Entry ID"], "TO-TEST-FULL")
+        self.assertEqual(cancelled["Action"], "Cancel")
+        self.assertEqual(cancelled["Status"], "Cancelled")
+        self.assertEqual(cancelled["Start Date"], "2026-11-20")
+        all_rows = existing + [cancelled]
+        current = s["current_time_off_records"](all_rows)
+        latest_full = s["latest_time_off_record"](all_rows, "TO-TEST-FULL")
+        self.assertEqual(latest_full["Status"], "Cancelled")
+        active = s["active_time_off_records"](all_rows)
+        self.assertEqual([r["Entry ID"] for r in active], ["TO-TEST-PART", "TO-TEST-VAC"])
+        self.assertFalse(any(s["time_off_covers_date"](r, date(2026, 11, 20)) for r in active))
+        with self.assertRaisesRegex(ValueError, "already cancelled"):
+            s["build_time_off_cancel_record"](cancelled)
 
 
 class FakeSheetBehaviorTests(unittest.TestCase):
@@ -1522,6 +1667,69 @@ class FakeSheetBehaviorTests(unittest.TestCase):
         self.assertEqual(ws.writes, writes)
         self._assert_frat_untouched()
 
+    def test_time_off_save_and_readonly_load_leave_headers_alone(self):
+        from datetime import date, time, datetime
+        from zoneinfo import ZoneInfo
+        frat_writes = list(self.book.sheet1.writes)
+        self.assertEqual(self.s["load_time_off_records_readonly"](self.book), [])
+        self.assertNotIn("Time Off", self.book.sheets)
+        self.assertEqual(self.book.sheet1.writes, frat_writes)
+        self._assert_frat_untouched()
+
+        when = datetime(2026, 11, 10, 9, 0, tzinfo=ZoneInfo("America/Los_Angeles"))
+        record = self.s["build_time_off_record"](
+            "Carl Mulvaney", "Vacation", date(2026, 12, 1), end_date=date(2026, 12, 5),
+            notes="Listed vacation", when=when, entry_id="TO-SHEET-1", today=date(2026, 11, 10),
+        )
+        self.s["save_time_off_record"](record, self.book)
+        self.assertIn("Time Off", self.book.sheets)
+        ws = self.book.sheets["Time Off"]
+        self.assertEqual(ws.rows[0], self.s["TIME_OFF_COLUMNS"])
+        self.assertEqual(ws.rows[1][ws.rows[0].index("Employee")], "Carl Mulvaney")
+        self.assertEqual(ws.rows[1][ws.rows[0].index("Type")], "Vacation")
+        self.assertEqual(ws.rows[1][ws.rows[0].index("Start Date")], "2026-12-01")
+        self.assertEqual(ws.rows[1][ws.rows[0].index("End Date")], "2026-12-05")
+        self.assertEqual(ws.rows[1][ws.rows[0].index("Status")], "Active")
+        header = list(ws.rows[0])
+        writes_after_save = list(ws.writes)
+        loaded = self.s["load_time_off_records_readonly"](self.book)
+        self.assertEqual(len(loaded), 1)
+        self.assertEqual(loaded[0]["Employee"], "Carl Mulvaney")
+        self.assertEqual(ws.rows[0], header)
+        self.assertEqual(ws.writes, writes_after_save)
+
+        cancelled = self.s["build_time_off_cancel_record"](
+            loaded[0], when=datetime(2026, 11, 10, 11, 0, tzinfo=ZoneInfo("America/Los_Angeles")),
+        )
+        self.s["save_time_off_record"](cancelled, self.book)
+        self.assertEqual(ws.rows[0], header)
+        self.assertEqual(len(ws.rows), 3)
+        self.assertEqual(ws.rows[2][ws.rows[0].index("Action")], "Cancel")
+        self.assertEqual(ws.rows[2][ws.rows[0].index("Status")], "Cancelled")
+        self.assertEqual(ws.rows[2][ws.rows[0].index("Entry ID")], "TO-SHEET-1")
+        again = self.s["load_time_off_records_readonly"](self.book)
+        latest = self.s["latest_time_off_record"](again, "TO-SHEET-1")
+        self.assertEqual(latest["Status"], "Cancelled")
+        self.assertEqual(self.s["active_time_off_records"](again), [])
+        second, created_again = self.s["ensure_time_off_worksheet"](self.book)
+        self.assertFalse(created_again)
+        self.assertEqual(second.rows[0], header)
+        self.assertNotIn("Equipment", self.book.sheets)
+        self.assertNotIn("Yearly Items", self.book.sheets)
+        self._assert_frat_untouched()
+
+    def test_time_off_ensure_does_not_alter_an_existing_custom_header(self):
+        ws = self.book.add_worksheet("Time Off", 20, 12)
+        custom = list(self.s["TIME_OFF_COLUMNS"]) + ["Extra"]
+        ws.append_row(custom)
+        writes = list(ws.writes)
+        out, created = self.s["ensure_time_off_worksheet"](self.book)
+        self.assertFalse(created)
+        self.assertIs(out, ws)
+        self.assertEqual(ws.rows[0], custom)
+        self.assertEqual(ws.writes, writes)
+        self._assert_frat_untouched()
+
     def test_ifta_fuel_have_receipt_does_not_alter_existing_header(self):
         from datetime import date
         header = [
@@ -1769,6 +1977,7 @@ class HeaderAndEquipmentPageTests(unittest.TestCase):
         at.button(key="nav_employees").click().run()
         _assert_blank_employee_body(at)
         self.assertTrue(any(t.value == "Employees" for t in at.title))
+        self.assertTrue(any(b.label == "Calendar" for b in at.button))
         self.assertEqual(_employee_names(at), expected)
         book = at.session_state.get("_workbook")
         if book is not None:
@@ -1777,6 +1986,7 @@ class HeaderAndEquipmentPageTests(unittest.TestCase):
         at.button(key="employee_btn_Ron_Cline").click().run()
         _assert_blank_employee_body(at)
         self.assertTrue(any(t.value == "Ron Cline" for t in at.title))
+        self.assertTrue(any(b.label == "Calendar" for b in at.button))
         self.assertEqual(_employee_names(at), expected)
         self.assertTrue(any((b.label or "") == "● Ron Cline" for b in at.button))
         self.assertTrue(any(b.label == "Back" for b in at.button))
@@ -1815,6 +2025,160 @@ class HeaderAndEquipmentPageTests(unittest.TestCase):
         next(b for b in at.button if b.label == "🛩️ Pilot").click().run()
         self.assertFalse(list(at.exception))
         self.assertTrue(any("Pilot Performance" in (t.value or "") for t in at.title))
+
+    def test_employees_calendar_saves_filters_and_cancels_on_fake_sheet(self):
+        from datetime import date, time
+        from streamlit.testing.v1 import AppTest
+
+        at = AppTest.from_string(equipment_offline_app(), default_timeout=30).run()
+        at.button(key="nav_employees").click().run()
+        self.assertFalse(list(at.exception))
+        self.assertTrue(any(b.label == "Calendar" for b in at.button))
+        book = at.session_state.get("_workbook")
+        if book is not None:
+            self.assertNotIn("Time Off", book.sheets)
+
+        at.button(key="employees_calendar").click().run()
+        self.assertFalse(list(at.exception))
+        self.assertTrue(any(t.value == "Calendar" for t in at.title))
+        self.assertTrue(any((b.label or "") == "● Calendar" for b in at.button))
+        captions = " ".join(c.value or "" for c in at.caption)
+        self.assertIn("not automatically approved leave", captions)
+        self.assertIn("medical", captions.lower())
+        self.assertTrue(any(b.label == "Previous" for b in at.button))
+        self.assertTrue(any(b.label == "Next" for b in at.button))
+        self.assertTrue(any(b.label == "Today" for b in at.button))
+        self.assertTrue(any(b.label == "Refresh" for b in at.button))
+        self.assertTrue(any(s.label == "Show" for s in at.selectbox))
+        self.assertTrue(any(t.value == "November 2026" for t in at.subheader))
+        md = " ".join(m.value or "" for m in at.markdown)
+        self.assertIn("toff-cal", md)
+        self.assertIn("Sun", md)
+        self.assertTrue(any(s.label == "Employee" for s in at.selectbox))
+        self.assertTrue(any(s.label == "Type" for s in at.selectbox))
+        self.assertTrue(any(d.label == "Date" for d in at.date_input))
+        self.assertTrue(any("do not include medical" in (t.label or "") for t in at.text_input))
+        book = at.session_state.get("_workbook")
+        if book is not None:
+            self.assertNotIn("Time Off", book.sheets)
+            self.assertEqual(set(book.sheets), {"Sheet1"})
+
+        next(s for s in at.selectbox if s.label == "Employee").select("Ron Cline")
+        next(s for s in at.selectbox if s.label == "Type").select("Full day off").run()
+        next(d for d in at.date_input if d.label == "Date").set_value(date(2026, 11, 20))
+        next(t for t in at.text_input if "optional" in (t.label or "").lower()).set_value("Family event")
+        next(b for b in at.button if b.label == "Save request").click().run()
+        self.assertFalse(list(at.exception))
+        self.assertTrue(any("Saved the listed time-off request." in (s.value or "") for s in at.success))
+        book = at.session_state.get("_workbook")
+        self.assertIn("Time Off", book.sheets)
+        self.assertEqual(book.sheets["Time Off"].rows[0], [
+            "Timestamp", "Entry ID", "Action", "Employee", "Type",
+            "Start Date", "End Date", "Start Time", "End Time", "Notes", "Status",
+        ])
+        md = " ".join(m.value or "" for m in at.markdown)
+        self.assertIn("Ron C.", md)
+        self.assertIn("Full day", md)
+        self.assertIn("Ron Cline — Full day off — 2026-11-20 — Family event", md)
+
+        # Duplicate of the same active request is rejected.
+        next(s for s in at.selectbox if s.label == "Employee").select("Ron Cline")
+        next(s for s in at.selectbox if s.label == "Type").select("Full day off").run()
+        next(d for d in at.date_input if d.label == "Date").set_value(date(2026, 11, 20))
+        next(b for b in at.button if b.label == "Save request").click().run()
+        self.assertFalse(list(at.exception))
+        self.assertTrue(any("already listed" in (e.value or "") for e in at.error))
+        self.assertEqual(len(book.sheets["Time Off"].rows), 2)
+
+        # Partial day
+        next(s for s in at.selectbox if s.label == "Employee").select("Gary Grant")
+        next(s for s in at.selectbox if s.label == "Type").select("Partial day").run()
+        self.assertTrue(any(d.label == "Date" for d in at.date_input))
+        self.assertTrue(any("Start Time" in (t.label or "") for t in at.time_input))
+        next(d for d in at.date_input if d.label == "Date").set_value(date(2026, 11, 12))
+        next(t for t in at.time_input if "Start Time" in (t.label or "")).set_value(time(9, 0))
+        next(t for t in at.time_input if "End Time" in (t.label or "")).set_value(time(13, 0))
+        next(b for b in at.button if b.label == "Save request").click().run()
+        self.assertFalse(list(at.exception))
+        md = " ".join(m.value or "" for m in at.markdown)
+        self.assertIn("Gary G.", md)
+        self.assertIn("9:00 AM–1:00 PM", md)
+
+        # Vacation spanning multiple days
+        next(s for s in at.selectbox if s.label == "Employee").select("Skylar Fingerle")
+        next(s for s in at.selectbox if s.label == "Type").select("Vacation").run()
+        next(d for d in at.date_input if d.label == "Start Date").set_value(date(2026, 11, 24))
+        next(d for d in at.date_input if d.label == "End Date").set_value(date(2026, 11, 26))
+        next(b for b in at.button if b.label == "Save request").click().run()
+        self.assertFalse(list(at.exception))
+        md = " ".join(m.value or "" for m in at.markdown)
+        self.assertIn("Skylar F.", md)
+        self.assertIn("Vacation", md)
+        self.assertIn("2026-11-24 to 2026-11-26", md)
+
+        # Employee filter hides other people
+        next(s for s in at.selectbox if s.label == "Show").select("Ron Cline").run()
+        md = " ".join(m.value or "" for m in at.markdown)
+        self.assertIn("Ron C.", md)
+        self.assertNotIn("Gary G.", md)
+        self.assertNotIn("Skylar F.", md)
+        next(s for s in at.selectbox if s.label == "Show").select("All employees").run()
+        md = " ".join(m.value or "" for m in at.markdown)
+        self.assertIn("Gary G.", md)
+        self.assertIn("Skylar F.", md)
+
+        at.button(key="time_off_refresh").click().run()
+        self.assertFalse(list(at.exception))
+        self.assertTrue(any("Refreshed from the shared list." in (s.value or "") for s in at.success))
+
+        # Month navigation
+        at.button(key="time_off_next").click().run()
+        self.assertTrue(any(t.value == "December 2026" for t in at.subheader))
+        at.button(key="time_off_today").click().run()
+        self.assertTrue(any(t.value == "November 2026" for t in at.subheader))
+
+        # Cancel requires confirmation and keeps history
+        cancel = next(b for b in at.button if b.label == "Cancel request" and "TO-" in (b.key or ""))
+        # There are multiple cancel buttons; cancel Ron's first by finding agenda order.
+        # Click the first Cancel request, then confirm.
+        first_cancel = next(b for b in at.button if b.label == "Cancel request")
+        first_cancel.click().run()
+        self.assertFalse(list(at.exception))
+        self.assertTrue(any("kept in history" in (w.value or "") for w in at.warning))
+        next(b for b in at.button if b.label == "Never mind").click().run()
+        self.assertFalse(any(b.label == "Confirm cancel" for b in at.button))
+        # Still active: three data rows (header + 3 creates)
+        self.assertEqual(len(book.sheets["Time Off"].rows), 4)
+        next(b for b in at.button if b.label == "Cancel request").click().run()
+        next(b for b in at.button if b.label == "Confirm cancel").click().run()
+        self.assertFalse(list(at.exception))
+        self.assertTrue(any("Cancelled the listed request." in (s.value or "") for s in at.success))
+        self.assertEqual(len(book.sheets["Time Off"].rows), 5)
+        self.assertEqual(book.sheets["Time Off"].rows[-1][book.sheets["Time Off"].rows[0].index("Status")], "Cancelled")
+        self.assertEqual(book.sheets["Time Off"].rows[-1][book.sheets["Time Off"].rows[0].index("Action")], "Cancel")
+        self.assertEqual(set(book.sheets), {"Sheet1", "Time Off"})
+
+        # Validation: partial end before start
+        next(s for s in at.selectbox if s.label == "Employee").select("Anthony Root")
+        next(s for s in at.selectbox if s.label == "Type").select("Partial day").run()
+        next(d for d in at.date_input if d.label == "Date").set_value(date(2026, 11, 18))
+        next(t for t in at.time_input if "Start Time" in (t.label or "")).set_value(time(15, 0))
+        next(t for t in at.time_input if "End Time" in (t.label or "")).set_value(time(10, 0))
+        next(b for b in at.button if b.label == "Save request").click().run()
+        self.assertTrue(any("End time must be after start time" in (e.value or "") for e in at.error))
+
+        # Employee nav stays available; Back returns to the Employees list
+        self.assertTrue(any("Ron Cline" in (b.label or "") for b in at.button))
+        at.button(key="employees_calendar_back").click().run()
+        self.assertTrue(any(t.value == "Employees" for t in at.title))
+        self.assertFalse(any(t.value == "Calendar" for t in at.title))
+        self.assertFalse(list(at.selectbox))
+
+        # Header EMPLOYEES also closes the calendar
+        at.button(key="employees_calendar").click().run()
+        at.button(key="nav_employees").click().run()
+        self.assertTrue(any(t.value == "Employees" for t in at.title))
+        self.assertFalse(list(at.exception))
 
     def test_monthly_safety_meeting_form_saves_and_edits_notes_on_fake_sheet(self):
         from datetime import date
