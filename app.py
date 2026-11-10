@@ -1469,9 +1469,436 @@ def _show_safety_meeting_viewer(meetings, spreadsheet):
         )
 
 
+
+def yearly_item_group_names():
+    return [name for name, _items in YEARLY_ITEM_GROUPS]
+
+
+def yearly_item_sections(group):
+    """Return [(heading or None, [item names...])] for display, in listed order."""
+    wanted = _cell(group)
+    sections = []
+    for name, entries in YEARLY_ITEM_GROUPS:
+        if name != wanted:
+            continue
+        current_heading = None
+        current_items = []
+        for entry in entries:
+            if isinstance(entry, tuple) and len(entry) == 2 and isinstance(entry[1], (tuple, list)):
+                if current_items:
+                    sections.append((current_heading, current_items))
+                    current_items = []
+                sections.append((_cell(entry[0]) or None, [item for item in entry[1]]))
+                current_heading = None
+            else:
+                current_items.append(entry)
+        if current_items:
+            sections.append((current_heading, current_items))
+        return sections
+    return []
+
+
+def yearly_items_for_group(group):
+    """Flat list of stored item names for a group, in listed order."""
+    items = []
+    for _heading, section_items in yearly_item_sections(group):
+        items.extend(section_items)
+    return items
+
+
+def yearly_item_display_name(item, heading=None):
+    """Under a subheading, show the short name when Item is 'Heading - Name'."""
+    text = _cell(item)
+    prefix = _cell(heading)
+    if prefix and text.startswith(prefix + " - "):
+        return text[len(prefix) + 3:]
+    return text
+
+
+def yearly_group_button_key(group):
+    """Stable Streamlit/CSS key for a Yearly Items group button."""
+    parts = []
+    for ch in _cell(group):
+        if ch.isalnum():
+            parts.append(ch)
+        elif not parts or parts[-1] != "_":
+            parts.append("_")
+    return "yearly_group_" + "".join(parts).strip("_")
+
+
+def _yearly_item_widget_slug(group, item):
+    def _slug(text):
+        parts = []
+        for ch in _cell(text):
+            if ch.isalnum():
+                parts.append(ch)
+            elif not parts or parts[-1] != "_":
+                parts.append("_")
+        return "".join(parts).strip("_")
+    return _slug(group) + "__" + _slug(item)
+
+
+def ensure_yearly_items_worksheet(spreadsheet):
+    """Create the Yearly Items tab with a header when it is missing.
+
+    Never alters an existing header, and never writes FRAT or other tabs.
+    """
+    cols = list(YEARLY_ITEMS_COLUMNS)
+    ws = _worksheet_or_none(spreadsheet, YEARLY_ITEMS_SHEET_TITLE)
+    created = False
+    if ws is None:
+        ws = spreadsheet.add_worksheet(title=YEARLY_ITEMS_SHEET_TITLE, rows=200, cols=max(len(cols), 8))
+        ws.append_row(cols, value_input_option="RAW")
+        created = True
+    else:
+        header = [_cell(c) for c in ws.row_values(1)]
+        if not header:
+            ws.append_row(cols, value_input_option="RAW")
+            created = True
+    return ws, created
+
+
+def load_yearly_item_records(spreadsheet=None):
+    ws, _created = ensure_yearly_items_worksheet(spreadsheet or _gsheets_spreadsheet())
+    return records_from_worksheet(ws, YEARLY_ITEMS_COLUMNS)
+
+
+def load_yearly_item_records_readonly(spreadsheet=None):
+    """Read the Yearly Items tab without creating or changing it."""
+    ws = _worksheet_or_none(spreadsheet or _gsheets_spreadsheet(), YEARLY_ITEMS_SHEET_TITLE)
+    if ws is None:
+        return []
+    header = [_cell(c) for c in ws.row_values(1)]
+    if not header:
+        return []
+    return records_from_worksheet(ws, YEARLY_ITEMS_COLUMNS)
+
+
+def yearly_item_year_value(record):
+    raw = _cell((record or {}).get("Year"))
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        entry = parse_equipment_date((record or {}).get("Date Done"))
+        return entry.year if entry is not None else None
+
+
+def _yearly_item_sort_key(record):
+    stamp = _cell((record or {}).get("Timestamp"))
+    stamp_dt = datetime.min
+    if stamp:
+        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y/%m/%d %H:%M:%S", "%m/%d/%Y %H:%M:%S"):
+            try:
+                stamp_dt = datetime.strptime(stamp, fmt)
+                break
+            except ValueError:
+                continue
+    done = parse_equipment_date((record or {}).get("Date Done"))
+    done_dt = datetime(done.year, done.month, done.day) if done is not None else datetime.min
+    return (stamp_dt, done_dt)
+
+
+def build_yearly_item_record(year, group, item, date_done, done_by, notes, when=None):
+    try:
+        year_n = int(year)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Year is required") from exc
+    group = _cell(group)
+    item = _cell(item)
+    done_by = _cell(done_by)
+    if not group or not item:
+        raise ValueError("Group and Item are required")
+    if not done_by:
+        raise ValueError("Done By is required")
+    date_text = format_equipment_date(date_done)
+    if not date_text:
+        raise ValueError("Date Done is required")
+    when = when or datetime.now(ZoneInfo("America/Los_Angeles"))
+    return {
+        "Timestamp": when.strftime("%Y-%m-%d %H:%M:%S"),
+        "Year": str(year_n),
+        "Group": group,
+        "Item": item,
+        "Date Done": date_text,
+        "Done By": done_by,
+        "Notes": _cell(notes),
+    }
+
+
+def save_yearly_item_record(record, spreadsheet=None):
+    ws, _created = ensure_yearly_items_worksheet(spreadsheet or _gsheets_spreadsheet())
+    header = [_cell(c) for c in ws.row_values(1)]
+    if not header:
+        raise RuntimeError("Yearly Items worksheet has no header")
+    ws.append_row([str(record.get(c, "")) for c in header], value_input_option="RAW")
+    return "Google Sheets (Yearly Items)"
+
+
+def filter_yearly_items(records, year=None, group=None, item=None):
+    rows = list(records or [])
+    if year is not None:
+        year_n = int(year)
+        rows = [r for r in rows if yearly_item_year_value(r) == year_n]
+    if group is not None:
+        wanted = _cell(group)
+        rows = [r for r in rows if _cell(r.get("Group")) == wanted]
+    if item is not None:
+        wanted = _cell(item)
+        rows = [r for r in rows if _cell(r.get("Item")) == wanted]
+    return rows
+
+
+def latest_yearly_item_record(records, year, group, item):
+    rows = filter_yearly_items(records, year=year, group=group, item=item)
+    if not rows:
+        return None
+    return max(rows, key=_yearly_item_sort_key)
+
+
+def yearly_item_is_done(records, year, group, item):
+    return latest_yearly_item_record(records, year, group, item) is not None
+
+
+def yearly_item_status(records, year, group, item):
+    """'ok' if the item was recorded for that year, 'expired' if not."""
+    return "ok" if yearly_item_is_done(records, year, group, item) else "expired"
+
+
+def yearly_group_status(records, year, group):
+    """'ok' if every item in the group is done for that year, otherwise 'expired'."""
+    items = yearly_items_for_group(group)
+    if not items:
+        return "expired"
+    if all(yearly_item_is_done(records, year, group, item) for item in items):
+        return "ok"
+    return "expired"
+
+
+def yearly_group_statuses(records, year):
+    return {name: yearly_group_status(records, year, name) for name, _items in YEARLY_ITEM_GROUPS}
+
+
+def yearly_item_years(records, today=None):
+    today = today or datetime.now(ZoneInfo("America/Los_Angeles")).date()
+    years = {yearly_item_year_value(r) for r in records or []}
+    years.discard(None)
+    years.add(today.year)
+    return sorted(years, reverse=True)
+
+
+def yearly_item_status_markup(item, record):
+    """Colored item status: green with date and who when done, red if not done yet."""
+    if record:
+        kind = "ok"
+        date_text = _cell(record.get("Date Done"))
+        who = _cell(record.get("Done By"))
+        bits = ["Done"]
+        if date_text:
+            bits.append(date_text)
+        if who:
+            bits.append("— " + who)
+        body = " ".join(bits)
+    else:
+        kind = "expired"
+        body = "Not done yet"
+    color = DATE_STATUS_COLORS[kind]
+    safe = body.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    label = _cell(item).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    return kind, "**" + label + ":** <span style='color:" + color + "; font-weight:600'>" + safe + "</span>"
+
+
+def apply_yearly_group_button_styles(statuses):
+    """Color each Yearly Items group button from its status for the selected year."""
+    css = ["<style>"]
+    for group, status in (statuses or {}).items():
+        color = DATE_STATUS_COLORS[status]
+        key = yearly_group_button_key(group)
+        css.append(
+            ".st-key-" + key + " button,"
+            ".st-key-" + key + " button[data-baseweb='button'][kind='primary']{"
+            "background-color:" + color + " !important;"
+            "color:#ffffff !important;"
+            "border-color:" + color + " !important;"
+            "}"
+        )
+    css.append("</style>")
+    st.markdown("".join(css), unsafe_allow_html=True)
+    return statuses
+
+
+def show_yearly_items_page():
+    """Phone-friendly Yearly Items groups, checklists, and a short history."""
+    selected = _cell(st.session_state.get("yearly_items_group"))
+    if selected:
+        show_yearly_group_page(selected)
+        return
+
+    st.title("Yearly Items")
+    st.caption("Mark each item done for the selected year. Green is done; red is not done yet.")
+    today = datetime.now(ZoneInfo("America/Los_Angeles")).date()
+    try:
+        records = load_yearly_item_records_readonly()
+        load_ok = True
+    except Exception as exc:
+        records = []
+        load_ok = False
+        st.error("Could not load yearly items: " + str(exc))
+
+    years = yearly_item_years(records, today=today)
+    if st.session_state.get("yearly_items_year") not in years:
+        st.session_state.yearly_items_year = today.year
+    year = st.selectbox("Year", years, key="yearly_items_year")
+
+    statuses = yearly_group_statuses(records, year) if load_ok else None
+    for name, _items in YEARLY_ITEM_GROUPS:
+        if st.button(name, key=yearly_group_button_key(name), use_container_width=True, type="primary"):
+            st.session_state.yearly_items_group = name
+            st.rerun()
+    if statuses is not None:
+        apply_yearly_group_button_styles(statuses)
+
+    st.markdown("---")
+    st.subheader("History")
+    st.caption("What was recorded for the selected year.")
+    if not load_ok:
+        return
+    _show_yearly_items_history(records, year)
+
+
+def _show_yearly_items_history(records, year):
+    any_done = False
+    for group_name, _entries in YEARLY_ITEM_GROUPS:
+        lines = []
+        for heading, section_items in yearly_item_sections(group_name):
+            heading_written = False
+            for item in section_items:
+                record = latest_yearly_item_record(records, year, group_name, item)
+                if not record:
+                    continue
+                if heading and not heading_written:
+                    lines.append(("heading", heading))
+                    heading_written = True
+                line = yearly_item_display_name(item, heading) + " — " + (_cell(record.get("Date Done")) or "—")
+                if _cell(record.get("Done By")):
+                    line += " — " + _cell(record.get("Done By"))
+                if _cell(record.get("Notes")):
+                    line += " — " + _cell(record.get("Notes"))
+                lines.append(("item", line))
+        if lines:
+            any_done = True
+            st.markdown("**" + group_name + "**")
+            for kind, text in lines:
+                safe = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                if kind == "heading":
+                    st.markdown("*" + safe + "*")
+                else:
+                    st.markdown(safe)
+    if not any_done:
+        st.info("No yearly items recorded for " + str(year) + ".")
+
+
+def show_yearly_group_page(group):
+    """Checklist for one Yearly Items group in the selected year."""
+    st.title("Yearly Items")
+    st.subheader(group)
+    if st.button("Back", key="yearly_items_back", use_container_width=True):
+        st.session_state.yearly_items_group = None
+        st.rerun()
+
+    today = datetime.now(ZoneInfo("America/Los_Angeles")).date()
+    try:
+        records = load_yearly_item_records_readonly()
+    except Exception as exc:
+        st.error("Could not load yearly items: " + str(exc))
+        return
+
+    years = yearly_item_years(records, today=today)
+    if st.session_state.get("yearly_items_year") not in years:
+        st.session_state.yearly_items_year = today.year
+    year = st.selectbox("Year", years, key="yearly_items_year")
+
+    if st.session_state.get("yearly_item_saved"):
+        st.success(st.session_state.pop("yearly_item_saved"))
+
+    items = yearly_items_for_group(group)
+    if not items:
+        st.info("No items have been listed for this group yet.")
+        return
+
+    spreadsheet = _gsheets_spreadsheet()
+    for heading, section_items in yearly_item_sections(group):
+        if heading:
+            st.markdown("**" + heading + "**")
+        for item in section_items:
+            latest = latest_yearly_item_record(records, year, group, item)
+            shown = yearly_item_display_name(item, heading)
+            _kind, markup = yearly_item_status_markup(shown, latest)
+            st.markdown(markup, unsafe_allow_html=True)
+            if latest and _cell(latest.get("Notes")):
+                st.caption(_cell(latest.get("Notes")))
+            slug = _yearly_item_widget_slug(group, item)
+            gen = int(st.session_state.get("yearly_item_gen_" + slug) or 0)
+            prefix = "yi_" + slug + "_" + str(year) + "_" + str(gen) + "_"
+            with st.expander("Record " + shown, expanded=latest is None):
+                st.date_input("Date Done", value=today, format="YYYY-MM-DD", key=prefix + "date")
+                st.selectbox("Done By", [""] + list(DRIVERS), key=prefix + "by")
+                st.text_input("Notes (optional)", key=prefix + "notes")
+                if st.button("Save", type="primary", key=prefix + "save", use_container_width=True):
+                    try:
+                        record = build_yearly_item_record(
+                            year,
+                            group,
+                            item,
+                            st.session_state.get(prefix + "date"),
+                            st.session_state.get(prefix + "by", ""),
+                            st.session_state.get(prefix + "notes", ""),
+                        )
+                        save_yearly_item_record(record, spreadsheet=spreadsheet)
+                    except Exception as exc:
+                        st.error("Could not save " + item + ": " + str(exc))
+                    else:
+                        st.session_state.yearly_item_saved = (
+                            "Saved " + item + " for " + str(year) + "."
+                        )
+                        st.session_state["yearly_item_gen_" + slug] = gen + 1
+                        st.rerun()
+
+
 def show_placeholder_page(title):
     st.title(title)
     st.info("Coming soon - Ron to define contents")
+
+
+YEARLY_ITEMS_SHEET_TITLE = "Yearly Items"
+YEARLY_ITEMS_COLUMNS = [
+    "Timestamp", "Year", "Group", "Item", "Date Done", "Done By", "Notes",
+]
+# Groups and items in Ron's order. Add items to a group's tuple to extend it.
+YEARLY_ITEM_GROUPS = (
+    ("Winterizing", (
+        "Office irrigation system",
+        "Trucks",
+        "Rinse Pad",
+        "Pod",
+        "Heli hauler",
+        "Bounder",
+    )),
+    ("Fuel Systems", (
+        "Tanks",
+    )),
+    # Placeholder item until Ron lists the rest of this group.
+    ("Annual Policies & Procedures (SMS)", (
+        "Annual SMS policies & procedures review",
+    )),
+    # A (heading, items) tuple shows a subheading; stored Item names stay as written.
+    ("Training", (
+        "WPS Mixer/Loader",
+        ("Pilot Training", (
+            "Pilot Training - N480ML",
+            "Pilot Training - N893PC",
+        )),
+    )),
+)
 
 
 # Add a dict to this list to show another aircraft on the DOM page.
@@ -4070,7 +4497,7 @@ elif st.session_state.current_mode == "Driver":
             st.success(item) 
 
 # ────────────────────────────────────────────────
-# HEADER PAGES (Equipment, Monthly Safety Meeting, DOM aircraft list; Yearly Items is a placeholder)
+# HEADER PAGES (Equipment, Monthly Safety Meeting, Yearly Items, DOM)
 # ────────────────────────────────────────────────
 elif st.session_state.current_mode == "Equipment":
     show_equipment_page()
@@ -4079,7 +4506,7 @@ elif st.session_state.current_mode == "Monthly Safety Meeting":
     show_safety_meetings_page()
 
 elif st.session_state.current_mode == "Yearly Items":
-    show_placeholder_page("Yearly Items")
+    show_yearly_items_page()
 
 elif st.session_state.current_mode == "DOM":
     show_dom_page()
