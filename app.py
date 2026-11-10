@@ -844,9 +844,10 @@ def save_safety_meeting_record(record, spreadsheet=None):
     return "Google Sheets (Safety Meetings)"
 
 
-def update_safety_meeting_discussion(timestamp, notes, spreadsheet=None):
+def update_safety_meeting_discussion(timestamp, notes, spreadsheet=None, meeting_date=None):
     """Replace Discussion Notes on the matching meeting row only. Never other tabs."""
     timestamp = _cell(timestamp)
+    meeting_date = _cell(meeting_date)
     if not timestamp:
         raise ValueError("Timestamp is required")
     ws, _created = ensure_safety_meetings_worksheet(spreadsheet or _gsheets_spreadsheet())
@@ -859,36 +860,271 @@ def update_safety_meeting_discussion(timestamp, notes, spreadsheet=None):
         notes_col = header.index("Discussion Notes") + 1
     except ValueError as exc:
         raise RuntimeError("Safety Meetings worksheet is missing required columns") from exc
+    date_idx = header.index("Meeting Date") if "Meeting Date" in header else None
+    matches = []
     for row_number, row in enumerate(values[1:], start=2):
         row_ts = _cell(row[ts_idx]) if ts_idx < len(row) else ""
         if row_ts != timestamp:
             continue
-        ws.update_cell(row_number, notes_col, _cell(notes))
-        return True
-    raise RuntimeError("Could not find that meeting on the Safety Meetings tab")
+        if meeting_date and date_idx is not None:
+            row_date = _cell(row[date_idx]) if date_idx < len(row) else ""
+            if row_date != meeting_date:
+                continue
+        matches.append(row_number)
+    if not matches:
+        raise RuntimeError("Could not find that meeting on the Safety Meetings tab")
+    ws.update_cell(matches[-1], notes_col, _cell(notes))
+    return True
+
+
+def safety_meeting_identity(record):
+    """Stable widget/id key for one saved meeting row."""
+    parts = [
+        _cell((record or {}).get("Timestamp")),
+        _cell((record or {}).get("Meeting Date")),
+        _cell((record or {}).get("Recorded By")),
+        _cell((record or {}).get("Attendees")),
+    ]
+    return _safety_item_key("|".join(parts)) or "meeting"
 
 
 def _safety_meeting_sort_key(record):
-    stamp = parse_equipment_date(_cell(record.get("Timestamp"))[:10]) if _cell(record.get("Timestamp")) else None
-    # Prefer the full timestamp when present so same-day meetings sort correctly.
+    """Sort by timestamp, then Meeting Date, so two saves in the same second stay ordered."""
     text_value = _cell(record.get("Timestamp"))
+    stamp_dt = datetime.min
     if text_value:
-        from datetime import datetime as _dt
         for fmt in ("%Y-%m-%d %H:%M:%S", "%Y/%m/%d %H:%M:%S", "%m/%d/%Y %H:%M:%S"):
             try:
-                return _dt.strptime(text_value, fmt)
+                stamp_dt = datetime.strptime(text_value, fmt)
+                break
             except ValueError:
                 continue
+        else:
+            stamp = parse_equipment_date(text_value[:10])
+            if stamp is not None:
+                stamp_dt = datetime(stamp.year, stamp.month, stamp.day)
     meeting = parse_equipment_date(record.get("Meeting Date"))
     if meeting is not None:
-        return datetime(meeting.year, meeting.month, meeting.day)
-    if stamp is not None:
-        return datetime(stamp.year, stamp.month, stamp.day)
-    return datetime.min
+        meeting_dt = datetime(meeting.year, meeting.month, meeting.day)
+    else:
+        meeting_dt = datetime.min
+    return (stamp_dt, meeting_dt)
+
+
+
+SAFETY_MEETING_VIEW = "View meetings"
+SAFETY_MEETING_RECORD = "Record a meeting"
+
+
+def safety_meeting_entry_date(record):
+    """Meeting Date as a date, or None if it is blank or unparseable."""
+    return parse_equipment_date((record or {}).get("Meeting Date"))
+
+
+def parse_safety_meeting_attendees(attendees):
+    """Split the stored Attendees string into checked names and Other attendees."""
+    parts = [p.strip() for p in _cell(attendees).split(",") if p.strip()]
+    known = set(SAFETY_MEETING_ATTENDEES)
+    checked = [name for name in SAFETY_MEETING_ATTENDEES if name in parts]
+    other = ", ".join(part for part in parts if part not in known)
+    return checked, other
+
+
+def safety_meeting_item_done(record, item):
+    return _cell((record or {}).get(item + " Done")).lower() in {"yes", "y", "true", "1"}
+
+
+def filter_safety_meetings(meetings, year=None, month=None):
+    """Meetings for an optional year and month, newest first."""
+    rows = []
+    for record in meetings or []:
+        entry = safety_meeting_entry_date(record)
+        if year is not None and (entry is None or entry.year != int(year)):
+            continue
+        if month is not None and (entry is None or entry.month != int(month)):
+            continue
+        rows.append(record)
+    return sorted(rows, key=_safety_meeting_sort_key, reverse=True)
+
+
+def safety_meeting_years(meetings):
+    years = {entry.year for entry in (safety_meeting_entry_date(m) for m in meetings or []) if entry}
+    return sorted(years, reverse=True)
+
+
+def safety_meeting_months_for_year(meetings, year):
+    months = {
+        entry.month
+        for entry in (safety_meeting_entry_date(m) for m in meetings or [])
+        if entry and year is not None and entry.year == int(year)
+    }
+    return sorted(months)
+
+
+def safety_meeting_option_label(record, include_time=False):
+    date_text = _cell((record or {}).get("Meeting Date")) or "Meeting"
+    recorded = _cell((record or {}).get("Recorded By"))
+    label = date_text
+    if recorded:
+        label += " — " + recorded
+    if include_time:
+        stamp = _cell((record or {}).get("Timestamp"))
+        if stamp:
+            label += " (" + stamp + ")"
+    return label
+
+
+def safety_meeting_pdf_filename(record):
+    date_text = _cell((record or {}).get("Meeting Date")) or "meeting"
+    return "CVH_Monthly_Safety_Meeting_" + date_text + ".pdf"
+
+
+def safety_meeting_report_logo_path():
+    """Prefer Ron's invoice flag logo, then the copy bundled with the app."""
+    from pathlib import Path
+    here = Path(__file__).resolve().parent if "__file__" in globals() else Path(".")
+    candidates = [
+        Path("/workspace/invoices/logo/flaglogo.png"),
+        here / "flaglogo_report.png",
+        Path("flaglogo_report.png"),
+        here / "flaglogo.png",
+        Path("flaglogo.png"),
+    ]
+    for path in candidates:
+        if path.is_file():
+            return str(path)
+    return None
+
+
+def build_safety_meeting_pdf(record, logo_path=None):
+    """One-page letter PDF of a saved meeting, in the flag-logo report style."""
+    from io import BytesIO
+    from reportlab.lib import colors
+    from reportlab.lib.enums import TA_LEFT
+    from reportlab.lib.pagesizes import letter
+    from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+    from reportlab.lib.units import inch
+    from reportlab.platypus import (
+        HRFlowable, Image, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle,
+    )
+
+    def _esc(value, newlines=False):
+        text = _cell(value)
+        text = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        if newlines:
+            text = text.replace('\n', "<br/>")
+        return text
+
+    logo_path = logo_path if logo_path is not None else safety_meeting_report_logo_path()
+    buf = BytesIO()
+    doc = SimpleDocTemplate(
+        buf, pagesize=letter,
+        leftMargin=0.7 * inch, rightMargin=0.7 * inch,
+        topMargin=0.55 * inch, bottomMargin=0.55 * inch,
+        title="Monthly Safety Meeting",
+        author="Central Valley Helicopters",
+    )
+    ss = getSampleStyleSheet()
+    company = ParagraphStyle(
+        "co", parent=ss["Normal"], fontSize=9, leading=11, alignment=TA_LEFT,
+        textColor=colors.HexColor("#222222"),
+    )
+    company_sm = ParagraphStyle("cosm", parent=company, fontSize=8, leading=10, textColor=colors.HexColor("#333333"))
+    title_style = ParagraphStyle(
+        "t", parent=ss["Title"], fontSize=15, leading=18, spaceAfter=2, spaceBefore=4, alignment=TA_LEFT,
+    )
+    heading = ParagraphStyle("h", parent=ss["Heading2"], fontSize=11, leading=14, spaceBefore=8, spaceAfter=4)
+    body = ParagraphStyle("n", parent=ss["Normal"], fontSize=9, leading=12)
+    small = ParagraphStyle("c", parent=body, fontSize=8.5, leading=11)
+    story = []
+
+    logo_flow = None
+    if logo_path:
+        try:
+            logo_flow = Image(logo_path, width=1.25 * inch, height=1.25 * inch * 214 / 320)
+        except Exception:
+            logo_flow = None
+    company_lines = [
+        Paragraph("<b>Cline Air Services LLC dba Central Valley Helicopters</b>", company),
+        Paragraph("891 Prater Rd, Ellensburg, WA 98926", company_sm),
+        Paragraph("Phone: (509) 968-9300", company_sm),
+        Paragraph("Email: cvh@centralvalleyheli.com", company_sm),
+    ]
+    company_block = Table([[line] for line in company_lines], colWidths=[5.8 * inch])
+    company_block.setStyle(TableStyle([
+        ("LEFTPADDING", (0, 0), (-1, -1), 0),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+        ("TOPPADDING", (0, 0), (-1, -1), 0),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 1),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+    ]))
+    if logo_flow is not None:
+        head = Table([[logo_flow, company_block]], colWidths=[1.4 * inch, 5.8 * inch])
+        head.setStyle(TableStyle([
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("LEFTPADDING", (0, 0), (-1, -1), 0),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+            ("TOPPADDING", (0, 0), (-1, -1), 0),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+        ]))
+        story.append(head)
+    else:
+        for line in company_lines:
+            story.append(line)
+    story.append(Spacer(1, 4))
+    story.append(HRFlowable(width="100%", thickness=1, color=colors.HexColor("#8B0000"), spaceBefore=2, spaceAfter=8))
+    story.append(Paragraph("Monthly Safety Meeting", title_style))
+
+    date_text = _cell(record.get("Meeting Date")) or "—"
+    recorded = _cell(record.get("Recorded By")) or "—"
+    story.append(Paragraph("<b>Meeting Date:</b> " + _esc(date_text), body))
+    story.append(Paragraph("<b>Recorded By:</b> " + _esc(recorded), body))
+
+    story.append(Paragraph("Checklist", heading))
+    rows = [[
+        Paragraph("<b>Item</b>", small),
+        Paragraph("<b>Status</b>", small),
+        Paragraph("<b>Note</b>", small),
+    ]]
+    for item in SAFETY_MEETING_ITEMS:
+        done = safety_meeting_item_done(record, item)
+        status = "Done / Reviewed" if done else "Not reviewed"
+        note = _cell(record.get(item + " Note")) or "—"
+        rows.append([
+            Paragraph(_esc(item), small),
+            Paragraph(_esc(status), small),
+            Paragraph(_esc(note, newlines=True), small),
+        ])
+    table = Table(rows, colWidths=[2.7 * inch, 1.5 * inch, 3.0 * inch])
+    table.setStyle(TableStyle([
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#DDE6F0")),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 5),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 5),
+        ("TOPPADDING", (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+    ]))
+    story.append(table)
+
+    story.append(Paragraph("Attendees", heading))
+    checked, other = parse_safety_meeting_attendees(record.get("Attendees"))
+    if checked:
+        story.append(Paragraph(_esc(", ".join(checked)), body))
+    else:
+        story.append(Paragraph("None of the listed names were checked.", body))
+    story.append(Paragraph("<b>Other attendees:</b> " + (_esc(other) if other else "—"), body))
+
+    story.append(Paragraph("Meeting Discussion", heading))
+    discussion = _cell(record.get("Discussion Notes"))
+    story.append(Paragraph(_esc(discussion, newlines=True) if discussion else "—", body))
+
+    doc.build(story)
+    return buf.getvalue()
 
 
 def show_safety_meetings_page():
-    """Monthly Safety Meeting form and past-meeting list. Phone-friendly, stacked fields."""
+    """Monthly Safety Meeting form and a phone-friendly viewer of saved meetings."""
     st.title("Monthly Safety Meeting")
     today = datetime.now(ZoneInfo("America/Los_Angeles")).date()
     try:
@@ -902,6 +1138,22 @@ def show_safety_meetings_page():
         st.success(st.session_state.pop("safety_meeting_saved"))
     if st.session_state.get("safety_meeting_notes_saved"):
         st.success(st.session_state.pop("safety_meeting_notes_saved"))
+
+    if st.session_state.pop("safety_go_to_view", False):
+        st.session_state.safety_mode = SAFETY_MEETING_VIEW
+        st.session_state.safety_view_reset_to_newest = True
+    if "safety_mode" not in st.session_state:
+        st.session_state.safety_mode = SAFETY_MEETING_VIEW if meetings else SAFETY_MEETING_RECORD
+    st.radio(
+        "Page",
+        [SAFETY_MEETING_VIEW, SAFETY_MEETING_RECORD],
+        horizontal=True,
+        key="safety_mode",
+    )
+
+    if st.session_state.safety_mode == SAFETY_MEETING_VIEW:
+        _show_safety_meeting_viewer(meetings, spreadsheet)
+        return
 
     gen = int(st.session_state.get("safety_form_gen") or 0)
     st.date_input("Meeting Date", value=today, format="YYYY-MM-DD", key=f"safety_date_{gen}")
@@ -955,43 +1207,123 @@ def show_safety_meetings_page():
                 "Saved safety meeting for " + (record.get("Meeting Date") or "today") + "."
             )
             st.session_state.safety_form_gen = gen + 1
+            st.session_state.safety_go_to_view = True
             st.rerun()
 
-    st.markdown("---")
-    st.subheader("Past meetings")
+
+def _show_safety_meeting_viewer(meetings, spreadsheet):
+    """Read-only viewer of saved Safety Meetings rows, with optional discussion edit and PDF."""
+    import calendar
+    st.subheader("View saved meetings")
+    st.caption("Read from the Safety Meetings tab. Newest meetings are listed first.")
     if not meetings:
         st.info("No meetings recorded yet.")
         return
-    for meeting in sorted(meetings, key=_safety_meeting_sort_key, reverse=True):
-        stamp = _cell(meeting.get("Timestamp"))
-        meeting_date = _cell(meeting.get("Meeting Date")) or "Meeting"
-        recorded = _cell(meeting.get("Recorded By"))
-        title = meeting_date + ((" — " + recorded) if recorded else "")
-        if stamp:
-            title = title + "  (" + stamp + ")"
-        with st.expander(title):
-            attendees = _cell(meeting.get("Attendees"))
-            st.markdown("**Attendees:** " + (attendees if attendees else "—"))
-            for item in SAFETY_MEETING_ITEMS:
-                done = _cell(meeting.get(item + " Done"))
-                note = _cell(meeting.get(item + " Note"))
-                mark = "Yes" if done.lower() in {"yes", "y", "true", "1"} else "No"
-                line = "**" + item + ":** " + ("Done / Reviewed" if mark == "Yes" else "Not reviewed")
-                if note:
-                    line = line + " — " + note
-                st.markdown(line)
-            disc_key = "safety_past_disc_" + _safety_item_key(stamp or meeting_date)
-            if disc_key not in st.session_state:
-                st.session_state[disc_key] = _cell(meeting.get("Discussion Notes"))
-            st.text_area("Discussion Notes", key=disc_key, height=140)
-            if st.button("Save discussion notes", key="safety_past_save_" + _safety_item_key(stamp or meeting_date), use_container_width=True):
-                try:
-                    update_safety_meeting_discussion(stamp, st.session_state.get(disc_key, ""), spreadsheet=spreadsheet)
-                except Exception as exc:
-                    st.error(f"Could not update discussion notes: {exc}")
-                else:
-                    st.session_state.safety_meeting_notes_saved = "Updated discussion notes for " + meeting_date + "."
-                    st.rerun()
+
+    years = safety_meeting_years(meetings)
+    newest = filter_safety_meetings(meetings)[0]
+    newest_date = safety_meeting_entry_date(newest)
+    if not years:
+        st.info("No meetings recorded yet.")
+        return
+    view_gen = int(st.session_state.get("safety_view_gen") or 0)
+    if st.session_state.pop("safety_view_reset_to_newest", False) and newest_date:
+        view_gen += 1
+        st.session_state.safety_view_gen = view_gen
+        default_year = newest_date.year
+        default_month = newest_date.month
+    else:
+        default_year = st.session_state.get("safety_view_year_" + str(view_gen), newest_date.year if newest_date else years[0])
+        default_month = st.session_state.get("safety_view_month_" + str(view_gen))
+    if default_year not in years:
+        default_year = years[0]
+    year = st.selectbox("Year", years, index=years.index(default_year), key="safety_view_year_" + str(view_gen))
+    months = safety_meeting_months_for_year(meetings, year)
+    if not months:
+        st.info("No meetings recorded in " + str(year) + ".")
+        return
+    if default_month not in months:
+        default_month = newest_date.month if newest_date and newest_date.year == year and newest_date.month in months else months[-1]
+    month = st.selectbox(
+        "Month", months,
+        index=months.index(default_month),
+        format_func=lambda value: calendar.month_name[value],
+        key="safety_view_month_" + str(view_gen),
+    )
+    filtered = filter_safety_meetings(meetings, year=year, month=month)
+    if not filtered:
+        st.info("No meetings recorded in " + calendar.month_name[month] + " " + str(year) + ".")
+        return
+    date_counts = {}
+    for record in filtered:
+        date_text = _cell(record.get("Meeting Date"))
+        date_counts[date_text] = date_counts.get(date_text, 0) + 1
+    labels = [
+        safety_meeting_option_label(record, include_time=date_counts.get(_cell(record.get("Meeting Date")), 0) > 1)
+        for record in filtered
+    ]
+    pick_key = "safety_view_pick_" + str(view_gen) + "_" + str(year) + "_" + str(month)
+    if st.session_state.get(pick_key) not in labels:
+        st.session_state.pop(pick_key, None)
+    chosen = st.selectbox("Meeting", labels, key=pick_key)
+    selected = filtered[labels.index(chosen)]
+
+    meeting_date = _cell(selected.get("Meeting Date")) or "—"
+    st.markdown("**Meeting Date:** " + meeting_date)
+    recorded = _cell(selected.get("Recorded By"))
+    if recorded:
+        st.markdown("**Recorded By:** " + recorded)
+
+    st.markdown("**Checklist**")
+    for item in SAFETY_MEETING_ITEMS:
+        done = safety_meeting_item_done(selected, item)
+        note = _cell(selected.get(item + " Note"))
+        line = "**" + item + ":** " + ("Done / Reviewed" if done else "Not reviewed")
+        if note:
+            line = line + " — " + note
+        st.markdown(line)
+
+    st.markdown("**Attendees**")
+    checked, other = parse_safety_meeting_attendees(selected.get("Attendees"))
+    if checked:
+        for name in checked:
+            st.markdown("✓ " + name)
+    else:
+        st.caption("None of the listed names were checked.")
+    st.markdown("**Other attendees:** " + (other if other else "—"))
+
+    st.markdown("**Meeting Discussion**")
+    stamp = _cell(selected.get("Timestamp"))
+    identity = safety_meeting_identity(selected)
+    disc_key = "safety_past_disc_" + identity
+    if disc_key not in st.session_state:
+        st.session_state[disc_key] = _cell(selected.get("Discussion Notes"))
+    st.text_area("Discussion Notes", key=disc_key, height=140)
+    if st.button("Save discussion notes", key="safety_past_save_" + identity, use_container_width=True):
+        try:
+            update_safety_meeting_discussion(
+                stamp, st.session_state.get(disc_key, ""), spreadsheet=spreadsheet, meeting_date=meeting_date,
+            )
+        except Exception as exc:
+            st.error(f"Could not update discussion notes: {exc}")
+        else:
+            st.session_state.safety_meeting_notes_saved = "Updated discussion notes for " + meeting_date + "."
+            st.rerun()
+
+    try:
+        pdf_bytes = build_safety_meeting_pdf(selected)
+    except Exception as exc:
+        st.caption("PDF is unavailable right now.")
+        st.warning("Could not build the meeting PDF: " + str(exc))
+    else:
+        st.download_button(
+            "Download PDF",
+            data=pdf_bytes,
+            file_name=safety_meeting_pdf_filename(selected),
+            mime="application/pdf",
+            key="safety_view_pdf_" + identity,
+            use_container_width=True,
+        )
 
 
 def show_placeholder_page(title):
