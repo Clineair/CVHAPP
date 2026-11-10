@@ -290,13 +290,24 @@ AIRCRAFT_MAINT_COLUMNS = [
     "Last Oil Change", "Next Oil Change", "Entered By",
 ]
 # Add a profile here to enable the Annual/100 Hr form for another aircraft.
-# N480ML stays a placeholder until a profile is added.
+# grease_offsets uses a separate N480ML Maint tab so Aircraft Maint headers stay unchanged.
+# Ron wrote 25, 50, 25, 100 — the second 25 is treated as 75.
+GREASE_CHECKPOINT_OFFSETS = (25, 50, 75, 100)
+N480ML_MAINT_SHEET_TITLE = "N480ML Maint"
 AIRCRAFT_MAINT_PROFILES = {
     "N893PC": {
         "id": "N893PC",
         "hundred_hr_interval": 100,
         "oil_interval": 50,
         "amber_hours": 10,
+        "sheet_title": "Aircraft Maint",
+    },
+    "N480ML": {
+        "id": "N480ML",
+        "hundred_hr_interval": 100,
+        "amber_hours": 10,
+        "grease_offsets": GREASE_CHECKPOINT_OFFSETS,
+        "sheet_title": "N480ML Maint",
     },
 }
 REGISTRATION_EXPIRE_COL = "Registration Expire Date"
@@ -1287,9 +1298,398 @@ def show_aircraft_annual_page(aircraft_id, profile, spreadsheet=None):
                 st.markdown("**" + label + ":** " + (_cell(raw) if _cell(raw) else "—"))
 
 
+def grease_offsets_for(profile):
+    offsets = (profile or {}).get("grease_offsets") or ()
+    return tuple(int(offset) for offset in offsets)
+
+
+def grease_checkpoint_label(offset):
+    return str(int(offset)) + " Hr"
+
+
+def grease_checkpoint_columns(offset):
+    label = str(int(offset))
+    return (
+        "Grease " + label + " Done",
+        "Grease " + label + " Initials",
+        "Grease " + label + " Hobbs/Date",
+    )
+
+
+def n480ml_maint_columns(offsets=None):
+    cols = [
+        "Timestamp", "Aircraft", "Entry Date", "Hobbs",
+        "Last 100 Hr", "Next 100 Hr", "Grease Hobbs",
+    ]
+    for offset in (offsets or GREASE_CHECKPOINT_OFFSETS):
+        cols.extend(grease_checkpoint_columns(offset))
+    cols.append("Entered By")
+    return cols
+
+
+def grease_due_hobbs(grease_hobbs, offset):
+    return next_hobbs(grease_hobbs, offset)
+
+
+def format_grease_hobbs_date(hobbs, when):
+    """Store 'Hobbs / YYYY-MM-DD' in the checkpoint Hobbs/Date column."""
+    if hasattr(when, "strftime"):
+        if hasattr(when, "date"):
+            try:
+                date_text = format_equipment_date(when.date())
+            except Exception:
+                date_text = format_equipment_date(when)
+        else:
+            date_text = format_equipment_date(when)
+    else:
+        date_text = format_equipment_date(when)
+    hobbs_text = format_hobbs(hobbs)
+    if hobbs_text and date_text:
+        return hobbs_text + " / " + date_text
+    return hobbs_text or date_text or ""
+
+
+def is_grease_checkpoint_done(record, offset):
+    done_col, _initials_col, _when_col = grease_checkpoint_columns(offset)
+    return _cell((record or {}).get(done_col)).lower() in {"yes", "y", "true", "1"}
+
+
+def grease_done_markup(label, record, offset):
+    """Gray completed checkpoint: check mark, initials, and Hobbs/date when greased."""
+    _done_col, initials_col, when_col = grease_checkpoint_columns(offset)
+    initials = _cell((record or {}).get(initials_col))
+    when_text = _cell((record or {}).get(when_col))
+    body = "✓ Done"
+    if initials:
+        body += " — " + initials
+    if when_text:
+        body += " (" + when_text + ")"
+    color = DATE_STATUS_COLORS[None]
+    safe = body.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    return "**" + label + ":** <span style='color:" + color + "; font-weight:600'>" + safe + "</span>"
+
+
+def ensure_n480ml_maint_worksheet(spreadsheet):
+    """Create the N480ML Maint tab with a header when it is missing.
+
+    Never alters an existing header, and never writes Aircraft Maint, FRAT,
+    Equipment, Squawks, or Safety Meetings.
+    """
+    cols = n480ml_maint_columns()
+    ws = _worksheet_or_none(spreadsheet, N480ML_MAINT_SHEET_TITLE)
+    created = False
+    if ws is None:
+        ws = spreadsheet.add_worksheet(title=N480ML_MAINT_SHEET_TITLE, rows=200, cols=max(len(cols), 8))
+        ws.append_row(cols, value_input_option="RAW")
+        created = True
+    else:
+        header = [_cell(c) for c in ws.row_values(1)]
+        if not header:
+            ws.append_row(cols, value_input_option="RAW")
+            created = True
+    return ws, created
+
+
+def load_n480ml_maint_records(spreadsheet=None):
+    ws, _created = ensure_n480ml_maint_worksheet(spreadsheet or _gsheets_spreadsheet())
+    records = records_from_worksheet(ws, n480ml_maint_columns())
+    return [r for r in records if _cell(r.get("Aircraft")) in {"", "N480ML"}]
+
+
+def build_n480ml_maint_record(
+    entry_date, hobbs, last_100, grease_hobbs, entered_by,
+    checkpoints=None, when=None, profile=None,
+):
+    profile = profile or aircraft_maint_profile("N480ML")
+    if not profile or not grease_offsets_for(profile):
+        raise ValueError("No N480ML grease maintenance profile")
+    when = when or datetime.now(ZoneInfo("America/Los_Angeles"))
+    record = {
+        "Timestamp": when.strftime("%Y-%m-%d %H:%M:%S"),
+        "Aircraft": "N480ML",
+        "Entry Date": format_equipment_date(entry_date),
+        "Hobbs": format_hobbs(hobbs),
+        "Last 100 Hr": format_hobbs(last_100),
+        "Next 100 Hr": format_hobbs(next_hobbs(last_100, profile.get("hundred_hr_interval"))),
+        "Grease Hobbs": format_hobbs(grease_hobbs),
+        "Entered By": _cell(entered_by),
+    }
+    states = checkpoints or {}
+    for offset in grease_offsets_for(profile):
+        done_col, initials_col, when_col = grease_checkpoint_columns(offset)
+        state = states.get(offset) or states.get(str(offset)) or {}
+        initials = _cell(state.get("initials"))
+        done = state.get("done") in (True, "Yes", "yes", "Y", "y", "1", "true", "True")
+        record[done_col] = ""
+        record[initials_col] = ""
+        record[when_col] = ""
+        if done:
+            record[done_col] = "Yes"
+            record[initials_col] = initials
+            record[when_col] = format_grease_hobbs_date(
+                state.get("hobbs", hobbs), state.get("when", when),
+            )
+    return record
+
+
+def save_n480ml_maint_record(record, spreadsheet=None):
+    """Append one N480ML maintenance entry to the N480ML Maint tab only."""
+    ws, _created = ensure_n480ml_maint_worksheet(spreadsheet or _gsheets_spreadsheet())
+    header = [_cell(c) for c in ws.row_values(1)]
+    if not header:
+        raise RuntimeError("N480ML Maint worksheet has no header")
+    ws.append_row([str(record.get(c, "")) for c in header], value_input_option="RAW")
+    return "Google Sheets (N480ML Maint)"
+
+
+def update_n480ml_grease_checkpoint(timestamp, offset, initials, hobbs, when=None, spreadsheet=None):
+    """Mark one grease checkpoint on the matching row only. Never other tabs or the header."""
+    timestamp = _cell(timestamp)
+    initials = _cell(initials)
+    if not timestamp:
+        raise ValueError("Timestamp is required")
+    if not initials:
+        raise ValueError("Initials are required to mark a grease checkpoint")
+    when = when or datetime.now(ZoneInfo("America/Los_Angeles"))
+    done_col, initials_col, when_col = grease_checkpoint_columns(offset)
+    ws, _created = ensure_n480ml_maint_worksheet(spreadsheet or _gsheets_spreadsheet())
+    values = ws.get_all_values()
+    if not values:
+        raise RuntimeError("N480ML Maint worksheet has no header")
+    header = [_cell(c) for c in values[0]]
+    try:
+        ts_idx = header.index("Timestamp")
+        done_number = header.index(done_col) + 1
+        initials_number = header.index(initials_col) + 1
+        when_number = header.index(when_col) + 1
+    except ValueError as exc:
+        raise RuntimeError("N480ML Maint worksheet is missing required columns") from exc
+    for row_number, row in enumerate(values[1:], start=2):
+        row_ts = _cell(row[ts_idx]) if ts_idx < len(row) else ""
+        if row_ts != timestamp:
+            continue
+        ws.update_cell(row_number, done_number, "Yes")
+        ws.update_cell(row_number, initials_number, initials)
+        ws.update_cell(row_number, when_number, format_grease_hobbs_date(hobbs, when))
+        return True
+    raise RuntimeError("Could not find that N480ML maintenance entry")
+
+
+def clear_n480ml_maint_widgets():
+    aid = "N480ML"
+    for suffix in ("date", "hobbs", "last100", "grease", "entered_by"):
+        st.session_state.pop("n480_" + suffix + "_" + aid, None)
+    profile = aircraft_maint_profile(aid) or {}
+    for offset in grease_offsets_for(profile) or GREASE_CHECKPOINT_OFFSETS:
+        for prefix in ("n480_greased_", "n480_initials_", "n480_latest_greased_", "n480_latest_initials_"):
+            st.session_state.pop(prefix + str(int(offset)) + "_" + aid, None)
+
+
+def show_n480ml_annual_page(profile, spreadsheet=None):
+    """Phone-friendly N480ML Annual/100 Hr + grease cycle form."""
+    aid = "N480ML"
+    amber_hours = profile.get("amber_hours", 10)
+    offsets = grease_offsets_for(profile)
+    today = datetime.now(ZoneInfo("America/Los_Angeles")).date()
+    st.title("DOM")
+    st.subheader(DOM_ACTION_ANNUAL + " — " + aid)
+    if st.button("Back", key="dom_annual_back", use_container_width=True):
+        clear_n480ml_maint_widgets()
+        st.session_state.dom_annual_aircraft = None
+        st.rerun()
+
+    try:
+        spreadsheet = spreadsheet or _gsheets_spreadsheet()
+        history = load_n480ml_maint_records(spreadsheet)
+    except Exception as exc:
+        st.error(f"Could not load N480ML maintenance: {exc}")
+        return
+    latest = latest_aircraft_maint_record(history)
+
+    if st.session_state.get("n480ml_maint_saved"):
+        st.success(st.session_state.pop("n480ml_maint_saved"))
+    if st.session_state.get("n480ml_grease_saved"):
+        st.success(st.session_state.pop("n480ml_grease_saved"))
+
+    def _init(key, value):
+        if key not in st.session_state:
+            st.session_state[key] = value
+
+    st.markdown("**Latest values**")
+    if not latest:
+        st.caption("No entries yet for this aircraft.")
+    else:
+        current = latest.get("Hobbs")
+        _kind, markup = hobbs_status_markup("Next 100 Hr", latest.get("Next 100 Hr"), current, amber_hours)
+        st.markdown(markup, unsafe_allow_html=True)
+        grease_hobbs = latest.get("Grease Hobbs")
+        st.markdown("**Grease Hobbs:** " + (format_hobbs(grease_hobbs) or "—"))
+        bits = []
+        if _cell(latest.get("Entry Date")):
+            bits.append("Entry Date " + _cell(latest.get("Entry Date")))
+        if _cell(latest.get("Hobbs")):
+            bits.append("Current Hobbs " + _cell(latest.get("Hobbs")))
+        if _cell(latest.get("Last 100 Hr")):
+            bits.append("Last 100 Hr " + _cell(latest.get("Last 100 Hr")))
+        if _cell(latest.get("Entered By")):
+            bits.append("Entered By " + _cell(latest.get("Entered By")))
+        if bits:
+            st.caption(" · ".join(bits))
+        pending = False
+        for offset in offsets:
+            label = grease_checkpoint_label(offset)
+            if is_grease_checkpoint_done(latest, offset):
+                st.markdown(grease_done_markup(label, latest, offset), unsafe_allow_html=True)
+                continue
+            due = grease_due_hobbs(grease_hobbs, offset)
+            _kind, markup = hobbs_status_markup(label, due, current, amber_hours)
+            st.markdown(markup, unsafe_allow_html=True)
+            st.checkbox("Greased", key="n480_latest_greased_" + str(int(offset)) + "_" + aid)
+            st.text_input("Initials", key="n480_latest_initials_" + str(int(offset)) + "_" + aid)
+            pending = True
+        if pending and st.button("Save grease checks", key="n480_latest_grease_save", use_container_width=True):
+            when = datetime.now(ZoneInfo("America/Los_Angeles"))
+            current_hobbs = st.session_state.get("n480_hobbs_" + aid) or latest.get("Hobbs")
+            errors = []
+            saved_any = False
+            for offset in offsets:
+                if is_grease_checkpoint_done(latest, offset):
+                    continue
+                checked = bool(st.session_state.get("n480_latest_greased_" + str(int(offset)) + "_" + aid))
+                initials = _cell(st.session_state.get("n480_latest_initials_" + str(int(offset)) + "_" + aid))
+                if checked and not initials:
+                    errors.append("Initials are required for " + grease_checkpoint_label(offset))
+                    continue
+                if not checked:
+                    continue
+                try:
+                    update_n480ml_grease_checkpoint(
+                        latest.get("Timestamp"), offset, initials, current_hobbs,
+                        when=when, spreadsheet=spreadsheet,
+                    )
+                    saved_any = True
+                except Exception as exc:
+                    errors.append(str(exc))
+            for msg in errors:
+                st.error(msg)
+            if saved_any and not errors:
+                st.session_state.n480ml_grease_saved = "Saved grease checks for N480ML."
+                for offset in offsets:
+                    st.session_state.pop("n480_latest_greased_" + str(int(offset)) + "_" + aid, None)
+                    st.session_state.pop("n480_latest_initials_" + str(int(offset)) + "_" + aid, None)
+                st.rerun()
+
+    st.markdown("---")
+    st.subheader("New entry")
+    st.caption("Enter a new Grease Hobbs to start a new 25 / 50 / 75 / 100 hour cycle.")
+    _init("n480_date_" + aid, today)
+    st.date_input("Date", format="YYYY-MM-DD", key="n480_date_" + aid)
+    _init("n480_hobbs_" + aid, _cell(latest.get("Hobbs")) if latest else "")
+    st.text_input("Current Hobbs", key="n480_hobbs_" + aid)
+    _init("n480_last100_" + aid, _cell(latest.get("Last 100 Hr")) if latest else "")
+    st.text_input("Last 100 Hr Hobbs", key="n480_last100_" + aid)
+    computed_100 = next_hobbs(st.session_state.get("n480_last100_" + aid), profile.get("hundred_hr_interval"))
+    _kind, markup = hobbs_status_markup(
+        "Next 100 Hr", computed_100, st.session_state.get("n480_hobbs_" + aid), amber_hours,
+    )
+    st.markdown(markup, unsafe_allow_html=True)
+    _init("n480_grease_" + aid, "")
+    st.text_input("Grease Hobbs", key="n480_grease_" + aid)
+    current_grease = st.session_state.get("n480_grease_" + aid)
+    current_hobbs_val = st.session_state.get("n480_hobbs_" + aid)
+    for offset in offsets:
+        label = grease_checkpoint_label(offset)
+        due = grease_due_hobbs(current_grease, offset)
+        _kind, markup = hobbs_status_markup(label, due, current_hobbs_val, amber_hours)
+        st.markdown(markup, unsafe_allow_html=True)
+        st.checkbox("Greased", key="n480_greased_" + str(int(offset)) + "_" + aid)
+        st.text_input("Initials", key="n480_initials_" + str(int(offset)) + "_" + aid)
+
+    recorded_options = [""] + list(REPORTERS)
+    _init("n480_entered_by_" + aid, "")
+    st.selectbox("Entered By", recorded_options, key="n480_entered_by_" + aid)
+
+    if st.button("Save", type="primary", key="n480_save_" + aid, use_container_width=True):
+        when = datetime.now(ZoneInfo("America/Los_Angeles"))
+        hobbs_val = st.session_state.get("n480_hobbs_" + aid)
+        checkpoints = {}
+        errors = []
+        for offset in offsets:
+            checked = bool(st.session_state.get("n480_greased_" + str(int(offset)) + "_" + aid))
+            initials = _cell(st.session_state.get("n480_initials_" + str(int(offset)) + "_" + aid))
+            if checked and not initials:
+                errors.append("Initials are required for " + grease_checkpoint_label(offset))
+                continue
+            if checked:
+                checkpoints[offset] = {
+                    "done": True,
+                    "initials": initials,
+                    "hobbs": hobbs_val,
+                    "when": when,
+                }
+        if errors:
+            for msg in errors:
+                st.error(msg)
+        else:
+            record = build_n480ml_maint_record(
+                st.session_state.get("n480_date_" + aid),
+                hobbs_val,
+                st.session_state.get("n480_last100_" + aid),
+                st.session_state.get("n480_grease_" + aid),
+                st.session_state.get("n480_entered_by_" + aid, ""),
+                checkpoints=checkpoints,
+                when=when,
+                profile=profile,
+            )
+            try:
+                save_n480ml_maint_record(record, spreadsheet=spreadsheet)
+            except Exception as exc:
+                st.error(f"Could not save N480ML maintenance: {exc}")
+            else:
+                clear_n480ml_maint_widgets()
+                st.session_state.n480ml_maint_saved = "Saved " + DOM_ACTION_ANNUAL + " entry for N480ML."
+                st.rerun()
+
+    st.markdown("---")
+    st.subheader("History")
+    if not history:
+        st.info("No maintenance entries recorded for this aircraft.")
+        return
+    for item in sorted(history, key=_safety_meeting_sort_key, reverse=True):
+        stamp = _cell(item.get("Timestamp"))
+        entry_date = _cell(item.get("Entry Date")) or "Entry"
+        title = entry_date
+        if _cell(item.get("Hobbs")):
+            title = title + " — Hobbs " + _cell(item.get("Hobbs"))
+        if stamp:
+            title = title + "  (" + stamp + ")"
+        with st.expander(title):
+            lines = [
+                ("Entry Date", item.get("Entry Date")),
+                ("Current Hobbs", item.get("Hobbs")),
+                ("Last 100 Hr", item.get("Last 100 Hr")),
+                ("Next 100 Hr", item.get("Next 100 Hr")),
+                ("Grease Hobbs", item.get("Grease Hobbs")),
+            ]
+            for label, raw in lines:
+                st.markdown("**" + label + ":** " + (_cell(raw) if _cell(raw) else "—"))
+            for offset in offsets:
+                label = grease_checkpoint_label(offset)
+                if is_grease_checkpoint_done(item, offset):
+                    st.markdown(grease_done_markup(label, item, offset), unsafe_allow_html=True)
+                else:
+                    due = grease_due_hobbs(item.get("Grease Hobbs"), offset)
+                    st.markdown("**" + label + " due:** " + (format_hobbs(due) or "—"))
+            if _cell(item.get("Entered By")):
+                st.markdown("**Entered By:** " + _cell(item.get("Entered By")))
+
+
 def show_dom_annual_panel(aircraft_id):
     """Open the Annual/100 Hr form when a profile exists; otherwise a placeholder."""
     profile = aircraft_maint_profile(aircraft_id)
+    if profile and grease_offsets_for(profile):
+        show_n480ml_annual_page(profile)
+        return
     if profile:
         show_aircraft_annual_page(aircraft_id, profile)
         return
