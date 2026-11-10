@@ -15,7 +15,7 @@ APP = Path(__file__).resolve().parents[1] / "app.py"
 def _exec_equipment_helpers():
     names = {
         "PILOTS", "ACCOUNTABLE_EXEC", "DIRECTOR_MAINTENANCE", "APPROVERS",
-        "EQUIPMENT_SHEET_TITLE", "SQUAWKS_SHEET_TITLE", "SAFETY_MEETINGS_SHEET_TITLE", "SAFETY_MEETING_ITEMS",
+        "EQUIPMENT_SHEET_TITLE", "SQUAWKS_SHEET_TITLE", "SAFETY_MEETINGS_SHEET_TITLE", "SAFETY_MEETING_ITEMS", "AIRCRAFT_MAINT_SHEET_TITLE", "AIRCRAFT_MAINT_COLUMNS", "AIRCRAFT_MAINT_PROFILES",
         "EQUIPMENT_INFO_COLUMNS", "EQUIPMENT_COLUMNS", "EQUIPMENT_EDIT_COLUMNS", "SQUAWK_COLUMNS", "EQUIPMENT_TYPES",
         "SQUAWK_CATEGORIES", "SQUAWK_SEVERITIES", "SEVERITY_GROUNDED", "STATUS_OPEN",
         "STATUS_RESOLVED", "REPORTERS", "ACTIVE_VALUES", "HEADER_PAGES",
@@ -38,6 +38,10 @@ def _exec_equipment_helpers():
         "safety_meeting_columns", "_safety_item_key", "ensure_safety_meetings_worksheet",
         "load_safety_meeting_records", "build_safety_meeting_record", "save_safety_meeting_record",
         "update_safety_meeting_discussion", "_safety_meeting_sort_key",
+        "aircraft_maint_profile", "parse_hobbs", "format_hobbs", "next_hobbs",
+        "hobbs_flag", "hobbs_status_markup", "ensure_aircraft_maint_worksheet",
+        "load_aircraft_maint_records", "latest_aircraft_maint_record",
+        "build_aircraft_maint_record", "save_aircraft_maint_record",
     }
     nodes = [n for n in TREE.body if
              (isinstance(n, ast.Assign) and any(isinstance(t, ast.Name) and t.id in names for t in n.targets))
@@ -292,6 +296,58 @@ class PlaceholderAndLogicTests(unittest.TestCase):
             self.assertEqual(extended[:-3], cols[:-1])
         finally:
             items[:] = original
+
+
+    def test_hobbs_next_values_and_color_flags(self):
+        from datetime import date
+        parse = self.s["parse_hobbs"]
+        fmt = self.s["format_hobbs"]
+        nxt = self.s["next_hobbs"]
+        flag = self.s["hobbs_flag"]
+        self.assertIsNone(parse(""))
+        self.assertIsNone(parse("not a number"))
+        self.assertEqual(parse("1,205.5"), 1205.5)
+        self.assertEqual(fmt(1200), "1200")
+        self.assertEqual(fmt(1200.5), "1200.5")
+        self.assertEqual(nxt(1105, 100), 1205)
+        self.assertEqual(nxt(1160, 50), 1210)
+        self.assertIsNone(nxt("", 100))
+        # GREEN when current < next - 10; AMBER in [next-10, next); RED when >= next.
+        self.assertEqual(flag(1194, 1205, 10), "ok")
+        self.assertEqual(flag(1195, 1205, 10), "soon")
+        self.assertEqual(flag(1204.9, 1205, 10), "soon")
+        self.assertEqual(flag(1205, 1205, 10), "expired")
+        self.assertEqual(flag(1206, 1205, 10), "expired")
+        self.assertIsNone(flag("", 1205, 10))
+        self.assertIsNone(flag(1200, "", 10))
+        colors = self.s["DATE_STATUS_COLORS"]
+        kind, html = self.s["hobbs_status_markup"]("Next 100 Hr", "", 1200, 10)
+        self.assertIsNone(kind)
+        self.assertIn("Not set", html)
+        self.assertIn(colors[None], html)
+        kind, html = self.s["hobbs_status_markup"]("Next 100 Hr", 1205, 1190, 10)
+        self.assertEqual(kind, "ok")
+        self.assertIn(colors["ok"], html)
+        kind, html = self.s["hobbs_status_markup"]("Next Oil Change", 1210, 1200, 10)
+        self.assertEqual(kind, "soon")
+        self.assertIn(colors["soon"], html)
+        kind, html = self.s["hobbs_status_markup"]("Next 100 Hr", 1205, 1205, 10)
+        self.assertEqual(kind, "expired")
+        self.assertIn(colors["expired"], html)
+        today = date(2026, 11, 10)
+        kind, html = self.s["date_status_markup"]("Annual Due Date", "2026-10-01", date(2026, 10, 1), today)
+        self.assertEqual(kind, "expired")
+        kind, html = self.s["date_status_markup"]("Annual Due Date", "2026-12-01", date(2026, 12, 1), today)
+        self.assertEqual(kind, "soon")
+        kind, html = self.s["date_status_markup"]("Annual Due Date", "2027-02-01", date(2027, 2, 1), today)
+        self.assertEqual(kind, "ok")
+        kind, html = self.s["date_status_markup"]("Annual Due Date", "", None, today)
+        self.assertIsNone(kind)
+        self.assertIn("Not set", html)
+        self.assertEqual(self.s["aircraft_maint_profile"]("N893PC")["oil_interval"], 50)
+        self.assertEqual(self.s["aircraft_maint_profile"]("N893PC")["hundred_hr_interval"], 100)
+        self.assertIsNone(self.s["aircraft_maint_profile"]("N480ML"))
+
 
 
 class FakeSheetBehaviorTests(unittest.TestCase):
@@ -571,6 +627,70 @@ class FakeSheetBehaviorTests(unittest.TestCase):
         self._assert_frat_untouched()
 
 
+    def test_aircraft_maint_tab_appends_only_and_computes_next(self):
+        from datetime import date
+        self.s["ensure_equipment_worksheet"](self.book)
+        self.s["ensure_squawks_worksheet"](self.book)
+        self.s["ensure_safety_meetings_worksheet"](self.book)
+        equipment_before = [list(r) for r in self.book.sheets["Equipment"].rows]
+        squawks_before = [list(r) for r in self.book.sheets["Squawks"].rows]
+        safety_before = [list(r) for r in self.book.sheets["Safety Meetings"].rows]
+        equipment_writes = list(self.book.sheets["Equipment"].writes)
+        squawks_writes = list(self.book.sheets["Squawks"].writes)
+        safety_writes = list(self.book.sheets["Safety Meetings"].writes)
+
+        ws, created = self.s["ensure_aircraft_maint_worksheet"](self.book)
+        self.assertTrue(created)
+        self.assertEqual(ws.row_values(1), self.s["AIRCRAFT_MAINT_COLUMNS"])
+        second, created_again = self.s["ensure_aircraft_maint_worksheet"](self.book)
+        self.assertFalse(created_again)
+        self.assertIs(second, ws)
+
+        record = self.s["build_aircraft_maint_record"](
+            "N893PC", date(2026, 11, 10), "1190", "1105", date(2027, 3, 1), "1160",
+            "Ronald A Cline", _pacific("2026-11-10 09:00:00"),
+        )
+        self.assertEqual(record["Aircraft"], "N893PC")
+        self.assertEqual(record["Entry Date"], "2026-11-10")
+        self.assertEqual(record["Hobbs"], "1190")
+        self.assertEqual(record["Last 100 Hr"], "1105")
+        self.assertEqual(record["Next 100 Hr"], "1205")
+        self.assertEqual(record["Annual Due Date"], "2027-03-01")
+        self.assertEqual(record["Last Oil Change"], "1160")
+        self.assertEqual(record["Next Oil Change"], "1210")
+        self.assertEqual(record["Entered By"], "Ronald A Cline")
+        self.s["save_aircraft_maint_record"](record, self.book)
+        later = self.s["build_aircraft_maint_record"](
+            "N893PC", date(2026, 11, 10), "1200", "1105", date(2027, 3, 1), "1160",
+            "Anthony Root", _pacific("2026-11-10 10:00:00"),
+        )
+        self.s["save_aircraft_maint_record"](later, self.book)
+        rows = self.s["load_aircraft_maint_records"](self.book, aircraft_id="N893PC")
+        self.assertEqual(len(rows), 2)
+        latest = self.s["latest_aircraft_maint_record"](rows)
+        self.assertEqual(latest["Timestamp"], "2026-11-10 10:00:00")
+        self.assertEqual(latest["Hobbs"], "1200")
+        self.assertEqual(latest["Next 100 Hr"], "1205")
+        self.assertEqual(latest["Next Oil Change"], "1210")
+        self.assertEqual(ws.rows[0], self.s["AIRCRAFT_MAINT_COLUMNS"])
+        self.assertEqual(self.book.sheets["Equipment"].rows, equipment_before)
+        self.assertEqual(self.book.sheets["Squawks"].rows, squawks_before)
+        self.assertEqual(self.book.sheets["Safety Meetings"].rows, safety_before)
+        self.assertEqual(self.book.sheets["Equipment"].writes, equipment_writes)
+        self.assertEqual(self.book.sheets["Squawks"].writes, squawks_writes)
+        self.assertEqual(self.book.sheets["Safety Meetings"].writes, safety_writes)
+        self._assert_frat_untouched()
+
+    def test_build_aircraft_maint_rejects_aircraft_without_profile(self):
+        from datetime import date
+        with self.assertRaisesRegex(ValueError, "No maintenance profile"):
+            self.s["build_aircraft_maint_record"](
+                "N480ML", date(2026, 11, 10), "100", "0", None, "0", "Ronald A Cline",
+            )
+        self.assertNotIn("Aircraft Maint", self.book.sheets)
+        self._assert_frat_untouched()
+
+
 def equipment_offline_app():
     """Same offline FRAT stub, plus an in-memory spreadsheet for Equipment/Squawks."""
     tree = ast.parse(SOURCE)
@@ -787,7 +907,7 @@ class HeaderAndEquipmentPageTests(unittest.TestCase):
         self.assertEqual(data[header.index("Aircraft Fire Extinguishers Done")], "Yes")
         self.assertEqual(len(book.sheets["Safety Meetings"].rows), 2)
 
-    def test_dom_annual_opens_coming_soon_panel(self):
+    def test_dom_annual_n893pc_form_and_n480ml_placeholder(self):
         from streamlit.testing.v1 import AppTest
         at = AppTest.from_string(equipment_offline_app(), default_timeout=30).run()
         at.button(key="nav_dom").click().run()
@@ -798,12 +918,18 @@ class HeaderAndEquipmentPageTests(unittest.TestCase):
         self.assertFalse(list(at.exception))
         self.assertTrue(any(t.value == "DOM" for t in at.title))
         self.assertTrue(any(t.value == "Annual/100 Hr — N893PC" for t in at.subheader))
-        self.assertTrue(any("Coming soon - Ron to define contents" in (i.value or "") for i in at.info))
-        # Do not invent inspection fields or data on this placeholder.
-        blob = " ".join(str(getattr(x, "value", "") or getattr(x, "label", "") or "") for x in list(at.markdown) + list(at.text_input) + list(at.number_input) + list(at.selectbox))
-        self.assertNotIn("Hobbs", blob)
-        self.assertNotIn("Tach", blob)
-        self.assertNotIn("Inspection due", blob)
+        self.assertFalse(any("Coming soon - Ron to define contents" in (i.value or "") for i in at.info))
+        labels = [t.label for t in at.text_input]
+        self.assertIn("Current Hobbs", labels)
+        self.assertIn("Last 100 Hr (Hobbs)", labels)
+        self.assertIn("Last Oil Change (Hobbs)", labels)
+        self.assertTrue(any(d.label == "Date" for d in at.date_input))
+        self.assertTrue(any(d.label == "Annual Due Date" for d in at.date_input))
+        self.assertTrue(any(s.label == "Entered By" for s in at.selectbox))
+        self.assertTrue(any(b.label == "Save" for b in at.button))
+        md = " ".join(m.value or "" for m in at.markdown)
+        self.assertIn("Next 100 Hr", md)
+        self.assertIn("Next Oil Change", md)
         next(b for b in at.button if b.label == "Back").click().run()
         self.assertFalse(list(at.exception))
         annual = [b for b in at.button if b.label == "Annual/100 Hr"]
@@ -811,6 +937,60 @@ class HeaderAndEquipmentPageTests(unittest.TestCase):
         annual[1].click().run()
         self.assertTrue(any(t.value == "Annual/100 Hr — N480ML" for t in at.subheader))
         self.assertTrue(any("Coming soon - Ron to define contents" in (i.value or "") for i in at.info))
+        blob = " ".join(str(getattr(x, "value", "") or getattr(x, "label", "") or "") for x in list(at.markdown) + list(at.text_input) + list(at.number_input) + list(at.selectbox))
+        self.assertNotIn("Current Hobbs", blob)
+        self.assertNotIn("Last Oil Change", blob)
+        self.assertNotIn("Tach", blob)
+
+    def test_n893pc_annual_form_saves_on_fake_sheet_and_recalculates_next(self):
+        from datetime import date
+        from streamlit.testing.v1 import AppTest
+        at = AppTest.from_string(equipment_offline_app(), default_timeout=30).run()
+        at.button(key="nav_dom").click().run()
+        [b for b in at.button if b.label == "Annual/100 Hr"][0].click().run()
+        self.assertFalse(list(at.exception))
+        next(t for t in at.text_input if t.label == "Last 100 Hr (Hobbs)").set_value("1105")
+        next(t for t in at.text_input if t.label == "Last Oil Change (Hobbs)").set_value("1160")
+        next(t for t in at.text_input if t.label == "Current Hobbs").set_value("1190")
+        at.run()
+        md = " ".join(m.value or "" for m in at.markdown)
+        self.assertIn("1205", md)
+        self.assertIn("1210", md)
+        next(d for d in at.date_input if d.label == "Date").set_value(date(2026, 11, 10))
+        next(d for d in at.date_input if d.label == "Annual Due Date").set_value(date(2027, 3, 1))
+        next(s for s in at.selectbox if s.label == "Entered By").select("Ronald A Cline")
+        next(b for b in at.button if b.label == "Save").click().run()
+        self.assertFalse(list(at.exception))
+        self.assertTrue(any("Saved Annual/100 Hr entry for N893PC" in (s.value or "") for s in at.success))
+        md = " ".join(m.value or "" for m in at.markdown)
+        self.assertIn("1205", md)
+        self.assertIn("1210", md)
+        self.assertIn("2027-03-01", md)
+        book = at.session_state["_workbook"]
+        self.assertIn("Aircraft Maint", book.sheets)
+        rows = book.sheets["Aircraft Maint"].rows
+        self.assertEqual(len(rows), 2)
+        header = rows[0]
+        data = rows[1]
+        self.assertEqual(header, [
+            "Timestamp", "Aircraft", "Entry Date", "Hobbs",
+            "Last 100 Hr", "Next 100 Hr", "Annual Due Date",
+            "Last Oil Change", "Next Oil Change", "Entered By",
+        ])
+        self.assertEqual(data[header.index("Aircraft")], "N893PC")
+        self.assertEqual(data[header.index("Entry Date")], "2026-11-10")
+        self.assertEqual(data[header.index("Hobbs")], "1190")
+        self.assertEqual(data[header.index("Last 100 Hr")], "1105")
+        self.assertEqual(data[header.index("Next 100 Hr")], "1205")
+        self.assertEqual(data[header.index("Annual Due Date")], "2027-03-01")
+        self.assertEqual(data[header.index("Last Oil Change")], "1160")
+        self.assertEqual(data[header.index("Next Oil Change")], "1210")
+        self.assertEqual(data[header.index("Entered By")], "Ronald A Cline")
+        self.assertEqual(book.sheets["Sheet1"].rows, [])
+        self.assertNotIn("Equipment", book.sheets)
+        self.assertNotIn("Squawks", book.sheets)
+        self.assertNotIn("Safety Meetings", book.sheets)
+        self.assertTrue(any(e.label and "Hobbs 1190" in e.label for e in at.expander))
 
     def test_info_edit_form_is_phone_friendly_and_saves_on_fake_sheet(self):
         from datetime import date
