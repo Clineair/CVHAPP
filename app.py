@@ -273,6 +273,32 @@ SAFETY_MEETING_ITEMS = [
     "First Aid Kits",
     "PPE",
 ]
+# Add a name here to show another attendee checkbox on the Monthly Safety Meeting form.
+SAFETY_MEETING_ATTENDEES = [
+    "Ron Cline",
+    "Anthony Root",
+    "Carl Mulvaney",
+    "Barry Markham",
+    "Gary Grant",
+    "Robert Rackley",
+    "Skylar Fingerle",
+]
+AIRCRAFT_MAINT_SHEET_TITLE = "Aircraft Maint"
+AIRCRAFT_MAINT_COLUMNS = [
+    "Timestamp", "Aircraft", "Entry Date", "Hobbs",
+    "Last 100 Hr", "Next 100 Hr", "Annual Due Date",
+    "Last Oil Change", "Next Oil Change", "Entered By",
+]
+# Add a profile here to enable the Annual/100 Hr form for another aircraft.
+# N480ML stays a placeholder until a profile is added.
+AIRCRAFT_MAINT_PROFILES = {
+    "N893PC": {
+        "id": "N893PC",
+        "hundred_hr_interval": 100,
+        "oil_interval": 50,
+        "amber_hours": 10,
+    },
+}
 REGISTRATION_EXPIRE_COL = "Registration Expire Date"
 ANNUAL_MAINT_COL = "Annual Maint Date"
 TONNAGE_APPLIES_COL = "Tonnage Applies"
@@ -766,6 +792,16 @@ def load_safety_meeting_records(spreadsheet=None):
     return records_from_worksheet(ws, safety_meeting_columns())
 
 
+def format_safety_meeting_attendees(selected, other=""):
+    """Checked names in list order, then any Other attendees, as a comma-separated string."""
+    selected_set = {_cell(name) for name in (selected or [])}
+    names = [name for name in SAFETY_MEETING_ATTENDEES if name in selected_set]
+    other_text = _cell(other)
+    if other_text:
+        names.append(other_text)
+    return ", ".join(names)
+
+
 def build_safety_meeting_record(meeting_date, recorded_by, attendees, item_states, discussion, when=None):
     when = when or datetime.now(ZoneInfo("America/Los_Angeles"))
     record = {
@@ -860,7 +896,10 @@ def show_safety_meetings_page():
     st.date_input("Meeting Date", value=today, format="YYYY-MM-DD", key=f"safety_date_{gen}")
     recorded_options = [""] + list(REPORTERS)
     st.selectbox("Recorded By (optional)", recorded_options, key=f"safety_recorded_by_{gen}")
-    st.text_input("Attendees (optional)", key=f"safety_attendees_{gen}")
+    st.markdown("**Attendees**")
+    for name in SAFETY_MEETING_ATTENDEES:
+        st.checkbox(name, key=f"safety_attendee_{_safety_item_key(name)}_{gen}")
+    st.text_input("Other attendees (optional)", key=f"safety_attendees_other_{gen}")
 
     st.subheader("Checklist")
     st.caption("Check Done / Reviewed and add a short note if needed.")
@@ -881,10 +920,18 @@ def show_safety_meetings_page():
                 "done": bool(st.session_state.get(f"safety_done_{slug}_{gen}")),
                 "note": st.session_state.get(f"safety_note_{slug}_{gen}", ""),
             }
+        selected_attendees = [
+            name for name in SAFETY_MEETING_ATTENDEES
+            if st.session_state.get(f"safety_attendee_{_safety_item_key(name)}_{gen}")
+        ]
+        attendees = format_safety_meeting_attendees(
+            selected_attendees,
+            st.session_state.get(f"safety_attendees_other_{gen}", ""),
+        )
         record = build_safety_meeting_record(
             st.session_state.get(f"safety_date_{gen}"),
             st.session_state.get(f"safety_recorded_by_{gen}", ""),
-            st.session_state.get(f"safety_attendees_{gen}", ""),
+            attendees,
             item_states,
             st.session_state.get(f"safety_discussion_{gen}", ""),
         )
@@ -912,8 +959,8 @@ def show_safety_meetings_page():
         if stamp:
             title = title + "  (" + stamp + ")"
         with st.expander(title):
-            if _cell(meeting.get("Attendees")):
-                st.markdown("**Attendees:** " + _cell(meeting.get("Attendees")))
+            attendees = _cell(meeting.get("Attendees"))
+            st.markdown("**Attendees:** " + (attendees if attendees else "—"))
             for item in SAFETY_MEETING_ITEMS:
                 done = _cell(meeting.get(item + " Done"))
                 note = _cell(meeting.get(item + " Note"))
@@ -949,10 +996,305 @@ DOM_AIRCRAFT = [
 DOM_ACTION_ANNUAL = "Annual/100 Hr"
 
 
-def show_dom_annual_panel(aircraft_id):
-    """Placeholder only — do not invent inspection fields or data."""
+def aircraft_maint_profile(aircraft_id):
+    """Return the per-aircraft Annual/100 Hr profile, or None for a placeholder."""
+    return AIRCRAFT_MAINT_PROFILES.get(_cell(aircraft_id))
+
+
+def parse_hobbs(value):
+    """Parse a Hobbs reading. Blank stays blank; unparseable is ignored."""
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value)
+    text_value = _cell(value).replace(",", "")
+    if not text_value:
+        return None
+    try:
+        return float(text_value)
+    except ValueError:
+        return None
+
+
+def format_hobbs(value):
+    number = parse_hobbs(value)
+    if number is None:
+        return ""
+    if abs(number - round(number)) < 1e-9:
+        return str(int(round(number)))
+    return ("%.4f" % number).rstrip("0").rstrip(".")
+
+
+def next_hobbs(last, interval):
+    last_n = parse_hobbs(last)
+    if last_n is None or interval is None:
+        return None
+    try:
+        return last_n + float(interval)
+    except (TypeError, ValueError):
+        return None
+
+
+def hobbs_flag(current, next_value, amber_hours=10):
+    """'expired' if hobbs >= next, 'soon' if within amber_hours of next, 'ok' if earlier; None if blank."""
+    cur = parse_hobbs(current)
+    nxt = parse_hobbs(next_value)
+    if cur is None or nxt is None:
+        return None
+    if cur >= nxt:
+        return "expired"
+    try:
+        window = float(amber_hours)
+    except (TypeError, ValueError):
+        window = 10
+    if cur >= nxt - window:
+        return "soon"
+    return "ok"
+
+
+def hobbs_status_markup(label, next_value, current, amber_hours=10):
+    """Colored next-Hobbs text: red due, amber within the window, green otherwise, gray if blank."""
+    nxt = parse_hobbs(next_value)
+    kind = hobbs_flag(current, nxt, amber_hours)
+    if nxt is None:
+        body = "Not set"
+        kind = None
+    else:
+        body = format_hobbs(nxt)
+        if kind == "expired":
+            body += " — due"
+        elif kind == "soon":
+            hours = format_hobbs(amber_hours) or "10"
+            body += " — within " + hours + " hours"
+    color = DATE_STATUS_COLORS[kind]
+    safe = body.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    return kind, "**" + label + ":** <span style='color:" + color + "; font-weight:600'>" + safe + "</span>"
+
+
+def ensure_aircraft_maint_worksheet(spreadsheet):
+    """Create the Aircraft Maint tab with a header when it is missing.
+
+    Existing headers are left in place; any newly added columns are appended
+    on the right. Never writes FRAT, Equipment, Squawks, or Safety Meetings.
+    """
+    cols = list(AIRCRAFT_MAINT_COLUMNS)
+    ws = _worksheet_or_none(spreadsheet, AIRCRAFT_MAINT_SHEET_TITLE)
+    created = False
+    if ws is None:
+        ws = spreadsheet.add_worksheet(title=AIRCRAFT_MAINT_SHEET_TITLE, rows=200, cols=max(len(cols), 8))
+        ws.append_row(cols, value_input_option="RAW")
+        created = True
+    else:
+        header = [_cell(c) for c in ws.row_values(1)]
+        if not header:
+            ws.append_row(cols, value_input_option="RAW")
+            created = True
+        else:
+            missing = [col for col in cols if col not in header]
+            if missing:
+                start = len(header) + 1
+                for offset, col in enumerate(missing):
+                    ws.update_cell(1, start + offset, col)
+    return ws, created
+
+
+def load_aircraft_maint_records(spreadsheet=None, aircraft_id=None):
+    ws, _created = ensure_aircraft_maint_worksheet(spreadsheet or _gsheets_spreadsheet())
+    records = records_from_worksheet(ws, AIRCRAFT_MAINT_COLUMNS)
+    if aircraft_id:
+        wanted = _cell(aircraft_id)
+        records = [r for r in records if _cell(r.get("Aircraft")) == wanted]
+    return records
+
+
+def latest_aircraft_maint_record(records):
+    if not records:
+        return None
+    return max(records, key=_safety_meeting_sort_key)
+
+
+def build_aircraft_maint_record(
+    aircraft_id, entry_date, hobbs, last_100, annual_due, last_oil, entered_by,
+    when=None, profile=None,
+):
+    aircraft_id = _cell(aircraft_id)
+    profile = profile or aircraft_maint_profile(aircraft_id)
+    if not profile:
+        raise ValueError("No maintenance profile for that aircraft")
+    next_100 = next_hobbs(last_100, profile.get("hundred_hr_interval"))
+    next_oil = next_hobbs(last_oil, profile.get("oil_interval"))
+    when = when or datetime.now(ZoneInfo("America/Los_Angeles"))
+    return {
+        "Timestamp": when.strftime("%Y-%m-%d %H:%M:%S"),
+        "Aircraft": aircraft_id,
+        "Entry Date": format_equipment_date(entry_date),
+        "Hobbs": format_hobbs(hobbs),
+        "Last 100 Hr": format_hobbs(last_100),
+        "Next 100 Hr": format_hobbs(next_100),
+        "Annual Due Date": format_equipment_date(annual_due),
+        "Last Oil Change": format_hobbs(last_oil),
+        "Next Oil Change": format_hobbs(next_oil),
+        "Entered By": _cell(entered_by),
+    }
+
+
+def save_aircraft_maint_record(record, spreadsheet=None):
+    """Append one maintenance entry to the Aircraft Maint tab only."""
+    ws, _created = ensure_aircraft_maint_worksheet(spreadsheet or _gsheets_spreadsheet())
+    header = [_cell(c) for c in ws.row_values(1)]
+    if not header:
+        raise RuntimeError("Aircraft Maint worksheet has no header")
+    ws.append_row([str(record.get(c, "")) for c in header], value_input_option="RAW")
+    return "Google Sheets (Aircraft Maint)"
+
+
+def clear_aircraft_maint_widgets(aircraft_id):
+    aid = _cell(aircraft_id)
+    if not aid:
+        return
+    for suffix in ("date", "hobbs", "last100", "annual", "lastoil", "entered_by"):
+        st.session_state.pop("maint_" + suffix + "_" + aid, None)
+
+
+def show_aircraft_annual_page(aircraft_id, profile, spreadsheet=None):
+    """Phone-friendly Annual/100 Hr form for one aircraft, with latest values and history."""
+    aid = _cell(aircraft_id)
     st.title("DOM")
-    st.subheader(DOM_ACTION_ANNUAL + " — " + aircraft_id)
+    st.subheader(DOM_ACTION_ANNUAL + " — " + aid)
+    if st.button("Back", key="dom_annual_back", use_container_width=True):
+        clear_aircraft_maint_widgets(aid)
+        st.session_state.dom_annual_aircraft = None
+        st.rerun()
+
+    today = datetime.now(ZoneInfo("America/Los_Angeles")).date()
+    amber_hours = profile.get("amber_hours", 10)
+    try:
+        spreadsheet = spreadsheet or _gsheets_spreadsheet()
+        history = load_aircraft_maint_records(spreadsheet, aircraft_id=aid)
+    except Exception as exc:
+        st.error(f"Could not load aircraft maintenance: {exc}")
+        return
+    latest = latest_aircraft_maint_record(history)
+
+    if st.session_state.get("aircraft_maint_saved"):
+        st.success(st.session_state.pop("aircraft_maint_saved"))
+
+    st.markdown("**Latest values**")
+    if not latest:
+        st.caption("No entries yet for this aircraft.")
+    else:
+        current = latest.get("Hobbs")
+        _kind, markup = hobbs_status_markup("Next 100 Hr", latest.get("Next 100 Hr"), current, amber_hours)
+        st.markdown(markup, unsafe_allow_html=True)
+        _kind, markup = hobbs_status_markup("Next Oil Change", latest.get("Next Oil Change"), current, amber_hours)
+        st.markdown(markup, unsafe_allow_html=True)
+        _kind, markup = date_status_markup(
+            "Annual Due Date", latest.get("Annual Due Date"),
+            parse_equipment_date(latest.get("Annual Due Date")), today,
+        )
+        st.markdown(markup, unsafe_allow_html=True)
+        bits = []
+        if _cell(latest.get("Entry Date")):
+            bits.append("Entry Date " + _cell(latest.get("Entry Date")))
+        if _cell(latest.get("Hobbs")):
+            bits.append("Current Hobbs " + _cell(latest.get("Hobbs")))
+        if _cell(latest.get("Last 100 Hr")):
+            bits.append("Last 100 Hr " + _cell(latest.get("Last 100 Hr")))
+        if _cell(latest.get("Last Oil Change")):
+            bits.append("Last Oil Change " + _cell(latest.get("Last Oil Change")))
+        if _cell(latest.get("Entered By")):
+            bits.append("Entered By " + _cell(latest.get("Entered By")))
+        if bits:
+            st.caption(" · ".join(bits))
+
+    def _init(key, value):
+        if key not in st.session_state:
+            st.session_state[key] = value
+
+    _init("maint_date_" + aid, today)
+    st.date_input("Date", format="YYYY-MM-DD", key="maint_date_" + aid)
+    _init("maint_hobbs_" + aid, _cell(latest.get("Hobbs")) if latest else "")
+    st.text_input("Current Hobbs", key="maint_hobbs_" + aid)
+    _init("maint_last100_" + aid, _cell(latest.get("Last 100 Hr")) if latest else "")
+    st.text_input("Last 100 Hr (Hobbs)", key="maint_last100_" + aid)
+    computed_100 = next_hobbs(st.session_state.get("maint_last100_" + aid), profile.get("hundred_hr_interval"))
+    _kind, markup = hobbs_status_markup(
+        "Next 100 Hr", computed_100, st.session_state.get("maint_hobbs_" + aid), amber_hours,
+    )
+    st.markdown(markup, unsafe_allow_html=True)
+    _init(
+        "maint_annual_" + aid,
+        parse_equipment_date(latest.get("Annual Due Date")) if latest else None,
+    )
+    st.date_input("Annual Due Date", format="YYYY-MM-DD", key="maint_annual_" + aid)
+    _init("maint_lastoil_" + aid, _cell(latest.get("Last Oil Change")) if latest else "")
+    st.text_input("Last Oil Change (Hobbs)", key="maint_lastoil_" + aid)
+    computed_oil = next_hobbs(st.session_state.get("maint_lastoil_" + aid), profile.get("oil_interval"))
+    _kind, markup = hobbs_status_markup(
+        "Next Oil Change", computed_oil, st.session_state.get("maint_hobbs_" + aid), amber_hours,
+    )
+    st.markdown(markup, unsafe_allow_html=True)
+    recorded_options = [""] + list(REPORTERS)
+    default_entered = _cell(latest.get("Entered By")) if latest else ""
+    if default_entered and default_entered not in recorded_options:
+        recorded_options = [default_entered] + recorded_options
+    _init("maint_entered_by_" + aid, default_entered if default_entered in recorded_options else "")
+    st.selectbox("Entered By", recorded_options, key="maint_entered_by_" + aid)
+
+    if st.button("Save", type="primary", key="maint_save_" + aid, use_container_width=True):
+        record = build_aircraft_maint_record(
+            aid,
+            st.session_state.get("maint_date_" + aid),
+            st.session_state.get("maint_hobbs_" + aid),
+            st.session_state.get("maint_last100_" + aid),
+            st.session_state.get("maint_annual_" + aid),
+            st.session_state.get("maint_lastoil_" + aid),
+            st.session_state.get("maint_entered_by_" + aid, ""),
+            profile=profile,
+        )
+        try:
+            save_aircraft_maint_record(record, spreadsheet=spreadsheet)
+        except Exception as exc:
+            st.error(f"Could not save aircraft maintenance: {exc}")
+        else:
+            clear_aircraft_maint_widgets(aid)
+            st.session_state.aircraft_maint_saved = "Saved " + DOM_ACTION_ANNUAL + " entry for " + aid + "."
+            st.rerun()
+
+    st.markdown("---")
+    st.subheader("History")
+    if not history:
+        st.info("No maintenance entries recorded for this aircraft.")
+        return
+    for item in sorted(history, key=_safety_meeting_sort_key, reverse=True):
+        stamp = _cell(item.get("Timestamp"))
+        entry_date = _cell(item.get("Entry Date")) or "Entry"
+        title = entry_date
+        if _cell(item.get("Hobbs")):
+            title = title + " — Hobbs " + _cell(item.get("Hobbs"))
+        if stamp:
+            title = title + "  (" + stamp + ")"
+        with st.expander(title):
+            lines = [
+                ("Entry Date", item.get("Entry Date")),
+                ("Current Hobbs", item.get("Hobbs")),
+                ("Last 100 Hr", item.get("Last 100 Hr")),
+                ("Next 100 Hr", item.get("Next 100 Hr")),
+                ("Annual Due Date", item.get("Annual Due Date")),
+                ("Last Oil Change", item.get("Last Oil Change")),
+                ("Next Oil Change", item.get("Next Oil Change")),
+                ("Entered By", item.get("Entered By")),
+            ]
+            for label, raw in lines:
+                st.markdown("**" + label + ":** " + (_cell(raw) if _cell(raw) else "—"))
+
+
+def show_dom_annual_panel(aircraft_id):
+    """Open the Annual/100 Hr form when a profile exists; otherwise a placeholder."""
+    profile = aircraft_maint_profile(aircraft_id)
+    if profile:
+        show_aircraft_annual_page(aircraft_id, profile)
+        return
+    st.title("DOM")
+    st.subheader(DOM_ACTION_ANNUAL + " — " + _cell(aircraft_id))
     st.info("Coming soon - Ron to define contents")
     if st.button("Back", key="dom_annual_back", use_container_width=True):
         st.session_state.dom_annual_aircraft = None
