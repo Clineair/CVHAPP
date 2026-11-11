@@ -427,7 +427,42 @@ TIMESHEET_DAY_FIELDS = (
     ("Perdiem Rate", "Perdiem Rate"),
     ("Other", "Other"),
 )
-TIMESHEET_MILEAGE_RATE_DEFAULT = 0.655
+# Official IRS business standard mileage rates (dollars per mile).
+# Source: https://www.irs.gov/tax-professionals/standard-mileage-rates
+# Periods and IR notices are copied from that table. Do not invent later rates.
+TIMESHEET_IRS_MILEAGE_SOURCE_URL = "https://www.irs.gov/tax-professionals/standard-mileage-rates"
+TIMESHEET_IRS_BUSINESS_MILEAGE_RATES = (
+    (date(2011, 1, 1), date(2011, 6, 30), 0.51, "IR-2010-119"),
+    (date(2011, 7, 1), date(2011, 12, 31), 0.555, "IR-2011-69"),
+    (date(2012, 1, 1), date(2012, 12, 31), 0.555, "IRB-2012-02"),
+    (date(2013, 1, 1), date(2013, 12, 31), 0.565, "IR-2012-95"),
+    (date(2014, 1, 1), date(2014, 12, 31), 0.56, "IR-2013-95"),
+    (date(2015, 1, 1), date(2015, 12, 31), 0.575, "IR-2014-114"),
+    (date(2016, 1, 1), date(2016, 12, 31), 0.54, "IR-2015-137"),
+    (date(2017, 1, 1), date(2017, 12, 31), 0.535, "IR-2016-169"),
+    (date(2018, 1, 1), date(2018, 12, 31), 0.545, "IR-2017-204"),
+    (date(2019, 1, 1), date(2019, 12, 31), 0.58, "IR-2018-251"),
+    (date(2020, 1, 1), date(2020, 12, 31), 0.575, "IR-2019-215"),
+    (date(2021, 1, 1), date(2021, 12, 31), 0.56, "IR-2020-279"),
+    (date(2022, 1, 1), date(2022, 6, 30), 0.585, "IR-2021-251"),
+    (date(2022, 7, 1), date(2022, 12, 31), 0.625, "IR-2022-124"),
+    (date(2023, 1, 1), date(2023, 12, 31), 0.655, "IR-2022-234"),
+    (date(2024, 1, 1), date(2024, 12, 31), 0.67, "IR-2023-239"),
+    (date(2025, 1, 1), date(2025, 12, 31), 0.70, "IR-2024-312"),
+    (date(2026, 1, 1), date(2026, 6, 30), 0.725, "IR-2025-128"),
+    (date(2026, 7, 1), date(2026, 12, 31), 0.76, "IR-2026-29"),
+)
+TIMESHEET_IRS_MILEAGE_RATES_START = TIMESHEET_IRS_BUSINESS_MILEAGE_RATES[0][0]
+TIMESHEET_IRS_MILEAGE_RATES_END = TIMESHEET_IRS_BUSINESS_MILEAGE_RATES[-1][1]
+TIMESHEET_MILEAGE_SHEET_TITLE = "Time Sheet Mileage"
+TIMESHEET_MILEAGE_COLUMNS = [
+    "Timestamp", "Entry ID", "Action", "Employee", "Week Of",
+    "Trip Number", "Travel Date", "Start Location", "End Location",
+    "Miles", "Rate", "Amount", "Rate Source", "Status",
+]
+TIMESHEET_MILEAGE_SOURCE_IRS = "IRS"
+TIMESHEET_MILEAGE_SOURCE_COMPANY = "Company override"
+TIMESHEET_MILEAGE_SOURCE_SAVED = "Previously saved"
 TIMESHEET_EMAIL_TO = "patti@centralvalleyheli.com"
 TIME_OFF_SHEET_TITLE = "Time Off"
 TIME_OFF_COLUMNS = [
@@ -2669,6 +2704,218 @@ def timesheet_mileage_amount(miles, rate):
     return round(miles_n * rate_n, 2)
 
 
+def timesheet_format_mileage_rate(value):
+    """Format a per-mile rate, keeping 2 or 3 decimals as published (0.76, 0.725, 0.70)."""
+    number = timesheet_parse_number(value)
+    if number is None:
+        return ""
+    text = ("%.3f" % number).rstrip("0")
+    if text.endswith("."):
+        text += "00"
+    elif len(text.split(".")[-1]) == 1:
+        text += "0"
+    return text
+
+
+def timesheet_irs_business_mileage_period(value):
+    """Return the published IRS business-rate period for a travel date, or None."""
+    day = parse_equipment_date(value)
+    if day is None:
+        return None
+    for start, end, rate, notice in TIMESHEET_IRS_BUSINESS_MILEAGE_RATES:
+        if start <= day <= end:
+            return {
+                "start": start,
+                "end": end,
+                "rate": rate,
+                "notice": notice,
+                "source": TIMESHEET_IRS_MILEAGE_SOURCE_URL,
+            }
+    return None
+
+
+def timesheet_irs_business_mileage_rate(value):
+    period = timesheet_irs_business_mileage_period(value)
+    if not period:
+        return None
+    return period["rate"]
+
+
+def timesheet_irs_mileage_supported_range_text():
+    start = format_equipment_date(TIMESHEET_IRS_MILEAGE_RATES_START)
+    end = format_equipment_date(TIMESHEET_IRS_MILEAGE_RATES_END)
+    return (
+        "IRS business standard mileage rates in this app follow the official table "
+        "at IRS Standard mileage rates, from " + start + " through " + end + ". "
+        "Later rates are not guessed and the last published rate is not carried forward."
+    )
+
+
+def timesheet_irs_mileage_unsupported_reason(value):
+    day = parse_equipment_date(value)
+    if day is None:
+        return (
+            "Enter the travel date to apply the IRS business mileage rate for that date, "
+            "or enter a company mileage rate override. "
+            + timesheet_irs_mileage_supported_range_text()
+        )
+    if day > TIMESHEET_IRS_MILEAGE_RATES_END:
+        return (
+            "No published IRS business mileage rate is available in this app for "
+            + format_equipment_date(day) + ". Rates are included through "
+            + format_equipment_date(TIMESHEET_IRS_MILEAGE_RATES_END)
+            + " and later rates are not invented. Enter a company mileage rate override "
+            "if the company has set a rate, or wait until the IRS publishes a new rate."
+        )
+    if day < TIMESHEET_IRS_MILEAGE_RATES_START:
+        return (
+            "No published IRS business mileage rate is available in this app for "
+            + format_equipment_date(day) + ". Included rates start "
+            + format_equipment_date(TIMESHEET_IRS_MILEAGE_RATES_START)
+            + ". Enter a company mileage rate override if the company has set a rate."
+        )
+    return (
+        "No published IRS business mileage rate is available in this app for "
+        + format_equipment_date(day) + ". " + timesheet_irs_mileage_supported_range_text()
+    )
+
+
+def timesheet_mileage_trip_is_blank(trip):
+    trip = trip or {}
+    keys = ("Travel Date", "Start Location", "End Location", "Miles", "Rate", "Company Override")
+    return not any(_cell(trip.get(key)) for key in keys)
+
+
+def timesheet_structured_mileage_trips(record):
+    """Dated or multi-trip mileage rows. Empty for historic single saved entries with no date."""
+    raw = (record or {}).get("Mileage Trips")
+    if not raw:
+        return []
+    trips = []
+    for item in raw:
+        if timesheet_mileage_trip_is_blank(item):
+            continue
+        trips.append(item)
+    if not trips:
+        return []
+    if (
+        len(trips) == 1
+        and not _cell(trips[0].get("Travel Date"))
+        and _cell(trips[0].get("Rate Source")) in ("", TIMESHEET_MILEAGE_SOURCE_SAVED)
+    ):
+        # A single undated saved trip is historic mileage; keep the old payload shape.
+        return []
+    return trips
+
+
+def timesheet_resolve_mileage_trip(trip, today=None):
+    """Validate one mileage trip and apply the IRS rate for its travel date unless overridden."""
+    trip = dict(trip or {})
+    start = _cell(trip.get("Start Location") or trip.get("start") or "")
+    end = _cell(trip.get("End Location") or trip.get("end") or "")
+    miles = trip.get("Miles") or trip.get("miles") or ""
+    override = trip.get("Company Override")
+    if override is None:
+        override = trip.get("company_override") or ""
+    # An explicit company override is only the Company Override field, never a bare Rate
+    # copied from a previously saved IRS/default value.
+    travel = parse_equipment_date(trip.get("Travel Date") or trip.get("travel_date"))
+    source = _cell(trip.get("Rate Source"))
+    if _cell(miles) and timesheet_parse_number(miles) is None:
+        raise ValueError("# of miles must be a number")
+    miles_n = timesheet_parse_number(miles)
+    if miles_n is not None and miles_n < 0:
+        raise ValueError("# of miles cannot be negative")
+    if _cell(override) and timesheet_parse_number(override) is None:
+        raise ValueError("Company mileage rate override must be a number")
+    override_n = timesheet_parse_number(override)
+    if override_n is not None and override_n < 0:
+        raise ValueError("Company mileage rate override cannot be negative")
+    rate = None
+    rate_source = ""
+    amount = None
+    if override_n is not None:
+        rate = override_n
+        rate_source = TIMESHEET_MILEAGE_SOURCE_COMPANY
+    elif travel is not None:
+        irs_rate = timesheet_irs_business_mileage_rate(travel)
+        if irs_rate is None:
+            raise ValueError(timesheet_irs_mileage_unsupported_reason(travel))
+        rate = irs_rate
+        rate_source = TIMESHEET_MILEAGE_SOURCE_IRS
+    elif _cell(miles):
+        # Miles without a travel date or company override must not silently use
+        # Sunday or a stale 2023 rate.
+        raise ValueError(timesheet_irs_mileage_unsupported_reason(None))
+    if miles_n is not None and rate is not None:
+        amount = timesheet_mileage_amount(miles_n, rate)
+    return {
+        "Travel Date": format_equipment_date(travel),
+        "Start Location": start,
+        "End Location": end,
+        "Miles": timesheet_format_hours(miles),
+        "Rate": timesheet_format_mileage_rate(rate),
+        "Amount": timesheet_format_money(amount),
+        "Rate Source": rate_source,
+        "Company Override": timesheet_format_mileage_rate(override) if override_n is not None else "",
+    }
+
+
+def timesheet_summarize_mileage_trips(trips):
+    """Fold trips into the existing Time Sheets mileage columns without changing that header."""
+    trips = [t for t in (trips or []) if not timesheet_mileage_trip_is_blank(t)]
+    if not trips:
+        return {
+            "Mileage Start": "",
+            "Mileage End": "",
+            "Mileage Miles": "",
+            "Mileage Rate": "",
+            "Mileage Amount": "",
+        }
+    if len(trips) == 1:
+        trip = trips[0]
+        return {
+            "Mileage Start": _cell(trip.get("Start Location")),
+            "Mileage End": _cell(trip.get("End Location")),
+            "Mileage Miles": _cell(trip.get("Miles")),
+            "Mileage Rate": _cell(trip.get("Rate")),
+            "Mileage Amount": _cell(trip.get("Amount")),
+        }
+    total_miles = 0.0
+    total_amount = 0.0
+    any_miles = False
+    any_amount = False
+    rates = set()
+    for trip in trips:
+        miles_n = timesheet_parse_number(trip.get("Miles"))
+        if miles_n is not None:
+            total_miles += miles_n
+            any_miles = True
+        amount_n = timesheet_parse_number(trip.get("Amount"))
+        if amount_n is not None:
+            total_amount += amount_n
+            any_amount = True
+        if _cell(trip.get("Rate")):
+            rates.add(_cell(trip.get("Rate")))
+    return {
+        "Mileage Start": "",
+        "Mileage End": "",
+        "Mileage Miles": timesheet_format_hours(total_miles) if any_miles else "",
+        "Mileage Rate": rates.pop() if len(rates) == 1 else "",
+        "Mileage Amount": timesheet_format_money(total_amount) if any_amount else "",
+    }
+
+
+def timesheet_mileage_help_caption():
+    return (
+        "Use the date you drove, not automatically the week's Sunday. "
+        "A week that crosses a rate change (for example June 30 and July 1, 2026) "
+        "needs a separate mileage trip for each travel date. "
+        + timesheet_irs_mileage_supported_range_text()
+    )
+
+
+
 def timesheet_reimb_total(parts, fuel, other):
     total = 0.0
     any_val = False
@@ -2690,7 +2937,7 @@ def timesheet_content_payload(record):
             field: _cell((record or {}).get(timesheet_day_column(day, field)))
             for field, _label in TIMESHEET_DAY_FIELDS
         }
-    return {
+    payload = {
         "Employee": _cell((record or {}).get("Employee")),
         "Week Of": format_equipment_date((record or {}).get("Week Of")),
         "Days": days,
@@ -2707,6 +2954,22 @@ def timesheet_content_payload(record):
         "Signature": _cell((record or {}).get("Signature")),
         "Signature Date": format_equipment_date((record or {}).get("Signature Date")),
     }
+    trips = timesheet_structured_mileage_trips(record)
+    if trips:
+        payload["Mileage Trips"] = [
+            {
+                "Travel Date": format_equipment_date(trip.get("Travel Date")),
+                "Start Location": _cell(trip.get("Start Location")),
+                "End Location": _cell(trip.get("End Location")),
+                "Miles": timesheet_format_hours(trip.get("Miles")),
+                "Rate": timesheet_format_mileage_rate(trip.get("Rate")) or timesheet_format_rate(trip.get("Rate")),
+                "Amount": timesheet_format_money(trip.get("Amount")),
+                "Rate Source": _cell(trip.get("Rate Source")),
+                "Company Override": timesheet_format_mileage_rate(trip.get("Company Override")),
+            }
+            for trip in trips
+        ]
+    return payload
 
 
 def timesheet_content_hash(record):
@@ -2774,6 +3037,7 @@ def build_timesheet_record(
     mileage_end="",
     mileage_miles="",
     mileage_rate="",
+    mileage_trips=None,
     parts="",
     fuel="",
     other_reimb="",
@@ -2808,8 +3072,6 @@ def build_timesheet_record(
                 row[field] = _cell(raw)
         cleaned_days[day] = row
     for label, value in (
-        ("# of miles", mileage_miles),
-        ("Mileage rate", mileage_rate),
         ("Parts", parts),
         ("Fuel", fuel),
         ("Other reimbursement", other_reimb),
@@ -2819,13 +3081,35 @@ def build_timesheet_record(
         number = timesheet_parse_number(value)
         if number is not None and number < 0:
             raise ValueError(label + " cannot be negative")
-    rate = mileage_rate if _cell(mileage_rate) else ""
-    amount = timesheet_mileage_amount(mileage_miles, rate if rate else TIMESHEET_MILEAGE_RATE_DEFAULT)
-    if not _cell(mileage_miles):
+    cleaned_trips = []
+    if mileage_trips is not None:
+        for trip in mileage_trips:
+            if timesheet_mileage_trip_is_blank(trip):
+                continue
+            cleaned_trips.append(timesheet_resolve_mileage_trip(trip, today=today))
+        summary = timesheet_summarize_mileage_trips(cleaned_trips)
+        mileage_start = summary["Mileage Start"]
+        mileage_end = summary["Mileage End"]
+        mileage_miles = summary["Mileage Miles"]
+        rate = summary["Mileage Rate"]
+        amount = summary["Mileage Amount"]
+    else:
+        if _cell(mileage_miles) and timesheet_parse_number(mileage_miles) is None:
+            raise ValueError("# of miles must be a number")
+        miles_n = timesheet_parse_number(mileage_miles)
+        if miles_n is not None and miles_n < 0:
+            raise ValueError("# of miles cannot be negative")
+        if _cell(mileage_rate) and timesheet_parse_number(mileage_rate) is None:
+            raise ValueError("Mileage rate must be a number")
+        rate_n = timesheet_parse_number(mileage_rate)
+        if rate_n is not None and rate_n < 0:
+            raise ValueError("Mileage rate cannot be negative")
+        rate = timesheet_format_rate(mileage_rate) if _cell(mileage_rate) else ""
         amount = None
-    elif _cell(mileage_miles) and not _cell(rate):
-        rate = timesheet_format_rate(TIMESHEET_MILEAGE_RATE_DEFAULT)
-        amount = timesheet_mileage_amount(mileage_miles, rate)
+        if _cell(mileage_miles) and _cell(rate):
+            amount = timesheet_mileage_amount(mileage_miles, rate)
+        elif _cell(mileage_miles) and not _cell(rate):
+            raise ValueError(timesheet_irs_mileage_unsupported_reason(None))
     reimb = timesheet_reimb_total(parts, fuel, other_reimb)
     when = when or datetime.now(ZoneInfo("America/Los_Angeles"))
     record = {
@@ -2837,8 +3121,9 @@ def build_timesheet_record(
         "Mileage Start": _cell(mileage_start),
         "Mileage End": _cell(mileage_end),
         "Mileage Miles": timesheet_format_hours(mileage_miles),
-        "Mileage Rate": timesheet_format_rate(rate),
+        "Mileage Rate": timesheet_format_mileage_rate(rate) or timesheet_format_rate(rate),
         "Mileage Amount": timesheet_format_money(amount),
+        "Mileage Trips": cleaned_trips,
         "Parts": timesheet_format_money(parts),
         "Fuel": timesheet_format_money(fuel),
         "Other Reimb": timesheet_format_money(other_reimb),
@@ -2887,21 +3172,126 @@ def load_timesheet_records(spreadsheet=None):
 
 def load_timesheet_records_readonly(spreadsheet=None):
     """Read the Time Sheets tab without creating or changing it."""
-    ws = _worksheet_or_none(spreadsheet or _gsheets_spreadsheet(), TIMESHEET_SHEET_TITLE)
+    book = spreadsheet or _gsheets_spreadsheet()
+    ws = _worksheet_or_none(book, TIMESHEET_SHEET_TITLE)
     if ws is None:
         return []
     header = [_cell(c) for c in ws.row_values(1)]
     if not header:
         return []
-    return records_from_worksheet(ws, timesheet_columns())
+    records = records_from_worksheet(ws, timesheet_columns())
+    return attach_timesheet_mileage_trips(records, book)
+
+
+def ensure_timesheet_mileage_worksheet(spreadsheet):
+    """Create the Time Sheet Mileage tab with a header when it is missing.
+
+    Never alters an existing header, and never writes FRAT or Time Sheets headers.
+    """
+    cols = list(TIMESHEET_MILEAGE_COLUMNS)
+    ws = _worksheet_or_none(spreadsheet, TIMESHEET_MILEAGE_SHEET_TITLE)
+    created = False
+    if ws is None:
+        ws = spreadsheet.add_worksheet(title=TIMESHEET_MILEAGE_SHEET_TITLE, rows=400, cols=max(len(cols), 16))
+        ws.append_row(cols, value_input_option="RAW")
+        created = True
+    else:
+        header = [_cell(c) for c in ws.row_values(1)]
+        if not header:
+            ws.append_row(cols, value_input_option="RAW")
+            created = True
+    return ws, created
+
+
+def load_timesheet_mileage_records_readonly(spreadsheet=None):
+    """Read dated mileage trips without creating or changing any tab."""
+    ws = _worksheet_or_none(spreadsheet or _gsheets_spreadsheet(), TIMESHEET_MILEAGE_SHEET_TITLE)
+    if ws is None:
+        return []
+    header = [_cell(c) for c in ws.row_values(1)]
+    if not header:
+        return []
+    return records_from_worksheet(ws, TIMESHEET_MILEAGE_COLUMNS)
+
+
+def attach_timesheet_mileage_trips(records, spreadsheet=None):
+    """Attach dated trips to weekly records. Historic rows stay unchanged when none exist."""
+    by_entry = {}
+    for row in load_timesheet_mileage_records_readonly(spreadsheet):
+        entry = _cell(row.get("Entry ID"))
+        if not entry:
+            continue
+        by_entry.setdefault(entry, []).append({
+            "Travel Date": _cell(row.get("Travel Date")),
+            "Start Location": _cell(row.get("Start Location")),
+            "End Location": _cell(row.get("End Location")),
+            "Miles": _cell(row.get("Miles")),
+            "Rate": _cell(row.get("Rate")),
+            "Amount": _cell(row.get("Amount")),
+            "Rate Source": _cell(row.get("Rate Source")),
+            "Company Override": _cell(row.get("Company Override")) if "Company Override" in (row or {}) else (
+                _cell(row.get("Rate")) if _cell(row.get("Rate Source")) == TIMESHEET_MILEAGE_SOURCE_COMPANY else ""
+            ),
+        })
+    attached = []
+    for record in records or []:
+        item = dict(record)
+        entry = _cell(item.get("Entry ID"))
+        if entry in by_entry:
+            item["Mileage Trips"] = by_entry[entry]
+        attached.append(item)
+    return attached
+
+
+def save_timesheet_mileage_trips(record, spreadsheet=None):
+    """Append dated trips to the mileage tab. Does nothing for historic undated records."""
+    trips = timesheet_structured_mileage_trips(record)
+    if not trips:
+        return None
+    book = spreadsheet or _gsheets_spreadsheet()
+    ws, _created = ensure_timesheet_mileage_worksheet(book)
+    header = [_cell(c) for c in ws.row_values(1)]
+    if not header:
+        raise RuntimeError("Time Sheet Mileage worksheet has no header")
+    for index, trip in enumerate(trips, start=1):
+        row = {
+            "Timestamp": _cell(record.get("Timestamp")),
+            "Entry ID": _cell(record.get("Entry ID")),
+            "Action": "Save",
+            "Employee": _cell(record.get("Employee")),
+            "Week Of": _cell(record.get("Week Of")),
+            "Trip Number": str(index),
+            "Travel Date": _cell(trip.get("Travel Date")),
+            "Start Location": _cell(trip.get("Start Location")),
+            "End Location": _cell(trip.get("End Location")),
+            "Miles": _cell(trip.get("Miles")),
+            "Rate": _cell(trip.get("Rate")),
+            "Amount": _cell(trip.get("Amount")),
+            "Rate Source": _cell(trip.get("Rate Source")),
+            "Company Override": _cell(trip.get("Company Override")),
+            "Status": _cell(record.get("Status")),
+        }
+        ws.append_row([str(row.get(c, "")) for c in header], value_input_option="RAW")
+    return "Google Sheets (Time Sheet Mileage)"
 
 
 def save_timesheet_record(record, spreadsheet=None):
-    ws, _created = ensure_timesheets_worksheet(spreadsheet or _gsheets_spreadsheet())
+    book = spreadsheet or _gsheets_spreadsheet()
+    ws, _created = ensure_timesheets_worksheet(book)
     header = [_cell(c) for c in ws.row_values(1)]
     if not header:
         raise RuntimeError("Time Sheets worksheet has no header")
-    ws.append_row([str(record.get(c, "")) for c in header], value_input_option="RAW")
+    values = []
+    for col in header:
+        value = record.get(col, "")
+        if isinstance(value, (list, dict)):
+            values.append("")
+        else:
+            values.append(str(value or ""))
+    ws.append_row(values, value_input_option="RAW")
+    mileage_dest = save_timesheet_mileage_trips(record, book)
+    if mileage_dest:
+        return "Google Sheets (Time Sheets, Time Sheet Mileage)"
     return "Google Sheets (Time Sheets)"
 
 
@@ -2971,8 +3361,104 @@ def timesheet_bundle_path(filename):
     return (roots[0] if roots else pathlib.Path(".")) / filename
 
 
-def timesheet_template_labels():
-    return [
+
+def timesheet_mileage_trips_for_display(record):
+    """Structured trips if present; otherwise one historic saved mileage entry."""
+    trips = timesheet_structured_mileage_trips(record)
+    if trips:
+        return trips
+    if not any(_cell((record or {}).get(key)) for key in (
+        "Mileage Start", "Mileage End", "Mileage Miles", "Mileage Rate", "Mileage Amount",
+    )):
+        return []
+    return [{
+        "Travel Date": "",
+        "Start Location": _cell((record or {}).get("Mileage Start")),
+        "End Location": _cell((record or {}).get("Mileage End")),
+        "Miles": _cell((record or {}).get("Mileage Miles")),
+        "Rate": _cell((record or {}).get("Mileage Rate")),
+        "Amount": _cell((record or {}).get("Mileage Amount")),
+        "Rate Source": TIMESHEET_MILEAGE_SOURCE_SAVED,
+        "Company Override": "",
+    }]
+
+
+def timesheet_mileage_rate_line(record):
+    trips = timesheet_mileage_trips_for_display(record)
+    rates = []
+    sources = set()
+    dates = []
+    for trip in trips:
+        if _cell(trip.get("Rate")):
+            rates.append(_cell(trip.get("Rate")))
+        if _cell(trip.get("Rate Source")):
+            sources.add(_cell(trip.get("Rate Source")))
+        if _cell(trip.get("Travel Date")):
+            dates.append(_cell(trip.get("Travel Date")))
+    unique_rates = list(dict.fromkeys(rates))
+    if len(unique_rates) == 1 and TIMESHEET_MILEAGE_SOURCE_COMPANY in sources:
+        phrase = "the company override rate of $" + unique_rates[0] + " per mile"
+    elif len(unique_rates) == 1 and dates:
+        phrase = (
+            "the IRS business rate of $" + unique_rates[0] + " per mile for "
+            + (", ".join(dates) if len(dates) == 1 else "the travel date")
+        )
+    elif len(unique_rates) == 1 and TIMESHEET_MILEAGE_SOURCE_SAVED in sources:
+        phrase = "the previously saved rate of $" + unique_rates[0] + " per mile"
+    elif len(unique_rates) == 1:
+        phrase = "$" + unique_rates[0] + " per mile"
+    elif unique_rates:
+        phrase = "the IRS business rate for each travel date"
+    else:
+        phrase = "the IRS business rate for the travel date"
+    return (
+        "Personal vechicle usage will be reimbursed at " + phrase
+        + " - no company credit card used for gas"
+    )
+
+
+def timesheet_mileage_source_note(record):
+    trips = timesheet_mileage_trips_for_display(record)
+    if not trips:
+        return (
+            "IRS business standard mileage rates are published through "
+            + format_equipment_date(TIMESHEET_IRS_MILEAGE_RATES_END) + "."
+        )
+    notes = []
+    for trip in trips:
+        travel = _cell(trip.get("Travel Date"))
+        rate = _cell(trip.get("Rate"))
+        source = _cell(trip.get("Rate Source"))
+        if source == TIMESHEET_MILEAGE_SOURCE_COMPANY:
+            notes.append(
+                "Company mileage rate override"
+                + ((" for " + travel) if travel else "")
+                + ((" $" + rate + "/mile") if rate else "")
+                + " (not the IRS rate)."
+            )
+        elif source == TIMESHEET_MILEAGE_SOURCE_IRS and travel and rate:
+            period = timesheet_irs_business_mileage_period(travel)
+            notice = (" " + period["notice"]) if period else ""
+            notes.append(
+                "IRS business standard mileage rate for " + travel
+                + ": $" + rate + "/mile" + (notice + ".")
+            )
+        elif source == TIMESHEET_MILEAGE_SOURCE_SAVED and rate:
+            notes.append("Previously saved mileage rate: $" + rate + "/mile.")
+    if not notes:
+        notes.append(
+            "IRS business standard mileage rates are published through "
+            + format_equipment_date(TIMESHEET_IRS_MILEAGE_RATES_END) + "."
+        )
+    notes.append(
+        "Included IRS rates end " + format_equipment_date(TIMESHEET_IRS_MILEAGE_RATES_END)
+        + "; later rates are not invented."
+    )
+    return " ".join(notes)
+
+
+def timesheet_template_labels(record=None):
+    labels = [
         "Central Valley Helicopters",
         "Weekly Time Sheet",
         "Name:",
@@ -2989,12 +3475,11 @@ def timesheet_template_labels():
         "$60.00 per day with company paid hotel",
         "$100.00 per day without company paid hotel",
         "Mileage Reimbursement  (prior approval required)",
-        "Personal vechicle usage will be reimbursed at _?_ per mile - no company credit card used for gas",
+        "Personal vechicle usage will be reimbursed at",
         "Start Location;",
         "End Location:",
         "# of miles",
-        "X 0.?",
-        "(0.65.5 based on 2023 IRS reimb rate)",
+        "no company credit card used for gas",
         "Other Reimbursements",
         "Receipts must be attached for reimbursement with description on receipt",
         "Parts",
@@ -3004,6 +3489,22 @@ def timesheet_template_labels():
         "Employee Signature",
         "Date",
     ]
+    if record is not None:
+        labels.append(timesheet_mileage_rate_line(record))
+        labels.append(timesheet_mileage_source_note(record))
+        for trip in timesheet_mileage_trips_for_display(record):
+            if _cell(trip.get("Travel Date")):
+                labels.append(_cell(trip.get("Travel Date")))
+            if _cell(trip.get("Rate")):
+                labels.append(_cell(trip.get("Rate")))
+            if _cell(trip.get("Amount")):
+                labels.append("$" + _cell(trip.get("Amount")))
+            if _cell(trip.get("Miles")):
+                labels.append(_cell(trip.get("Miles")))
+        end = format_equipment_date(TIMESHEET_IRS_MILEAGE_RATES_END)
+        labels.append(end)
+        labels.append("later rates are not invented")
+    return labels
 
 
 def build_timesheet_xlsx(record):
@@ -3029,21 +3530,49 @@ def build_timesheet_xlsx(record):
         ws.cell(11, col, _cell(record.get(timesheet_day_column(day, "BNSF Hours"))))
         ws.cell(12, col, _cell(record.get(timesheet_day_column(day, "Perdiem Rate"))))
         ws.cell(13, col, _cell(record.get(timesheet_day_column(day, "Other"))))
-    start = _cell(record.get("Mileage Start"))
-    end = _cell(record.get("Mileage End"))
-    ws["B23"] = "Start Location; " + (start or "_________________________")
-    ws["B24"] = "End Location: " + (end or "__________________________")
-    miles = _cell(record.get("Mileage Miles"))
-    rate = _cell(record.get("Mileage Rate")) or timesheet_format_rate(TIMESHEET_MILEAGE_RATE_DEFAULT)
-    amount = _cell(record.get("Mileage Amount"))
-    if miles:
-        # Put miles in C25 if empty label is on B25
-        ws["C25"] = miles
-        ws["D25"] = "X " + rate + " ="
-        ws["E25"] = "$" + amount if amount else "$______________"
+    trips = timesheet_mileage_trips_for_display(record)
+    ws["B22"] = timesheet_mileage_rate_line(record)
+    if len(trips) <= 1:
+        trip = trips[0] if trips else {}
+        start = _cell(trip.get("Start Location"))
+        end = _cell(trip.get("End Location"))
+        miles = _cell(trip.get("Miles"))
+        rate = _cell(trip.get("Rate"))
+        amount = _cell(trip.get("Amount"))
+        travel = _cell(trip.get("Travel Date"))
+        ws["B23"] = "Start Location; " + (start or "_________________________")
+        end_line = "End Location: " + (end or "__________________________")
+        if travel:
+            end_line += "    Travel date: " + travel
+        ws["B24"] = end_line
+        if miles:
+            ws["C25"] = miles
+            ws["D25"] = "X " + (rate or "") + " ="
+            ws["E25"] = "$" + amount if amount else "$______________"
+        else:
+            ws["D25"] = "X " + (rate or "") + " ="
+            ws["E25"] = "$" + amount if amount else "$______________"
     else:
-        ws["D25"] = "X " + (rate or "0.?") + " ="
-        ws["E25"] = "$" + amount if amount else "$______________"
+        lines = []
+        for i, trip in enumerate(trips, start=1):
+            lines.append(
+                "Trip " + str(i) + " " + _cell(trip.get("Travel Date"))
+                + " " + _cell(trip.get("Start Location")) + " to " + _cell(trip.get("End Location"))
+                + "  " + _cell(trip.get("Miles")) + " mi X " + _cell(trip.get("Rate"))
+                + " = $" + _cell(trip.get("Amount"))
+                + ((" (" + _cell(trip.get("Rate Source")) + ")") if _cell(trip.get("Rate Source")) else "")
+            )
+        ws["B23"] = lines[0]
+        ws["B24"] = lines[1] if len(lines) > 1 else ""
+        extra = " | ".join(lines[2:]) if len(lines) > 2 else ""
+        total = _cell(record.get("Mileage Amount"))
+        miles = _cell(record.get("Mileage Miles"))
+        ws["C25"] = miles
+        ws["D25"] = "Total ="
+        ws["E25"] = "$" + total if total else "$______________"
+        if extra:
+            ws["B25"] = "# of miles  " + extra
+    ws["B26"] = timesheet_mileage_source_note(record)
     def _money_cell(coord, value):
         ws[coord] = "$" + value if _cell(value) else "$"
     _money_cell("C31", record.get("Parts"))
@@ -3180,25 +3709,47 @@ def build_timesheet_pdf(record, logo_path=None):
     c.drawString(left, y, "Mileage Reimbursement  (prior approval required)")
     y -= 12
     _s(8, False)
-    c.drawString(
-        left,
-        y,
-        "Personal vechicle usage will be reimbursed at _?_ per mile - no company credit card used for gas",
-    )
-    y -= 14
-    start = _cell(record.get("Mileage Start"))
-    c.drawString(left, y, "Start Location; " + (start or "_________________________"))
-    y -= 13
-    end = _cell(record.get("Mileage End"))
-    c.drawString(left, y, "End Location: " + (end or "__________________________"))
-    y -= 14
-    miles = _cell(record.get("Mileage Miles")) or "______"
-    rate = _cell(record.get("Mileage Rate")) or "0.?"
-    amount = _cell(record.get("Mileage Amount"))
-    money = ("$" + amount) if amount else "$______________"
-    c.drawString(left, y, "# of miles  " + miles + "     X " + rate + " =     " + money)
-    y -= 11
-    c.drawString(left, y, "(0.65.5 based on 2023 IRS reimb rate)")
+    rate_line = timesheet_mileage_rate_line(record)
+    # Official typo "vechicle" is preserved; wrap the longer rate sentence.
+    for line in _timesheet_wrap_label(rate_line, 110):
+        c.drawString(left, y, line)
+        y -= 11
+    trips = timesheet_mileage_trips_for_display(record)
+    if len(trips) <= 1:
+        trip = trips[0] if trips else {}
+        start = _cell(trip.get("Start Location"))
+        c.drawString(left, y, "Start Location; " + (start or "_________________________"))
+        y -= 13
+        end = _cell(trip.get("End Location"))
+        travel = _cell(trip.get("Travel Date"))
+        end_line = "End Location: " + (end or "__________________________")
+        if travel:
+            end_line += "    Travel date: " + travel
+        c.drawString(left, y, end_line)
+        y -= 14
+        miles = _cell(trip.get("Miles")) or "______"
+        rate = _cell(trip.get("Rate")) or "______"
+        amount = _cell(trip.get("Amount"))
+        money = ("$" + amount) if amount else "$______________"
+        c.drawString(left, y, "# of miles  " + miles + "     X " + rate + " =     " + money)
+        y -= 11
+    else:
+        for i, trip in enumerate(trips, start=1):
+            c.drawString(
+                left,
+                y,
+                "Trip " + str(i) + "  " + _cell(trip.get("Travel Date"))
+                + "  " + _cell(trip.get("Start Location")) + " to " + _cell(trip.get("End Location"))
+                + "   " + _cell(trip.get("Miles")) + " mi X " + _cell(trip.get("Rate"))
+                + " = $" + _cell(trip.get("Amount")),
+            )
+            y -= 11
+        total = _cell(record.get("Mileage Amount"))
+        c.drawString(left, y, "Mileage total  $" + (total or "______________"))
+        y -= 11
+    for line in _timesheet_wrap_label(timesheet_mileage_source_note(record), 110):
+        c.drawString(left, y, line)
+        y -= 10
 
     y -= 18
     _s(10, True)
@@ -3766,28 +4317,122 @@ def show_employee_timesheet(employee):
             st.text_input("Perdiem Rate", value=_saved(timesheet_day_column(day, "Perdiem Rate")), key=prefix + day + "_Perdiem")
             st.text_input("Other", value=_saved(timesheet_day_column(day, "Other")), key=prefix + day + "_Other")
 
+    saved_trips = timesheet_structured_mileage_trips(saved) if saved else []
+    if saved and not saved_trips and any(_saved(key) for key in (
+        "Mileage Start", "Mileage End", "Mileage Miles", "Mileage Rate", "Mileage Amount",
+    )):
+        saved_trips = [{
+            "Travel Date": "",
+            "Start Location": _saved("Mileage Start"),
+            "End Location": _saved("Mileage End"),
+            "Miles": _saved("Mileage Miles"),
+            "Rate": _saved("Mileage Rate"),
+            "Amount": _saved("Mileage Amount"),
+            "Rate Source": TIMESHEET_MILEAGE_SOURCE_SAVED,
+            "Company Override": "",
+        }]
+    count_key = "ts_mileage_count_" + employee + "_" + week.isoformat()
+    if st.session_state.get(count_key) is None:
+        st.session_state[count_key] = max(len(saved_trips), 1)
+
     st.markdown("**Mileage Reimbursement  (prior approval required)**")
-    st.caption("Personal vechicle usage will be reimbursed at _?_ per mile - no company credit card used for gas")
-    st.text_input("Start Location", value=_saved("Mileage Start"), key=prefix + "miles_start")
-    st.text_input("End Location", value=_saved("Mileage End"), key=prefix + "miles_end")
-    m1, m2, m3 = st.columns(3)
-    with m1:
-        st.text_input("# of miles", value=_saved("Mileage Miles"), key=prefix + "miles")
-    with m2:
-        default_rate = _saved("Mileage Rate") or timesheet_format_rate(TIMESHEET_MILEAGE_RATE_DEFAULT)
-        st.text_input("Rate per mile", value=default_rate, key=prefix + "rate")
-    live_amount = timesheet_mileage_amount(
-        st.session_state.get(prefix + "miles"),
-        st.session_state.get(prefix + "rate"),
-    )
-    with m3:
-        st.text_input(
-            "Mileage amount $",
-            value=timesheet_format_money(live_amount) if prefix + "miles" in st.session_state else _saved("Mileage Amount"),
-            disabled=True,
-            key=prefix + "amount_show",
-        )
-    st.caption("(0.65.5 based on 2023 IRS reimb rate)")
+    st.caption(timesheet_mileage_help_caption())
+    week_date_options = [""] + [day.isoformat() for day in dates] + ["Other date"]
+    trip_count = int(st.session_state.get(count_key) or 1)
+    for i in range(trip_count):
+        trip_saved = saved_trips[i] if i < len(saved_trips) else {}
+        with st.expander("Mileage trip " + str(i + 1), expanded=True):
+            saved_date = _cell(trip_saved.get("Travel Date"))
+            if saved_date and saved_date not in week_date_options:
+                default_choice = "Other date"
+            elif saved_date in week_date_options:
+                default_choice = saved_date
+            else:
+                default_choice = ""
+            choice_key = prefix + "trip" + str(i) + "_date_choice"
+            choice = st.selectbox(
+                "Travel date",
+                week_date_options,
+                index=week_date_options.index(default_choice),
+                key=choice_key,
+            )
+            travel = ""
+            if choice == "Other date":
+                other_default = parse_equipment_date(saved_date) or week
+                other = st.date_input(
+                    "Other travel date",
+                    value=other_default,
+                    format="YYYY-MM-DD",
+                    key=prefix + "trip" + str(i) + "_other_date",
+                )
+                travel = format_equipment_date(other)
+            elif choice:
+                travel = choice
+            if travel:
+                irs_rate = timesheet_irs_business_mileage_rate(travel)
+                if irs_rate is not None:
+                    st.caption(
+                        "IRS business rate for " + travel + ": $"
+                        + timesheet_format_mileage_rate(irs_rate) + " per mile."
+                    )
+                else:
+                    st.warning(timesheet_irs_mileage_unsupported_reason(travel))
+            elif _cell(trip_saved.get("Rate Source")) == TIMESHEET_MILEAGE_SOURCE_SAVED and _cell(trip_saved.get("Rate")):
+                st.caption(
+                    "Previously saved rate: $" + _cell(trip_saved.get("Rate"))
+                    + "/mile. Enter a travel date to apply the IRS rate for that date, "
+                    "or a company mileage rate override."
+                )
+            st.text_input(
+                "Start Location",
+                value=_cell(trip_saved.get("Start Location")),
+                key=prefix + "trip" + str(i) + "_start",
+            )
+            st.text_input(
+                "End Location",
+                value=_cell(trip_saved.get("End Location")),
+                key=prefix + "trip" + str(i) + "_end",
+            )
+            override_default = ""
+            if _cell(trip_saved.get("Rate Source")) == TIMESHEET_MILEAGE_SOURCE_COMPANY:
+                override_default = _cell(trip_saved.get("Company Override") or trip_saved.get("Rate"))
+            miles_now = st.text_input(
+                "# of miles",
+                value=_cell(trip_saved.get("Miles")),
+                key=prefix + "trip" + str(i) + "_miles",
+            )
+            override_now = st.text_input(
+                "Company mileage rate override (optional, not the IRS rate)",
+                value=override_default,
+                key=prefix + "trip" + str(i) + "_override",
+            )
+            live_rate = timesheet_parse_number(override_now)
+            live_source = TIMESHEET_MILEAGE_SOURCE_COMPANY if live_rate is not None else ""
+            if live_rate is None and travel:
+                live_rate = timesheet_irs_business_mileage_rate(travel)
+                if live_rate is not None:
+                    live_source = TIMESHEET_MILEAGE_SOURCE_IRS
+            if live_rate is None and _cell(trip_saved.get("Rate")) and not travel and not _cell(override_now):
+                live_rate = timesheet_parse_number(trip_saved.get("Rate"))
+                live_source = TIMESHEET_MILEAGE_SOURCE_SAVED
+            live_amount = timesheet_mileage_amount(st.session_state.get(prefix + "trip" + str(i) + "_miles"), live_rate)
+            st.text_input(
+                "Mileage amount $",
+                value=timesheet_format_money(live_amount) if live_amount is not None else "",
+                disabled=True,
+                key=prefix + "trip" + str(i) + "_amount_show",
+            )
+            if live_source and live_rate is not None:
+                st.caption("Using " + live_source + " rate $" + timesheet_format_mileage_rate(live_rate) + "/mile.")
+    add1, add2 = st.columns(2)
+    with add1:
+        if st.button("Add another mileage trip", key=prefix + "add_trip", use_container_width=True):
+            st.session_state[count_key] = trip_count + 1
+            st.rerun()
+    with add2:
+        if trip_count > 1 and st.button("Remove last mileage trip", key=prefix + "remove_trip", use_container_width=True):
+            st.session_state[count_key] = trip_count - 1
+            st.rerun()
 
     st.markdown("**Other Reimbursements**")
     st.caption("Receipts must be attached for reimbursement with description on receipt")
@@ -3832,14 +4477,51 @@ def show_employee_timesheet(employee):
                 "Perdiem Rate": st.session_state.get(prefix + day + "_Perdiem", ""),
                 "Other": st.session_state.get(prefix + day + "_Other", ""),
             }
+        trips = []
+        for i in range(int(st.session_state.get(count_key) or 1)):
+            choice = st.session_state.get(prefix + "trip" + str(i) + "_date_choice", "")
+            if choice == "Other date":
+                travel = format_equipment_date(st.session_state.get(prefix + "trip" + str(i) + "_other_date"))
+            else:
+                travel = _cell(choice)
+            trips.append({
+                "Travel Date": travel,
+                "Start Location": st.session_state.get(prefix + "trip" + str(i) + "_start", ""),
+                "End Location": st.session_state.get(prefix + "trip" + str(i) + "_end", ""),
+                "Miles": st.session_state.get(prefix + "trip" + str(i) + "_miles", ""),
+                "Company Override": st.session_state.get(prefix + "trip" + str(i) + "_override", ""),
+            })
+        filled = [trip for trip in trips if not timesheet_mileage_trip_is_blank(trip)]
+        legacy_saved = bool(saved and not timesheet_structured_mileage_trips(saved))
+        use_legacy = (
+            len(filled) == 1
+            and not _cell(filled[0].get("Travel Date"))
+            and not _cell(filled[0].get("Company Override"))
+            and legacy_saved
+        )
+        if use_legacy:
+            return build_timesheet_record(
+                employee,
+                week,
+                day_values=day_values,
+                mileage_start=filled[0].get("Start Location", ""),
+                mileage_end=filled[0].get("End Location", ""),
+                mileage_miles=filled[0].get("Miles", ""),
+                mileage_rate=_saved("Mileage Rate"),
+                parts=st.session_state.get(prefix + "parts", ""),
+                fuel=st.session_state.get(prefix + "fuel", ""),
+                other_reimb=st.session_state.get(prefix + "other_reimb", ""),
+                comments=st.session_state.get(prefix + "comments", ""),
+                signature=st.session_state.get(prefix + "signature", ""),
+                signature_date=st.session_state.get(prefix + "sig_date"),
+                initials=initials if initials is not None else st.session_state.get(prefix + "initials", ""),
+                today=today,
+            )
         return build_timesheet_record(
             employee,
             week,
             day_values=day_values,
-            mileage_start=st.session_state.get(prefix + "miles_start", ""),
-            mileage_end=st.session_state.get(prefix + "miles_end", ""),
-            mileage_miles=st.session_state.get(prefix + "miles", ""),
-            mileage_rate=st.session_state.get(prefix + "rate", ""),
+            mileage_trips=trips,
             parts=st.session_state.get(prefix + "parts", ""),
             fuel=st.session_state.get(prefix + "fuel", ""),
             other_reimb=st.session_state.get(prefix + "other_reimb", ""),

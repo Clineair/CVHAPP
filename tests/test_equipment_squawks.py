@@ -23,7 +23,7 @@ def _exec_equipment_helpers():
         "OFFICIAL_EQUIPMENT_NAMES", "REGISTRATION_EXPIRE_COL", "ANNUAL_MAINT_COL",
         "TONNAGE_APPLIES_COL", "TONNAGE_EXPIRE_COL", "TONNAGE_DEFAULT_UNITS", "DATE_STATUS_COLORS",
         "IFTA_UNITS", "DRIVERS", "EMPLOYEES", "IFTA_TRIPS_SHEET_TITLE", "IFTA_FUEL_SHEET_TITLE", "IFTA_TRIPS_COLUMNS", "IFTA_FUEL_COLUMNS", "IFTA_RECEIPT_COLUMN", "IFTA_DEFAULT_JURISDICTION", "IFTA_JURISDICTIONS",
-        "DOM_AIRCRAFT", "DOM_ACTION_ANNUAL", "YEARLY_ITEMS_SHEET_TITLE", "YEARLY_ITEMS_COLUMNS", "YEARLY_ITEM_GROUPS", "TIME_OFF_SHEET_TITLE", "TIME_OFF_COLUMNS", "TIME_OFF_TYPES", "TIME_OFF_TYPE_FULL", "TIME_OFF_TYPE_PARTIAL", "TIME_OFF_TYPE_VACATION", "TIME_OFF_STATUS_ACTIVE", "TIME_OFF_STATUS_CANCELLED", "TIME_OFF_ACTION_CREATE", "TIME_OFF_ACTION_CANCEL", "TIME_OFF_MAX_PAST_DAYS", "TIME_OFF_MAX_FUTURE_DAYS", "TIME_OFF_MAX_SPAN_DAYS", "TIMESHEET_EMPLOYEES", "TIMESHEET_SHEET_TITLE", "TIMESHEET_DAYS", "TIMESHEET_DAY_FIELDS", "TIMESHEET_MILEAGE_RATE_DEFAULT", "TIMESHEET_EMAIL_TO",
+        "DOM_AIRCRAFT", "DOM_ACTION_ANNUAL", "YEARLY_ITEMS_SHEET_TITLE", "YEARLY_ITEMS_COLUMNS", "YEARLY_ITEM_GROUPS", "TIME_OFF_SHEET_TITLE", "TIME_OFF_COLUMNS", "TIME_OFF_TYPES", "TIME_OFF_TYPE_FULL", "TIME_OFF_TYPE_PARTIAL", "TIME_OFF_TYPE_VACATION", "TIME_OFF_STATUS_ACTIVE", "TIME_OFF_STATUS_CANCELLED", "TIME_OFF_ACTION_CREATE", "TIME_OFF_ACTION_CANCEL", "TIME_OFF_MAX_PAST_DAYS", "TIME_OFF_MAX_FUTURE_DAYS", "TIME_OFF_MAX_SPAN_DAYS", "TIMESHEET_EMPLOYEES", "TIMESHEET_SHEET_TITLE", "TIMESHEET_DAYS", "TIMESHEET_DAY_FIELDS", "TIMESHEET_EMAIL_TO", "TIMESHEET_IRS_BUSINESS_MILEAGE_RATES", "TIMESHEET_IRS_MILEAGE_RATES_START", "TIMESHEET_IRS_MILEAGE_RATES_END", "TIMESHEET_IRS_MILEAGE_SOURCE_URL", "TIMESHEET_MILEAGE_SHEET_TITLE", "TIMESHEET_MILEAGE_COLUMNS", "TIMESHEET_MILEAGE_SOURCE_IRS", "TIMESHEET_MILEAGE_SOURCE_COMPANY", "TIMESHEET_MILEAGE_SOURCE_SAVED",
         "ANTHONY_TIMESHEET_EMPLOYEE", "ANTHONY_TIMESHEET_SHEET_TITLE", "ANTHONY_TIMESHEET_TEMPLATE", "ANTHONY_TIMESHEET_DAYS", "ANTHONY_TIMESHEET_DAY_FIELDS", "ANTHONY_TIMESHEET_GRID_ROWS", "ANTHONY_TIMESHEET_WEEK_ROWS", "ANTHONY_TIMESHEET_NUMERIC_FIELDS",
         "PARTS", "CORE_FACTORS", "PART_FACTORS", "PART_STOPS", "CONFIG_FIELDS",
         "ALL_FACTOR_KEYS", "ALL_STOP_KEYS", "FRAT_COLUMNS",
@@ -88,7 +88,15 @@ def _exec_equipment_helpers():
         "anthony_timesheet_pdf_filename", "anthony_timesheet_xlsx_filename",
         "build_anthony_timesheet_xlsx", "build_anthony_timesheet_pdf",
         "timesheet_day_column", "timesheet_columns", "timesheet_parse_number",
-        "timesheet_format_hours", "timesheet_format_money", "timesheet_format_rate", "timesheet_mileage_amount",
+        "timesheet_format_hours", "timesheet_format_money", "timesheet_format_rate", "timesheet_format_mileage_rate", "timesheet_mileage_amount",
+        "timesheet_irs_business_mileage_period", "timesheet_irs_business_mileage_rate",
+        "timesheet_irs_mileage_supported_range_text", "timesheet_irs_mileage_unsupported_reason",
+        "timesheet_mileage_trip_is_blank", "timesheet_structured_mileage_trips",
+        "timesheet_resolve_mileage_trip", "timesheet_summarize_mileage_trips",
+        "timesheet_mileage_help_caption", "ensure_timesheet_mileage_worksheet",
+        "load_timesheet_mileage_records_readonly", "attach_timesheet_mileage_trips",
+        "save_timesheet_mileage_trips", "timesheet_mileage_trips_for_display",
+        "timesheet_mileage_rate_line", "timesheet_mileage_source_note",
         "timesheet_reimb_total", "timesheet_content_payload", "timesheet_content_hash",
         "timesheet_initials_valid", "timesheet_initials_match_current",
         "new_timesheet_entry_id", "_timesheet_sort_key", "latest_timesheet_record",
@@ -756,7 +764,9 @@ class PlaceholderAndLogicTests(unittest.TestCase):
         self.assertEqual(s["TIMESHEET_EMAIL_TO"], "patti@centralvalleyheli.com")
         self.assertEqual(s["TIMESHEET_SHEET_TITLE"], "Time Sheets")
         self.assertEqual(s["TIMESHEET_DAYS"], ("Sun", "Mon", "Tues", "Wed", "Thur", "Fri", "Sat"))
-        self.assertEqual(s["TIMESHEET_MILEAGE_RATE_DEFAULT"], 0.655)
+        self.assertEqual(s["timesheet_irs_business_mileage_rate"](date(2026, 6, 30)), 0.725)
+        self.assertEqual(s["timesheet_irs_business_mileage_rate"](date(2026, 7, 1)), 0.76)
+        self.assertEqual(s["TIMESHEET_IRS_MILEAGE_RATES_END"].isoformat(), "2026-12-31")
 
         self.assertEqual(s["timesheet_week_start"](date(2026, 11, 11)), date(2026, 11, 8))
         self.assertEqual(s["timesheet_week_start"](date(2026, 11, 8)), date(2026, 11, 8))
@@ -776,8 +786,12 @@ class PlaceholderAndLogicTests(unittest.TestCase):
         rec = s["build_timesheet_record"](
             "Carl Mulvaney", date(2026, 11, 11),
             day_values=day_values,
-            mileage_start="Fresno", mileage_end="Farm",
-            mileage_miles="20", mileage_rate="",
+            mileage_trips=[{
+                "Travel Date": date(2026, 11, 11),
+                "Start Location": "Fresno",
+                "End Location": "Farm",
+                "Miles": "20",
+            }],
             parts="12.50", fuel="30", other_reimb="",
             comments="Weekly note",
             signature="Carl Mulvaney", signature_date=date(2026, 11, 14),
@@ -789,8 +803,10 @@ class PlaceholderAndLogicTests(unittest.TestCase):
         self.assertEqual(rec["Sun Location"], "Office")
         self.assertEqual(rec["Sun CVH Hours"], "8")
         self.assertEqual(rec["Mon Perdiem Rate"], "60.00")
-        self.assertEqual(rec["Mileage Rate"], "0.655")
-        self.assertEqual(rec["Mileage Amount"], "13.10")
+        self.assertEqual(rec["Mileage Rate"], "0.76")
+        self.assertEqual(rec["Mileage Amount"], "15.20")
+        self.assertEqual(rec["Mileage Trips"][0]["Travel Date"], "2026-11-11")
+        self.assertEqual(rec["Mileage Trips"][0]["Rate Source"], s["TIMESHEET_MILEAGE_SOURCE_IRS"])
         self.assertEqual(rec["Reimb Total"], "42.50")
         self.assertEqual(rec["Status"], "Initialed")
         self.assertTrue(s["timesheet_initials_valid"](rec))
@@ -830,15 +846,18 @@ class PlaceholderAndLogicTests(unittest.TestCase):
         self.assertEqual(doc.page_count, 1)
         extracted = "\n".join(page.get_text() for page in doc)
         doc.close()
-        for label in s["timesheet_template_labels"]():
-            if label == "X 0.?":
-                self.assertTrue("X 0.66" in extracted or "X 0.655" in extracted or "X 0.?" in extracted)
-            else:
-                self.assertIn(label, extracted, label)
+        extracted_one_line = extracted.replace("\n", " ")
+        for label in s["timesheet_template_labels"](rec):
+            self.assertIn(label, extracted_one_line, label)
         self.assertIn("Carl Mulvaney", extracted)
         self.assertIn("2026-11-08", extracted)
+        self.assertIn("2026-11-11", extracted)
         self.assertIn("Initials: CM", extracted)
         self.assertIn("Office", extracted)
+        self.assertIn("0.76", extracted_one_line)
+        self.assertIn("$15.20", extracted_one_line)
+        self.assertNotIn("0.65.5 based on 2023 IRS reimb rate", extracted)
+        self.assertNotIn("X 0.?", extracted)
 
         xlsx = s["build_timesheet_xlsx"](rec)
         Path("/tmp/timesheet_tpl/filled_sample.xlsx").write_bytes(xlsx)
@@ -847,15 +866,177 @@ class PlaceholderAndLogicTests(unittest.TestCase):
         joined = " ".join(str(c.value) for row in ws.iter_rows() for c in row if c.value)
         for label in ("Central Valley Helicopters", "Weekly Time Sheet", "Perdiem Rates -",
                       "$60.00 per day with company paid hotel",
-                      "Personal vechicle usage will be reimbursed at _?_ per mile",
-                      "(0.65.5 based on 2023 IRS reimb rate)",
+                      "Personal vechicle usage will be reimbursed at",
+                      "IRS business rate of $0.76 per mile",
                       "Employee Signature", "Forestry #  work hours", "BNSF # work hours"):
             self.assertIn(label, joined)
+        self.assertNotIn("0.65.5 based on 2023 IRS reimb rate", joined)
+        self.assertNotIn("X 0.?", joined)
         self.assertIn("Carl Mulvaney", ws["B4"].value)
         self.assertIn("2026-11-08", ws["F4"].value)
         self.assertEqual(str(ws["C8"].value), "Office")
         self.assertEqual(str(ws["C9"].value), "8")
         self.assertIn("CM", joined)
+
+
+
+    def test_timesheet_irs_mileage_rates_dates_and_exports(self):
+        from datetime import date, datetime
+        from zoneinfo import ZoneInfo
+        import fitz
+        from openpyxl import load_workbook
+        from io import BytesIO
+        s = self.s
+        self.assertEqual(s["TIMESHEET_IRS_MILEAGE_SOURCE_URL"], "https://www.irs.gov/tax-professionals/standard-mileage-rates")
+        self.assertEqual(s["timesheet_irs_business_mileage_rate"](date(2026, 6, 30)), 0.725)
+        self.assertEqual(s["timesheet_irs_business_mileage_rate"](date(2026, 7, 1)), 0.76)
+        self.assertEqual(s["timesheet_irs_business_mileage_rate"](date(2025, 12, 31)), 0.70)
+        self.assertEqual(s["timesheet_irs_business_mileage_rate"](date(2024, 6, 1)), 0.67)
+        self.assertEqual(s["timesheet_irs_business_mileage_rate"](date(2023, 7, 4)), 0.655)
+        self.assertIsNone(s["timesheet_irs_business_mileage_rate"](date(2027, 1, 1)))
+        self.assertIsNone(s["timesheet_irs_business_mileage_rate"](date(2010, 12, 31)))
+        self.assertEqual(s["timesheet_mileage_amount"]("100", "0.76"), 76.00)
+        self.assertEqual(s["timesheet_mileage_amount"]("100", "0.725"), 72.50)
+        self.assertEqual(s["timesheet_format_mileage_rate"](0.76), "0.76")
+        self.assertEqual(s["timesheet_format_mileage_rate"](0.725), "0.725")
+        self.assertEqual(s["timesheet_format_mileage_rate"](0.70), "0.70")
+
+        when = datetime(2026, 7, 2, 9, 0, tzinfo=ZoneInfo("America/Los_Angeles"))
+        week = date(2026, 6, 28)  # Sunday; week spans the July 1 rate change
+        rec = s["build_timesheet_record"](
+            "Gary Grant", week,
+            mileage_trips=[
+                {"Travel Date": date(2026, 6, 30), "Start Location": "Base", "End Location": "Field", "Miles": "100"},
+                {"Travel Date": date(2026, 7, 1), "Start Location": "Field", "End Location": "Base", "Miles": "100"},
+            ],
+            initials="GG",
+            when=when, entry_id="TS-MILE-1", today=date(2026, 7, 2),
+        )
+        self.assertEqual(rec["Week Of"], "2026-06-28")
+        self.assertEqual(rec["Mileage Trips"][0]["Rate"], "0.725")
+        self.assertEqual(rec["Mileage Trips"][0]["Amount"], "72.50")
+        self.assertEqual(rec["Mileage Trips"][0]["Rate Source"], "IRS")
+        self.assertEqual(rec["Mileage Trips"][1]["Rate"], "0.76")
+        self.assertEqual(rec["Mileage Trips"][1]["Amount"], "76.00")
+        self.assertEqual(rec["Mileage Amount"], "148.50")
+        self.assertEqual(rec["Mileage Miles"], "200")
+        self.assertEqual(rec["Mileage Rate"], "")  # mixed rates
+        self.assertTrue(s["timesheet_initials_valid"](rec))
+        # Using Sunday instead of the travel date would be wrong on this week.
+        self.assertNotEqual(s["timesheet_irs_business_mileage_rate"](week), 0.76)
+
+        changed_date = s["build_timesheet_record"](
+            "Gary Grant", week,
+            mileage_trips=[
+                {"Travel Date": date(2026, 6, 30), "Start Location": "Base", "End Location": "Field", "Miles": "100"},
+                {"Travel Date": date(2026, 7, 2), "Start Location": "Field", "End Location": "Base", "Miles": "100"},
+            ],
+            initials="GG",
+            when=when, entry_id="TS-MILE-1", today=date(2026, 7, 2),
+        )
+        self.assertFalse(s["timesheet_initials_match_current"](rec, changed_date))
+        changed_rate = s["build_timesheet_record"](
+            "Gary Grant", week,
+            mileage_trips=[
+                {"Travel Date": date(2026, 6, 30), "Start Location": "Base", "End Location": "Field", "Miles": "100"},
+                {
+                    "Travel Date": date(2026, 7, 1), "Start Location": "Field", "End Location": "Base",
+                    "Miles": "100", "Company Override": "0.80",
+                },
+            ],
+            initials="GG",
+            when=when, entry_id="TS-MILE-1", today=date(2026, 7, 2),
+        )
+        self.assertEqual(changed_rate["Mileage Trips"][1]["Rate"], "0.80")
+        self.assertEqual(changed_rate["Mileage Trips"][1]["Rate Source"], s["TIMESHEET_MILEAGE_SOURCE_COMPANY"])
+        self.assertEqual(changed_rate["Mileage Amount"], "152.50")
+        self.assertFalse(s["timesheet_initials_match_current"](rec, changed_rate))
+
+        with self.assertRaisesRegex(ValueError, "travel date"):
+            s["build_timesheet_record"](
+                "Gary Grant", week, mileage_miles="100", mileage_rate="", today=date(2026, 7, 2),
+            )
+        with self.assertRaisesRegex(ValueError, "not invented|not available"):
+            s["build_timesheet_record"](
+                "Gary Grant", date(2027, 1, 3),
+                mileage_trips=[{"Travel Date": date(2027, 1, 4), "Miles": "10"}],
+                today=date(2027, 1, 4),
+            )
+        # Company override is allowed when no IRS rate has been published yet.
+        future = s["build_timesheet_record"](
+            "Gary Grant", date(2027, 1, 3),
+            mileage_trips=[{"Travel Date": date(2027, 1, 4), "Miles": "10", "Company Override": "0.80"}],
+            today=date(2027, 1, 4),
+        )
+        self.assertEqual(future["Mileage Rate"], "0.80")
+        self.assertEqual(future["Mileage Trips"][0]["Rate Source"], s["TIMESHEET_MILEAGE_SOURCE_COMPANY"])
+
+        # Historic saved records keep their stored rate/amount and hash without a travel date.
+        legacy_when = datetime(2023, 8, 10, 8, 0, tzinfo=ZoneInfo("America/Los_Angeles"))
+        legacy = s["build_timesheet_record"](
+            "Carl Mulvaney", date(2023, 8, 6),
+            mileage_start="Fresno", mileage_end="Farm",
+            mileage_miles="20", mileage_rate="0.655",
+            initials="CM",
+            when=legacy_when, entry_id="TS-OLD-1", today=date(2023, 8, 10),
+        )
+        self.assertEqual(legacy["Mileage Rate"], "0.655")
+        self.assertEqual(legacy["Mileage Amount"], "13.10")
+        self.assertEqual(legacy.get("Mileage Trips"), [])
+        self.assertTrue(s["timesheet_initials_valid"](legacy))
+        self.assertTrue(s["timesheet_initials_match_current"](legacy, dict(legacy)))
+        book = FakeSpreadsheet()
+        source = s["save_timesheet_record"](legacy, spreadsheet=book)
+        self.assertEqual(source, "Google Sheets (Time Sheets)")
+        self.assertNotIn("Time Sheet Mileage", book.sheets)
+        header = list(book.sheets["Time Sheets"].rows[0])
+        self.assertIn("Mileage Rate", header)
+        self.assertNotIn("Mileage Trips", header)
+        loaded = s["load_timesheet_records_readonly"](book)
+        self.assertEqual(len(loaded), 1)
+        self.assertEqual(loaded[0]["Mileage Amount"], "13.10")
+        self.assertEqual(loaded[0]["Mileage Rate"], "0.655")
+        self.assertTrue(s["timesheet_initials_valid"](loaded[0]))
+        # Existing Time Sheets header is not rewritten when a later dated trip is saved.
+        dated = s["build_timesheet_record"](
+            "Carl Mulvaney", date(2026, 11, 8),
+            mileage_trips=[{"Travel Date": date(2026, 11, 11), "Miles": "100", "Start Location": "A", "End Location": "B"}],
+            initials="CM",
+            when=when, entry_id="TS-NEW-1", today=date(2026, 11, 11),
+        )
+        self.assertEqual(dated["Mileage Amount"], "76.00")
+        dest = s["save_timesheet_record"](dated, spreadsheet=book)
+        self.assertIn("Time Sheet Mileage", dest)
+        self.assertEqual(book.sheets["Time Sheets"].rows[0], header)
+        reloaded = s["load_timesheet_records_readonly"](book)
+        new_row = [r for r in reloaded if r["Entry ID"] == "TS-NEW-1"][0]
+        old_row = [r for r in reloaded if r["Entry ID"] == "TS-OLD-1"][0]
+        self.assertEqual(new_row["Mileage Trips"][0]["Travel Date"], "2026-11-11")
+        self.assertEqual(new_row["Mileage Trips"][0]["Amount"], "76.00")
+        self.assertTrue(s["timesheet_initials_valid"](old_row))
+        self.assertEqual(old_row["Mileage Amount"], "13.10")
+        self.assertFalse(s["timesheet_structured_mileage_trips"](old_row))
+
+        pdf = s["build_timesheet_pdf"](rec)
+        text = " ".join(page.get_text() for page in fitz.open(stream=pdf, filetype="pdf"))
+        self.assertIn("2026-06-30", text)
+        self.assertIn("2026-07-01", text)
+        self.assertIn("0.725", text)
+        self.assertIn("72.50", text)
+        self.assertIn("0.76", text)
+        self.assertIn("76.00", text)
+        self.assertIn("148.50", text)
+        self.assertIn("later rates are not invented", text)
+        self.assertNotIn("0.65.5 based on 2023 IRS reimb rate", text)
+        xlsx = s["build_timesheet_xlsx"](rec)
+        joined = " ".join(str(c.value) for row in load_workbook(BytesIO(xlsx)).active.iter_rows() for c in row if c.value)
+        self.assertIn("2026-06-30", joined)
+        self.assertIn("2026-07-01", joined)
+        self.assertIn("72.50", joined)
+        self.assertIn("76.00", joined)
+        self.assertIn("148.50", joined)
+        self.assertNotIn("0.65.5 based on 2023 IRS reimb rate", joined)
+        self.assertFalse(s["timesheet_email_can_send"](rec, configured=True))
 
 
     def test_anthony_timesheet_separate_form_initials_and_exports(self):
