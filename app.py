@@ -383,6 +383,27 @@ EMPLOYEES = [
     "Gary Grant",
     "Skylar Fingerle",
 ]
+# Weekly time sheet is only for these employees, in Ron's listed order.
+# Ron Cline and Anthony Root do not get a time sheet.
+TIMESHEET_EMPLOYEES = [
+    "Carl Mulvaney",
+    "Barry Markham",
+    "Robert Rackley",
+    "Gary Grant",
+    "Skylar Fingerle",
+]
+TIMESHEET_SHEET_TITLE = "Time Sheets"
+TIMESHEET_DAYS = ("Sun", "Mon", "Tues", "Wed", "Thur", "Fri", "Sat")
+TIMESHEET_DAY_FIELDS = (
+    ("Location", "Location"),
+    ("CVH Hours", "CVH # work hours"),
+    ("Forestry Hours", "Forestry #  work hours"),
+    ("BNSF Hours", "BNSF # work hours"),
+    ("Perdiem Rate", "Perdiem Rate"),
+    ("Other", "Other"),
+)
+TIMESHEET_MILEAGE_RATE_DEFAULT = 0.655
+TIMESHEET_EMAIL_TO = "patti@centralvalleyheli.com"
 TIME_OFF_SHEET_TITLE = "Time Off"
 TIME_OFF_COLUMNS = [
     "Timestamp", "Entry ID", "Action", "Employee", "Type",
@@ -2535,8 +2556,891 @@ def show_time_off_calendar_page():
                 st.rerun()
 
 
+def employee_has_timesheet(name):
+    """True when this employee gets the weekly time sheet (not Ron or Anthony)."""
+    return _cell(name) in list(TIMESHEET_EMPLOYEES)
+
+
+def timesheet_week_start(value, today=None):
+    """Sunday that starts the week containing value, matching the form's Week of (Sunday's Date)."""
+    day = parse_equipment_date(value)
+    if day is None:
+        today = today or datetime.now(ZoneInfo("America/Los_Angeles")).date()
+        day = today
+    return day - timedelta(days=(day.weekday() + 1) % 7)
+
+
+def timesheet_day_dates(week_of, today=None):
+    start = timesheet_week_start(week_of, today=today)
+    return [start + timedelta(days=i) for i in range(7)]
+
+
+def timesheet_day_column(day_label, field):
+    return _cell(day_label) + " " + _cell(field)
+
+
+def timesheet_columns():
+    cols = ["Timestamp", "Entry ID", "Action", "Employee", "Week Of"]
+    for day in TIMESHEET_DAYS:
+        for field, _label in TIMESHEET_DAY_FIELDS:
+            cols.append(timesheet_day_column(day, field))
+    cols.extend([
+        "Mileage Start", "Mileage End", "Mileage Miles", "Mileage Rate", "Mileage Amount",
+        "Parts", "Fuel", "Other Reimb", "Reimb Total",
+        "Comments", "Signature", "Signature Date", "Initials", "Content Hash", "Status",
+    ])
+    return cols
+
+
+def timesheet_parse_number(value):
+    text = _cell(value).replace(",", "").replace("$", "").strip()
+    if not text:
+        return None
+    try:
+        return float(text)
+    except ValueError:
+        return None
+
+
+def timesheet_format_hours(value):
+    number = timesheet_parse_number(value)
+    if number is None:
+        return ""
+    if abs(number - round(number)) < 1e-9:
+        return str(int(round(number)))
+    return ("%.2f" % number).rstrip("0").rstrip(".")
+
+
+def timesheet_format_money(value):
+    number = timesheet_parse_number(value)
+    if number is None:
+        return ""
+    return "%.2f" % number
+
+
+def timesheet_format_rate(value):
+    number = timesheet_parse_number(value)
+    if number is None:
+        return ""
+    return ("%.4f" % number).rstrip("0").rstrip(".")
+
+
+def timesheet_mileage_amount(miles, rate):
+    miles_n = timesheet_parse_number(miles)
+    rate_n = timesheet_parse_number(rate)
+    if miles_n is None or rate_n is None:
+        return None
+    return round(miles_n * rate_n, 2)
+
+
+def timesheet_reimb_total(parts, fuel, other):
+    total = 0.0
+    any_val = False
+    for value in (parts, fuel, other):
+        number = timesheet_parse_number(value)
+        if number is not None:
+            total += number
+            any_val = True
+    if not any_val:
+        return None
+    return round(total, 2)
+
+
+def timesheet_content_payload(record):
+    """Fields that initials lock; initials/signature metadata are excluded."""
+    days = {}
+    for day in TIMESHEET_DAYS:
+        days[day] = {
+            field: _cell((record or {}).get(timesheet_day_column(day, field)))
+            for field, _label in TIMESHEET_DAY_FIELDS
+        }
+    return {
+        "Employee": _cell((record or {}).get("Employee")),
+        "Week Of": format_equipment_date((record or {}).get("Week Of")),
+        "Days": days,
+        "Mileage Start": _cell((record or {}).get("Mileage Start")),
+        "Mileage End": _cell((record or {}).get("Mileage End")),
+        "Mileage Miles": timesheet_format_hours((record or {}).get("Mileage Miles")),
+        "Mileage Rate": timesheet_format_rate((record or {}).get("Mileage Rate")),
+        "Mileage Amount": timesheet_format_money((record or {}).get("Mileage Amount")),
+        "Parts": timesheet_format_money((record or {}).get("Parts")),
+        "Fuel": timesheet_format_money((record or {}).get("Fuel")),
+        "Other Reimb": timesheet_format_money((record or {}).get("Other Reimb")),
+        "Reimb Total": timesheet_format_money((record or {}).get("Reimb Total")),
+        "Comments": _cell((record or {}).get("Comments")),
+        "Signature": _cell((record or {}).get("Signature")),
+        "Signature Date": format_equipment_date((record or {}).get("Signature Date")),
+    }
+
+
+def timesheet_content_hash(record):
+    import hashlib
+    import json
+    body = json.dumps(timesheet_content_payload(record), sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(body.encode("utf-8")).hexdigest()
+
+
+def timesheet_initials_valid(record):
+    if not _cell((record or {}).get("Initials")):
+        return False
+    stored = _cell((record or {}).get("Content Hash"))
+    if not stored:
+        return False
+    return stored == timesheet_content_hash(record)
+
+
+def timesheet_initials_match_current(saved, current):
+    """True when saved initials still cover the current time-sheet content."""
+    if not saved or not timesheet_initials_valid(saved) or current is None:
+        return False
+    return timesheet_content_hash(saved) == timesheet_content_hash(current)
+
+
+def new_timesheet_entry_id(when=None):
+    when = when or datetime.now(ZoneInfo("America/Los_Angeles"))
+    return "TS-" + when.strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:4]
+
+
+def _timesheet_sort_key(record):
+    stamp = _cell((record or {}).get("Timestamp"))
+    stamp_dt = datetime.min
+    if stamp:
+        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y/%m/%d %H:%M:%S", "%m/%d/%Y %H:%M:%S"):
+            try:
+                stamp_dt = datetime.strptime(stamp, fmt)
+                break
+            except ValueError:
+                continue
+    return (stamp_dt, _cell((record or {}).get("Entry ID")))
+
+
+def latest_timesheet_record(records, employee, week_of, today=None):
+    employee = _cell(employee)
+    week = format_equipment_date(timesheet_week_start(week_of, today=today))
+    rows = [
+        r for r in (records or [])
+        if _cell(r.get("Employee")) == employee and format_equipment_date(r.get("Week Of")) == week
+    ]
+    if not rows:
+        return None
+    return max(rows, key=_timesheet_sort_key)
+
+
+def build_timesheet_record(
+    employee,
+    week_of,
+    day_values=None,
+    mileage_start="",
+    mileage_end="",
+    mileage_miles="",
+    mileage_rate="",
+    parts="",
+    fuel="",
+    other_reimb="",
+    comments="",
+    signature="",
+    signature_date=None,
+    initials="",
+    when=None,
+    entry_id=None,
+    today=None,
+):
+    employee = _cell(employee)
+    if employee not in list(TIMESHEET_EMPLOYEES):
+        raise ValueError("This employee does not have a time sheet")
+    week = timesheet_week_start(week_of, today=today)
+    if parse_equipment_date(week_of) is None:
+        raise ValueError("Week of (Sunday's Date) is required")
+    day_values = day_values or {}
+    cleaned_days = {}
+    for day in TIMESHEET_DAYS:
+        row = dict(day_values.get(day) or {})
+        for field, _label in TIMESHEET_DAY_FIELDS:
+            raw = row.get(field, "")
+            if field in {"CVH Hours", "Forestry Hours", "BNSF Hours", "Perdiem Rate"}:
+                if _cell(raw) and timesheet_parse_number(raw) is None:
+                    raise ValueError(day + " " + field + " must be a number")
+                number = timesheet_parse_number(raw)
+                if number is not None and number < 0:
+                    raise ValueError(day + " " + field + " cannot be negative")
+                row[field] = timesheet_format_hours(raw) if field != "Perdiem Rate" else timesheet_format_money(raw)
+            else:
+                row[field] = _cell(raw)
+        cleaned_days[day] = row
+    for label, value in (
+        ("# of miles", mileage_miles),
+        ("Mileage rate", mileage_rate),
+        ("Parts", parts),
+        ("Fuel", fuel),
+        ("Other reimbursement", other_reimb),
+    ):
+        if _cell(value) and timesheet_parse_number(value) is None:
+            raise ValueError(label + " must be a number")
+        number = timesheet_parse_number(value)
+        if number is not None and number < 0:
+            raise ValueError(label + " cannot be negative")
+    rate = mileage_rate if _cell(mileage_rate) else ""
+    amount = timesheet_mileage_amount(mileage_miles, rate if rate else TIMESHEET_MILEAGE_RATE_DEFAULT)
+    if not _cell(mileage_miles):
+        amount = None
+    elif _cell(mileage_miles) and not _cell(rate):
+        rate = timesheet_format_rate(TIMESHEET_MILEAGE_RATE_DEFAULT)
+        amount = timesheet_mileage_amount(mileage_miles, rate)
+    reimb = timesheet_reimb_total(parts, fuel, other_reimb)
+    when = when or datetime.now(ZoneInfo("America/Los_Angeles"))
+    record = {
+        "Timestamp": when.strftime("%Y-%m-%d %H:%M:%S"),
+        "Entry ID": _cell(entry_id) or new_timesheet_entry_id(when=when),
+        "Action": "Save",
+        "Employee": employee,
+        "Week Of": format_equipment_date(week),
+        "Mileage Start": _cell(mileage_start),
+        "Mileage End": _cell(mileage_end),
+        "Mileage Miles": timesheet_format_hours(mileage_miles),
+        "Mileage Rate": timesheet_format_rate(rate),
+        "Mileage Amount": timesheet_format_money(amount),
+        "Parts": timesheet_format_money(parts),
+        "Fuel": timesheet_format_money(fuel),
+        "Other Reimb": timesheet_format_money(other_reimb),
+        "Reimb Total": timesheet_format_money(reimb),
+        "Comments": _cell(comments),
+        "Signature": _cell(signature),
+        "Signature Date": format_equipment_date(signature_date),
+        "Initials": _cell(initials),
+        "Status": "Saved",
+    }
+    for day in TIMESHEET_DAYS:
+        for field, _label in TIMESHEET_DAY_FIELDS:
+            record[timesheet_day_column(day, field)] = cleaned_days[day].get(field, "")
+    if record["Initials"]:
+        record["Content Hash"] = timesheet_content_hash(record)
+        record["Status"] = "Initialed"
+    else:
+        record["Content Hash"] = ""
+    return record
+
+
+def ensure_timesheets_worksheet(spreadsheet):
+    """Create the Time Sheets tab with a header when it is missing.
+
+    Never alters an existing header, and never writes FRAT or other tabs.
+    """
+    cols = list(timesheet_columns())
+    ws = _worksheet_or_none(spreadsheet, TIMESHEET_SHEET_TITLE)
+    created = False
+    if ws is None:
+        ws = spreadsheet.add_worksheet(title=TIMESHEET_SHEET_TITLE, rows=400, cols=max(len(cols), 16))
+        ws.append_row(cols, value_input_option="RAW")
+        created = True
+    else:
+        header = [_cell(c) for c in ws.row_values(1)]
+        if not header:
+            ws.append_row(cols, value_input_option="RAW")
+            created = True
+    return ws, created
+
+
+def load_timesheet_records(spreadsheet=None):
+    ws, _created = ensure_timesheets_worksheet(spreadsheet or _gsheets_spreadsheet())
+    return records_from_worksheet(ws, timesheet_columns())
+
+
+def load_timesheet_records_readonly(spreadsheet=None):
+    """Read the Time Sheets tab without creating or changing it."""
+    ws = _worksheet_or_none(spreadsheet or _gsheets_spreadsheet(), TIMESHEET_SHEET_TITLE)
+    if ws is None:
+        return []
+    header = [_cell(c) for c in ws.row_values(1)]
+    if not header:
+        return []
+    return records_from_worksheet(ws, timesheet_columns())
+
+
+def save_timesheet_record(record, spreadsheet=None):
+    ws, _created = ensure_timesheets_worksheet(spreadsheet or _gsheets_spreadsheet())
+    header = [_cell(c) for c in ws.row_values(1)]
+    if not header:
+        raise RuntimeError("Time Sheets worksheet has no header")
+    ws.append_row([str(record.get(c, "")) for c in header], value_input_option="RAW")
+    return "Google Sheets (Time Sheets)"
+
+
+def timesheet_gmail_configured(secrets=None):
+    """True only when dedicated Gmail send secrets exist. Never reads secret values."""
+    source = secrets
+    if source is None:
+        try:
+            source = st.secrets
+        except Exception:
+            return False
+    try:
+        if "gmail" in source:
+            return True
+        if "smtp" in source:
+            return True
+        if hasattr(source, "get") and (source.get("gmail") is not None or source.get("smtp") is not None):
+            return True
+    except Exception:
+        return False
+    return False
+
+
+def timesheet_email_can_send(record, configured=None):
+    """Send stays off until Gmail is configured AND the shared app is not unauthenticated.
+
+    CVHAPP has no user login, so this never returns True in the current app.
+    """
+    return False
+
+
+def timesheet_email_block_reason(record=None, configured=None):
+    if configured is None:
+        configured = timesheet_gmail_configured()
+    if not configured:
+        return (
+            "Email is not enabled. Sending through Ron's Gmail needs server-side Gmail "
+            "setup in Streamlit secrets and is not available yet. This button does not send mail."
+        )
+    return (
+        "Email is not enabled. This app has no user login, so send-as-Ron is not turned on."
+    )
+
+
+def timesheet_bundle_path(filename):
+    """Find a bundled time-sheet template next to the app or in a parent folder."""
+    import pathlib
+    roots = []
+    file_global = globals().get("__file__")
+    if file_global:
+        roots.append(pathlib.Path(file_global).resolve().parent)
+    here = pathlib.Path.cwd().resolve()
+    for _ in range(6):
+        roots.append(here)
+        if here.parent == here:
+            break
+        here = here.parent
+    seen = set()
+    for root in roots:
+        root = root.resolve()
+        if root in seen:
+            continue
+        seen.add(root)
+        path = root / filename
+        if path.is_file():
+            return path
+    return (roots[0] if roots else pathlib.Path(".")) / filename
+
+
+def timesheet_template_labels():
+    return [
+        "Central Valley Helicopters",
+        "Weekly Time Sheet",
+        "Name:",
+        "Week of :",
+        "(Sunday's Date)",
+        "Sun", "Mon", "Tues", "Wed", "Thur", "Fri", "Sat",
+        "Location",
+        "CVH # work hours",
+        "Forestry #  work hours",
+        "BNSF # work hours",
+        "Perdiem Rate",
+        "Other",
+        "Perdiem Rates -",
+        "$60.00 per day with company paid hotel",
+        "$100.00 per day without company paid hotel",
+        "Mileage Reimbursement  (prior approval required)",
+        "Personal vechicle usage will be reimbursed at _?_ per mile - no company credit card used for gas",
+        "Start Location;",
+        "End Location:",
+        "# of miles",
+        "X 0.?",
+        "(0.65.5 based on 2023 IRS reimb rate)",
+        "Other Reimbursements",
+        "Receipts must be attached for reimbursement with description on receipt",
+        "Parts",
+        "Fuel",
+        "Total",
+        "Comments:",
+        "Employee Signature",
+        "Date",
+    ]
+
+
+def build_timesheet_xlsx(record):
+    """Fill the official weekly time-sheet template workbook."""
+    import io
+    from copy import copy
+    from openpyxl import load_workbook
+    from openpyxl.styles import Font, Alignment, Border, Side
+
+    path = timesheet_bundle_path("timesheet_template.xlsx")
+    wb = load_workbook(path)
+    ws = wb[wb.sheetnames[0]]
+    employee = _cell(record.get("Employee"))
+    week = format_equipment_date(record.get("Week Of"))
+    ws["B4"] = "Name: " + employee
+    ws["F4"] = "Week of : " + week
+    days = list(TIMESHEET_DAYS)
+    for i, day in enumerate(days):
+        col = 3 + i  # C=3
+        ws.cell(8, col, _cell(record.get(timesheet_day_column(day, "Location"))))
+        ws.cell(9, col, _cell(record.get(timesheet_day_column(day, "CVH Hours"))))
+        ws.cell(10, col, _cell(record.get(timesheet_day_column(day, "Forestry Hours"))))
+        ws.cell(11, col, _cell(record.get(timesheet_day_column(day, "BNSF Hours"))))
+        ws.cell(12, col, _cell(record.get(timesheet_day_column(day, "Perdiem Rate"))))
+        ws.cell(13, col, _cell(record.get(timesheet_day_column(day, "Other"))))
+    start = _cell(record.get("Mileage Start"))
+    end = _cell(record.get("Mileage End"))
+    ws["B23"] = "Start Location; " + (start or "_________________________")
+    ws["B24"] = "End Location: " + (end or "__________________________")
+    miles = _cell(record.get("Mileage Miles"))
+    rate = _cell(record.get("Mileage Rate")) or timesheet_format_rate(TIMESHEET_MILEAGE_RATE_DEFAULT)
+    amount = _cell(record.get("Mileage Amount"))
+    if miles:
+        # Put miles in C25 if empty label is on B25
+        ws["C25"] = miles
+        ws["D25"] = "X " + rate + " ="
+        ws["E25"] = "$" + amount if amount else "$______________"
+    else:
+        ws["D25"] = "X " + (rate or "0.?") + " ="
+        ws["E25"] = "$" + amount if amount else "$______________"
+    def _money_cell(coord, value):
+        ws[coord] = "$" + value if _cell(value) else "$"
+    _money_cell("C31", record.get("Parts"))
+    _money_cell("C32", record.get("Fuel"))
+    _money_cell("C33", record.get("Other Reimb"))
+    _money_cell("C35", record.get("Reimb Total"))
+    comments = _cell(record.get("Comments"))
+    ws["B37"] = "Comments: " + (comments or "__________________________________________________________________________________")
+    sig = _cell(record.get("Signature"))
+    initials = _cell(record.get("Initials"))
+    sig_line = "Employee Signature"
+    if sig:
+        sig_line += "  " + sig
+    if initials:
+        sig_line += "    Initials: " + initials
+    ws["B42"] = sig_line
+    date_text = format_equipment_date(record.get("Signature Date"))
+    ws["F42"] = "Date" + (("  " + date_text) if date_text else "")
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+def timesheet_pdf_filename(record):
+    employee = _cell(record.get("Employee")).replace(" ", "_") or "employee"
+    week = format_equipment_date(record.get("Week Of")) or "week"
+    return "CVH_Time_Sheet_" + employee + "_" + week + ".pdf"
+
+
+def timesheet_xlsx_filename(record):
+    employee = _cell(record.get("Employee")).replace(" ", "_") or "employee"
+    week = format_equipment_date(record.get("Week Of")) or "week"
+    return "CVH_Time_Sheet_" + employee + "_" + week + ".xlsx"
+
+
+def build_timesheet_pdf(record, logo_path=None):
+    """One-page letter PDF matching the official weekly time-sheet layout."""
+    import io
+    from reportlab.lib.pagesizes import letter
+    from reportlab.lib.units import inch
+    from reportlab.pdfgen import canvas
+    from reportlab.lib.colors import black, HexColor
+
+    buf = io.BytesIO()
+    c = canvas.Canvas(buf, pagesize=letter)
+    width, height = letter
+    c.setTitle("Weekly Time Sheet — " + _cell(record.get("Employee")))
+    c.setAuthor("Central Valley Helicopters")
+
+    def _s(size, bold=False):
+        c.setFont("Helvetica-Bold" if bold else "Helvetica", size)
+
+    y = height - 0.55 * inch
+    _s(16, True)
+    c.drawCentredString(width / 2, y, "Central Valley Helicopters")
+    y -= 18
+    _s(12, True)
+    c.drawCentredString(width / 2, y, "Weekly Time Sheet")
+    y -= 28
+    _s(10, True)
+    c.drawString(0.6 * inch, y, "Name:  " + _cell(record.get("Employee")))
+    week = format_equipment_date(record.get("Week Of"))
+    c.drawString(4.5 * inch, y, "Week of :  " + week)
+    y -= 12
+    _s(8, False)
+    c.drawString(4.5 * inch, y, "(Sunday's Date)")
+
+    # Grid
+    y -= 16
+    left = 0.55 * inch
+    row_labels = [label for _field, label in TIMESHEET_DAY_FIELDS]
+    col_labels = [""] + list(TIMESHEET_DAYS)
+    col_w = [1.45 * inch] + [0.72 * inch] * 7
+    row_h = [0.28 * inch] + [0.42 * inch] * 6
+    rows = 7
+    cols = 8
+    grid_top = y
+    grid_height = sum(row_h)
+    grid_width = sum(col_w)
+    c.setStrokeColor(black)
+    c.setLineWidth(0.7)
+    # horizontal lines
+    yy = grid_top
+    for r in range(rows + 1):
+        c.line(left, yy, left + grid_width, yy)
+        if r < rows:
+            yy -= row_h[r]
+    xx = left
+    for col in range(cols + 1):
+        c.line(xx, grid_top, xx, grid_top - grid_height)
+        if col < cols:
+            xx += col_w[col]
+
+    dates = timesheet_day_dates(week)
+    _s(8, True)
+    xx = left
+    # header row
+    c.drawCentredString(left + col_w[0] / 2, grid_top - 16, "")
+    xx = left + col_w[0]
+    for i, day in enumerate(TIMESHEET_DAYS):
+        c.drawCentredString(xx + col_w[i + 1] / 2, grid_top - 12, day)
+        _s(6, False)
+        c.drawCentredString(xx + col_w[i + 1] / 2, grid_top - 22, dates[i].strftime("%m/%d"))
+        _s(8, True)
+        xx += col_w[i + 1]
+    # labels and values
+    yy = grid_top - row_h[0]
+    for r, (field, label) in enumerate(TIMESHEET_DAY_FIELDS):
+        _s(6.5, True)
+        # wrap label in first column
+        text_y = yy - 12
+        for line in _timesheet_wrap_label(label, 24):
+            c.drawString(left + 4, text_y, line)
+            text_y -= 9
+        xx = left + col_w[0]
+        _s(7, False)
+        for i, day in enumerate(TIMESHEET_DAYS):
+            val = _cell(record.get(timesheet_day_column(day, field)))
+            if val:
+                c.drawCentredString(xx + col_w[i + 1] / 2, yy - 18, val[:14])
+            xx += col_w[i + 1]
+        yy -= row_h[r + 1]
+
+    y = grid_top - grid_height - 18
+    _s(9, True)
+    c.drawString(left, y, "Perdiem Rates -")
+    _s(8, False)
+    c.drawString(left + 1.15 * inch, y, "$60.00 per day with company paid hotel")
+    y -= 11
+    c.drawString(left + 1.15 * inch, y, "$100.00 per day without company paid hotel")
+
+    y -= 20
+    _s(10, True)
+    c.drawString(left, y, "Mileage Reimbursement  (prior approval required)")
+    y -= 12
+    _s(8, False)
+    c.drawString(
+        left,
+        y,
+        "Personal vechicle usage will be reimbursed at _?_ per mile - no company credit card used for gas",
+    )
+    y -= 14
+    start = _cell(record.get("Mileage Start"))
+    c.drawString(left, y, "Start Location; " + (start or "_________________________"))
+    y -= 13
+    end = _cell(record.get("Mileage End"))
+    c.drawString(left, y, "End Location: " + (end or "__________________________"))
+    y -= 14
+    miles = _cell(record.get("Mileage Miles")) or "______"
+    rate = _cell(record.get("Mileage Rate")) or "0.?"
+    amount = _cell(record.get("Mileage Amount"))
+    money = ("$" + amount) if amount else "$______________"
+    c.drawString(left, y, "# of miles  " + miles + "     X " + rate + " =     " + money)
+    y -= 11
+    c.drawString(left, y, "(0.65.5 based on 2023 IRS reimb rate)")
+
+    y -= 18
+    _s(10, True)
+    c.drawString(left, y, "Other Reimbursements")
+    y -= 11
+    _s(8, False)
+    c.drawString(left, y, "Receipts must be attached for reimbursement with description on receipt")
+    y -= 16
+    for label, key in (("Parts", "Parts"), ("Fuel", "Fuel"), ("Other", "Other Reimb"), ("Total", "Reimb Total")):
+        val = _cell(record.get(key))
+        shown = ("$" + val) if val else "$"
+        _s(9, True if label == "Total" else False)
+        c.drawString(left, y, label)
+        c.drawString(left + 1.15 * inch, y, shown)
+        if label == "Total":
+            c.line(left + 1.15 * inch, y - 2, left + 2.3 * inch, y - 2)
+        y -= 13
+
+    y -= 8
+    _s(9, False)
+    comments = _cell(record.get("Comments"))
+    c.drawString(left, y, "Comments: " + (comments[:110] if comments else "________________________________________________"))
+    y -= 12
+    if comments and len(comments) > 110:
+        c.drawString(left, y, comments[110:220])
+        y -= 14
+    else:
+        c.line(left, y, left + 7.4 * inch, y)
+        y -= 16
+
+    y -= 10
+    _s(8, False)
+    sig = _cell(record.get("Signature"))
+    initials = _cell(record.get("Initials"))
+    c.drawString(left, y + 10, sig)
+    c.line(left, y + 8, left + 2.6 * inch, y + 8)
+    c.drawString(left, y - 4, "Employee Signature")
+    if initials:
+        c.drawString(left + 2.8 * inch, y + 10, "Initials: " + initials)
+    date_text = format_equipment_date(record.get("Signature Date"))
+    c.drawString(4.7 * inch, y + 10, date_text)
+    c.line(4.7 * inch, y + 8, 6.6 * inch, y + 8)
+    c.drawString(4.7 * inch, y - 4, "Date")
+    c.showPage()
+    c.save()
+    return buf.getvalue()
+
+
+def _timesheet_wrap_label(text, width):
+    if len(text) <= width:
+        return [text]
+    words = text.split(" ")
+    lines, cur = [], ""
+    for word in words:
+        trial = word if cur == "" else cur + " " + word
+        if len(trial) <= width:
+            cur = trial
+        else:
+            if cur:
+                lines.append(cur)
+            cur = word
+    if cur:
+        lines.append(cur)
+    return lines or [text]
+
+
+def show_employee_timesheet(employee):
+    """Weekly time sheet for one eligible employee, matching the official form."""
+    st.subheader("Weekly Time Sheet")
+    st.caption("Official Central Valley Helicopters weekly time sheet. Name is filled from this employee page.")
+    today = datetime.now(ZoneInfo("America/Los_Angeles")).date()
+    try:
+        records = load_timesheet_records_readonly()
+        load_ok = True
+    except Exception as exc:
+        records = []
+        load_ok = False
+        st.error("Could not load time sheets: " + str(exc))
+
+    default_week = timesheet_week_start(today, today=today)
+    if st.session_state.get("timesheet_week_" + employee) is None:
+        st.session_state["timesheet_week_" + employee] = default_week
+    nav1, nav2, nav3 = st.columns(3)
+    with nav1:
+        if st.button("Previous week", key="ts_prev_" + employee, use_container_width=True):
+            current = timesheet_week_start(st.session_state.get("timesheet_week_" + employee), today=today)
+            st.session_state["timesheet_week_" + employee] = current - timedelta(days=7)
+            st.session_state["timesheet_gen_" + employee] = int(st.session_state.get("timesheet_gen_" + employee) or 0) + 1
+            st.rerun()
+    with nav3:
+        if st.button("Next week", key="ts_next_" + employee, use_container_width=True):
+            current = timesheet_week_start(st.session_state.get("timesheet_week_" + employee), today=today)
+            st.session_state["timesheet_week_" + employee] = current + timedelta(days=7)
+            st.session_state["timesheet_gen_" + employee] = int(st.session_state.get("timesheet_gen_" + employee) or 0) + 1
+            st.rerun()
+    week_picked = st.date_input(
+        "Week of (Sunday's Date)",
+        value=st.session_state.get("timesheet_week_" + employee) or default_week,
+        format="YYYY-MM-DD",
+        key="ts_week_input_" + employee,
+    )
+    week = timesheet_week_start(week_picked, today=today)
+    if week != week_picked:
+        st.caption("Week of uses Sunday's date. This week starts " + week.isoformat() + ".")
+    if week != st.session_state.get("timesheet_week_" + employee):
+        st.session_state["timesheet_week_" + employee] = week
+        st.session_state["timesheet_gen_" + employee] = int(st.session_state.get("timesheet_gen_" + employee) or 0) + 1
+        st.rerun()
+    with nav2:
+        st.markdown("**Week of " + week.isoformat() + "**")
+
+    saved = latest_timesheet_record(records, employee, week, today=today) if load_ok else None
+    gen = int(st.session_state.get("timesheet_gen_" + employee) or 0)
+    prefix = "ts_" + employee_button_key(employee) + "_" + week.isoformat() + "_" + str(gen) + "_"
+
+    if st.session_state.get("timesheet_saved_" + employee):
+        st.success(st.session_state.pop("timesheet_saved_" + employee))
+
+    def _saved(field, default=""):
+        return (saved or {}).get(field, default) if saved else default
+
+    st.markdown("**Name:** " + employee)
+    dates = timesheet_day_dates(week, today=today)
+    st.caption("Perdiem Rates — $60.00 per day with company paid hotel; $100.00 per day without company paid hotel.")
+    for i, day in enumerate(TIMESHEET_DAYS):
+        title = day + "  " + dates[i].isoformat()
+        with st.expander(title, expanded=(dates[i] == today)):
+            st.text_input("Location", value=_saved(timesheet_day_column(day, "Location")), key=prefix + day + "_Location")
+            st.text_input("CVH # work hours", value=_saved(timesheet_day_column(day, "CVH Hours")), key=prefix + day + "_CVH")
+            st.text_input("Forestry #  work hours", value=_saved(timesheet_day_column(day, "Forestry Hours")), key=prefix + day + "_Forestry")
+            st.text_input("BNSF # work hours", value=_saved(timesheet_day_column(day, "BNSF Hours")), key=prefix + day + "_BNSF")
+            st.text_input("Perdiem Rate", value=_saved(timesheet_day_column(day, "Perdiem Rate")), key=prefix + day + "_Perdiem")
+            st.text_input("Other", value=_saved(timesheet_day_column(day, "Other")), key=prefix + day + "_Other")
+
+    st.markdown("**Mileage Reimbursement  (prior approval required)**")
+    st.caption("Personal vechicle usage will be reimbursed at _?_ per mile - no company credit card used for gas")
+    st.text_input("Start Location", value=_saved("Mileage Start"), key=prefix + "miles_start")
+    st.text_input("End Location", value=_saved("Mileage End"), key=prefix + "miles_end")
+    m1, m2, m3 = st.columns(3)
+    with m1:
+        st.text_input("# of miles", value=_saved("Mileage Miles"), key=prefix + "miles")
+    with m2:
+        default_rate = _saved("Mileage Rate") or timesheet_format_rate(TIMESHEET_MILEAGE_RATE_DEFAULT)
+        st.text_input("Rate per mile", value=default_rate, key=prefix + "rate")
+    live_amount = timesheet_mileage_amount(
+        st.session_state.get(prefix + "miles"),
+        st.session_state.get(prefix + "rate"),
+    )
+    with m3:
+        st.text_input(
+            "Mileage amount $",
+            value=timesheet_format_money(live_amount) if prefix + "miles" in st.session_state else _saved("Mileage Amount"),
+            disabled=True,
+            key=prefix + "amount_show",
+        )
+    st.caption("(0.65.5 based on 2023 IRS reimb rate)")
+
+    st.markdown("**Other Reimbursements**")
+    st.caption("Receipts must be attached for reimbursement with description on receipt")
+    r1, r2, r3, r4 = st.columns(4)
+    with r1:
+        st.text_input("Parts $", value=_saved("Parts"), key=prefix + "parts")
+    with r2:
+        st.text_input("Fuel $", value=_saved("Fuel"), key=prefix + "fuel")
+    with r3:
+        st.text_input("Other $", value=_saved("Other Reimb"), key=prefix + "other_reimb")
+    live_reimb = timesheet_reimb_total(
+        st.session_state.get(prefix + "parts"),
+        st.session_state.get(prefix + "fuel"),
+        st.session_state.get(prefix + "other_reimb"),
+    )
+    with r4:
+        st.text_input(
+            "Total $",
+            value=timesheet_format_money(live_reimb) if prefix + "parts" in st.session_state else _saved("Reimb Total"),
+            disabled=True,
+            key=prefix + "reimb_total_show",
+        )
+
+    st.text_area("Comments", value=_saved("Comments"), key=prefix + "comments")
+    s1, s2, s3 = st.columns(3)
+    with s1:
+        st.text_input("Employee Signature", value=_saved("Signature"), key=prefix + "signature")
+    with s2:
+        sig_date = parse_equipment_date(_saved("Signature Date")) or today
+        st.date_input("Date", value=sig_date, format="YYYY-MM-DD", key=prefix + "sig_date")
+    with s3:
+        st.text_input("Initials (required before email)", value=_saved("Initials"), key=prefix + "initials")
+
+    def _form_record(initials=None):
+        day_values = {}
+        for day in TIMESHEET_DAYS:
+            day_values[day] = {
+                "Location": st.session_state.get(prefix + day + "_Location", ""),
+                "CVH Hours": st.session_state.get(prefix + day + "_CVH", ""),
+                "Forestry Hours": st.session_state.get(prefix + day + "_Forestry", ""),
+                "BNSF Hours": st.session_state.get(prefix + day + "_BNSF", ""),
+                "Perdiem Rate": st.session_state.get(prefix + day + "_Perdiem", ""),
+                "Other": st.session_state.get(prefix + day + "_Other", ""),
+            }
+        return build_timesheet_record(
+            employee,
+            week,
+            day_values=day_values,
+            mileage_start=st.session_state.get(prefix + "miles_start", ""),
+            mileage_end=st.session_state.get(prefix + "miles_end", ""),
+            mileage_miles=st.session_state.get(prefix + "miles", ""),
+            mileage_rate=st.session_state.get(prefix + "rate", ""),
+            parts=st.session_state.get(prefix + "parts", ""),
+            fuel=st.session_state.get(prefix + "fuel", ""),
+            other_reimb=st.session_state.get(prefix + "other_reimb", ""),
+            comments=st.session_state.get(prefix + "comments", ""),
+            signature=st.session_state.get(prefix + "signature", ""),
+            signature_date=st.session_state.get(prefix + "sig_date"),
+            initials=initials if initials is not None else st.session_state.get(prefix + "initials", ""),
+            today=today,
+        )
+
+    try:
+        preview = _form_record()
+        form_ok = True
+        form_error = ""
+    except Exception as exc:
+        preview = None
+        form_ok = False
+        form_error = str(exc)
+
+    if form_ok and preview:
+        if timesheet_initials_match_current(saved, preview):
+            st.success("Initialed for this week's current time-sheet content: " + _cell((saved or preview).get("Initials")))
+        elif saved and timesheet_initials_valid(saved):
+            st.warning("Time-sheet content changed since the last initials. Save the week again with initials to re-initial.")
+        else:
+            st.info("Initial this week before email. Initials no longer count if the time sheet changes after you save.")
+
+    if st.button("Save week", type="primary", key=prefix + "save", use_container_width=True):
+        try:
+            record = _form_record()
+            save_timesheet_record(record)
+        except Exception as exc:
+            st.error("Could not save time sheet: " + str(exc))
+        else:
+            st.session_state["timesheet_gen_" + employee] = gen + 1
+            st.session_state["timesheet_saved_" + employee] = "Saved time sheet for week of " + week.isoformat() + "."
+            st.rerun()
+
+    if form_ok and preview:
+        pdf_bytes = build_timesheet_pdf(preview)
+        xlsx_bytes = build_timesheet_xlsx(preview)
+        d1, d2 = st.columns(2)
+        with d1:
+            st.download_button(
+                "Download PDF",
+                data=pdf_bytes,
+                file_name=timesheet_pdf_filename(preview),
+                mime="application/pdf",
+                use_container_width=True,
+                key=prefix + "pdf",
+            )
+        with d2:
+            st.download_button(
+                "Download Excel",
+                data=xlsx_bytes,
+                file_name=timesheet_xlsx_filename(preview),
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+                key=prefix + "xlsx",
+            )
+    elif form_error:
+        st.error(form_error)
+
+    st.button(
+        "Email to patti@centralvalleyheli.com",
+        disabled=True,
+        use_container_width=True,
+        key=prefix + "email",
+    )
+    st.caption(timesheet_email_block_reason(preview if form_ok else None))
+
+
 def show_employees_page():
-    """Employee buttons at the top, Calendar below, and blank per-person pages."""
+    """Employee buttons at the top, Calendar below, and per-person pages."""
     selected = _cell(st.session_state.get("employees_selected"))
     show_cal = bool(st.session_state.get("employees_show_calendar"))
     names = list(EMPLOYEES)
@@ -2565,6 +3469,8 @@ def show_employees_page():
         if st.button("Back", key="employees_back", use_container_width=True):
             st.session_state.employees_selected = None
             st.rerun()
+        if employee_has_timesheet(selected):
+            show_employee_timesheet(selected)
         return
 
     st.title("Employees")
