@@ -404,6 +404,17 @@ TIMESHEET_DAY_FIELDS = (
 )
 TIMESHEET_MILEAGE_RATE_DEFAULT = 0.655
 TIMESHEET_EMAIL_TO = "patti@centralvalleyheli.com"
+TIMESHEET_AUTH_REQUIRED_KEYS = (
+    "redirect_uri", "cookie_secret", "client_id", "client_secret", "server_metadata_url",
+)
+TIMESHEET_GOOGLE_ISSUERS = ("https://accounts.google.com", "accounts.google.com")
+TIMESHEET_EMPLOYEE_EMAILS_SECTION = "timesheet_employees"
+TIMESHEET_MAIL_SHEET_TITLE = "Time Sheet Mail"
+TIMESHEET_MAIL_COLUMNS = [
+    "Timestamp", "Entry ID", "Action", "Employee", "Week Of",
+    "Recipient", "Subject", "Content Hash", "Initials", "Signed-in Email", "Status",
+]
+TIMESHEET_MAIL_ACTION_COMPOSER = "Composer opened"
 TIME_OFF_SHEET_TITLE = "Time Off"
 TIME_OFF_COLUMNS = [
     "Timestamp", "Entry ID", "Action", "Employee", "Type",
@@ -2845,15 +2856,23 @@ def load_timesheet_records(spreadsheet=None):
     return records_from_worksheet(ws, timesheet_columns())
 
 
-def load_timesheet_records_readonly(spreadsheet=None):
-    """Read the Time Sheets tab without creating or changing it."""
+def load_timesheet_records_readonly(spreadsheet=None, employee=None):
+    """Read the Time Sheets tab without creating or changing it.
+
+    When employee is set, only that person's rows are returned so another
+    employee's payroll is not loaded for display.
+    """
     ws = _worksheet_or_none(spreadsheet or _gsheets_spreadsheet(), TIMESHEET_SHEET_TITLE)
     if ws is None:
         return []
     header = [_cell(c) for c in ws.row_values(1)]
     if not header:
         return []
-    return records_from_worksheet(ws, timesheet_columns())
+    records = records_from_worksheet(ws, timesheet_columns())
+    wanted = _cell(employee)
+    if wanted:
+        records = [row for row in records if _cell(row.get("Employee")) == wanted]
+    return records
 
 
 def save_timesheet_record(record, spreadsheet=None):
@@ -2865,45 +2884,392 @@ def save_timesheet_record(record, spreadsheet=None):
     return "Google Sheets (Time Sheets)"
 
 
-def timesheet_gmail_configured(secrets=None):
-    """True only when dedicated Gmail send secrets exist. Never reads secret values."""
+def timesheet_secret_section(secrets, name):
+    """Return a secrets section if the key exists. Never copies values out for logging."""
     source = secrets
     if source is None:
         try:
             source = st.secrets
         except Exception:
-            return False
+            return None
     try:
-        if "gmail" in source:
-            return True
-        if "smtp" in source:
-            return True
-        if hasattr(source, "get") and (source.get("gmail") is not None or source.get("smtp") is not None):
-            return True
+        if name in source:
+            return source[name]
+    except Exception:
+        return None
+    return None
+
+
+def timesheet_section_has_keys(section, required):
+    if section is None:
+        return False
+    try:
+        for key in required:
+            if key not in section:
+                return False
+        return True
     except Exception:
         return False
-    return False
 
 
-def timesheet_email_can_send(record, configured=None):
-    """Send stays off until Gmail is configured AND the shared app is not unauthenticated.
-
-    CVHAPP has no user login, so this never returns True in the current app.
-    """
-    return False
-
-
-def timesheet_email_block_reason(record=None, configured=None):
-    if configured is None:
-        configured = timesheet_gmail_configured()
-    if not configured:
-        return (
-            "Email is not enabled. Sending through Ron's Gmail needs server-side Gmail "
-            "setup in Streamlit secrets and is not available yet. This button does not send mail."
-        )
-    return (
-        "Email is not enabled. This app has no user login, so send-as-Ron is not turned on."
+def timesheet_auth_configured(secrets=None):
+    """True when Streamlit Google OIDC [auth] keys are present. Never reads secret values."""
+    return timesheet_section_has_keys(
+        timesheet_secret_section(secrets, "auth"),
+        TIMESHEET_AUTH_REQUIRED_KEYS,
     )
+
+
+def timesheet_gmail_configured(secrets=None):
+    """Deprecated shared-mailbox hook. In-app Gmail/SMTP send is not used."""
+    return False
+
+
+def timesheet_employee_email_map(secrets=None):
+    """Exact employee name -> lowercase sign-in email from secrets. Empty if unconfigured.
+
+    Does not invent addresses. Duplicate emails fail closed (both names dropped).
+    """
+    section = timesheet_secret_section(secrets, TIMESHEET_EMPLOYEE_EMAILS_SECTION)
+    if section is None:
+        return {}
+    mapping = {}
+    seen = {}
+    for name in TIMESHEET_EMPLOYEES:
+        raw = None
+        try:
+            if name in section:
+                raw = section[name]
+        except Exception:
+            raw = None
+        email = _cell(raw).strip().lower()
+        if not email or "@" not in email or " " in email:
+            continue
+        mapping[name] = email
+        seen.setdefault(email, []).append(name)
+    for email, names in seen.items():
+        if len(names) > 1:
+            for name in names:
+                mapping.pop(name, None)
+    return mapping
+
+
+def timesheet_user_info(user=None):
+    """Safe identity snapshot from st.user or a test dict. Never includes tokens."""
+    source = user
+    if source is None:
+        try:
+            source = st.user
+        except Exception:
+            return {"is_logged_in": False, "email": "", "email_verified": False, "iss": ""}
+    data = {}
+    try:
+        if isinstance(source, dict):
+            items = source.items()
+        elif hasattr(source, "keys"):
+            items = ((key, source[key]) for key in source.keys() if key != "tokens")
+        else:
+            items = []
+        for key, value in items:
+            if key in ("is_logged_in", "email", "email_verified", "iss", "sub", "name"):
+                data[key] = value
+    except Exception:
+        return {"is_logged_in": False, "email": "", "email_verified": False, "iss": ""}
+    verified = data.get("email_verified")
+    return {
+        "is_logged_in": bool(data.get("is_logged_in")),
+        "email": _cell(data.get("email")).strip(),
+        "email_verified": verified is True or _cell(verified).lower() == "true",
+        "iss": _cell(data.get("iss")).strip(),
+    }
+
+
+def timesheet_verified_signin_email(user=None):
+    """Return the lowercase verified Google email, or None if identity cannot be trusted."""
+    info = timesheet_user_info(user)
+    if not info.get("is_logged_in"):
+        return None
+    if not info.get("email_verified"):
+        return None
+    email = _cell(info.get("email")).strip().lower()
+    if not email or "@" not in email or " " in email:
+        return None
+    issuer = _cell(info.get("iss")).strip().rstrip("/")
+    if issuer and issuer not in TIMESHEET_GOOGLE_ISSUERS:
+        return None
+    return email
+
+
+def timesheet_employee_for_identity(user=None, mapping=None, secrets=None):
+    """Map a verified Google sign-in email to exactly one configured employee, or None."""
+    if mapping is None:
+        mapping = timesheet_employee_email_map(secrets)
+    email = timesheet_verified_signin_email(user)
+    if not email or not mapping:
+        return None
+    matches = [name for name, mapped in mapping.items() if mapped == email]
+    if len(matches) != 1:
+        return None
+    return matches[0]
+
+
+def timesheet_access_state(employee, user=None, auth_configured=None, mapping=None, secrets=None):
+    """Who may open this employee's time sheet.
+
+    auth_not_configured: existing open form; composer and in-app send stay off.
+    allowed: signed-in mapped employee matching this page.
+    login_required / unverified / unmapped / other_employee: deny data, edit, and compose.
+    """
+    employee = _cell(employee)
+    if not employee_has_timesheet(employee):
+        return "no_timesheet"
+    if auth_configured is None:
+        auth_configured = timesheet_auth_configured(secrets)
+    if not auth_configured:
+        return "auth_not_configured"
+    if mapping is None:
+        mapping = timesheet_employee_email_map(secrets)
+    info = timesheet_user_info(user)
+    if not info.get("is_logged_in"):
+        return "login_required"
+    if timesheet_verified_signin_email(user) is None:
+        return "unverified"
+    identity = timesheet_employee_for_identity(user, mapping=mapping, secrets=secrets)
+    if identity is None:
+        return "unmapped"
+    if identity != employee:
+        return "other_employee"
+    return "allowed"
+
+
+def timesheet_can_view_or_edit(employee, user=None, auth_configured=None, mapping=None, secrets=None):
+    state = timesheet_access_state(
+        employee, user=user, auth_configured=auth_configured, mapping=mapping, secrets=secrets,
+    )
+    return state in ("allowed", "auth_not_configured")
+
+
+def timesheet_email_can_send(record=None, configured=None, user=None, secrets=None):
+    """In-app delivery stays off. The app never sends mail itself."""
+    return False
+
+
+def timesheet_email_subject(record):
+    employee = _cell((record or {}).get("Employee"))
+    week = _cell((record or {}).get("Week Of"))
+    return "CVH Weekly Time Sheet — " + employee + " — week of " + week
+
+
+def timesheet_email_body(record):
+    employee = _cell((record or {}).get("Employee"))
+    week = _cell((record or {}).get("Week Of"))
+    return (
+        "Patti,\n\n"
+        "Please find my weekly time sheet for the week of " + week + " attached.\n\n"
+        "I downloaded the PDF from the CVH Employee Tool and attached it myself. "
+        "This app opened a draft in my email app; it did not send this message.\n\n"
+        + employee + "\n"
+    )
+
+
+def timesheet_email_compose(record, to=None):
+    """Build a mailto: draft preaddressed to Patti only. Does not attach a file.
+
+    RFC 6068 mailto URIs cannot include attachments. The user must attach the
+    downloaded PDF in their own email app and press Send.
+    """
+    if not record:
+        raise ValueError("A time sheet is required to compose email.")
+    employee = _cell(record.get("Employee"))
+    if not employee_has_timesheet(employee):
+        raise ValueError(employee + " does not have a time sheet")
+    if to is not None and _cell(to).strip().lower() != TIMESHEET_EMAIL_TO.lower():
+        raise ValueError("Timesheet email can only be addressed to " + TIMESHEET_EMAIL_TO + ".")
+    from urllib.parse import quote
+    subject = timesheet_email_subject(record)
+    body = timesheet_email_body(record)
+    return (
+        "mailto:" + TIMESHEET_EMAIL_TO
+        + "?subject=" + quote(subject, safe="")
+        + "&body=" + quote(body, safe="")
+    )
+
+
+def timesheet_composer_allowed(
+    record,
+    user=None,
+    saved=None,
+    current=None,
+    auth_configured=None,
+    mapping=None,
+    secrets=None,
+    to=None,
+):
+    """True only when the signed-in employee may open a preaddressed composer.
+
+    Still not in-app send. Recipient cannot be overridden. Initials must match
+    the current week's content. Auth must be configured; otherwise fail closed.
+    """
+    if not record:
+        return False
+    if to is not None and _cell(to).strip().lower() != TIMESHEET_EMAIL_TO.lower():
+        return False
+    employee = _cell(record.get("Employee"))
+    if timesheet_access_state(
+        employee, user=user, auth_configured=auth_configured, mapping=mapping, secrets=secrets,
+    ) != "allowed":
+        return False
+    check = current if current is not None else record
+    source = saved if saved is not None else record
+    return timesheet_initials_match_current(source, check)
+
+
+def timesheet_email_block_reason(
+    record=None,
+    configured=None,
+    user=None,
+    saved=None,
+    current=None,
+    auth_configured=None,
+    mapping=None,
+    secrets=None,
+):
+    if timesheet_email_can_send(record, configured=configured, user=user, secrets=secrets):
+        return ""
+    if auth_configured is None:
+        auth_configured = timesheet_auth_configured(secrets)
+    if not auth_configured:
+        return (
+            "This app does not send mail. After Google sign-in is configured, you will "
+            "download your PDF, open a message to " + TIMESHEET_EMAIL_TO + " from your "
+            "own email account, attach the PDF yourself, and press Send. The Email "
+            "button stays off until that sign-in is set up."
+        )
+    if record is None:
+        return (
+            "This app does not send mail. Sign in with the Google account listed for "
+            "you, initial this week, download the PDF, then open a message to "
+            + TIMESHEET_EMAIL_TO + " and attach the PDF yourself."
+        )
+    if not timesheet_composer_allowed(
+        record, user=user, saved=saved, current=current,
+        auth_configured=auth_configured, mapping=mapping, secrets=secrets,
+    ):
+        state = timesheet_access_state(
+            _cell((record or {}).get("Employee")),
+            user=user, auth_configured=auth_configured, mapping=mapping, secrets=secrets,
+        )
+        if state == "login_required":
+            return (
+                "Sign in with Google to email your own time sheet. This app does not send mail."
+            )
+        if state in ("unmapped", "unverified", "other_employee"):
+            return (
+                "Only the signed-in employee can open email for their own initialed time sheet. "
+                "This app does not send mail."
+            )
+        if not timesheet_initials_match_current(saved if saved is not None else record, current if current is not None else record):
+            return (
+                "Initial and save this week's current time-sheet content before opening email "
+                "to " + TIMESHEET_EMAIL_TO + ". This app does not send mail."
+            )
+        return "This app does not send mail."
+    return (
+        "This app does not send mail and cannot attach the PDF. Download the PDF, open "
+        "the message to " + TIMESHEET_EMAIL_TO + " in your own email app, attach the "
+        "file yourself, and press Send there."
+    )
+
+
+def timesheet_mail_columns():
+    return list(TIMESHEET_MAIL_COLUMNS)
+
+
+def ensure_timesheet_mail_worksheet(spreadsheet):
+    """Create the Time Sheet Mail audit tab on first write only. Never alter an existing header."""
+    cols = timesheet_mail_columns()
+    ws = _worksheet_or_none(spreadsheet, TIMESHEET_MAIL_SHEET_TITLE)
+    created = False
+    if ws is None:
+        ws = spreadsheet.add_worksheet(title=TIMESHEET_MAIL_SHEET_TITLE, rows=400, cols=max(len(cols), 12))
+        ws.append_row(cols, value_input_option="RAW")
+        created = True
+    else:
+        header = [_cell(c) for c in ws.row_values(1)]
+        if not header:
+            ws.append_row(cols, value_input_option="RAW")
+            created = True
+    return ws, created
+
+
+def load_timesheet_mail_records_readonly(spreadsheet=None):
+    ws = _worksheet_or_none(spreadsheet or _gsheets_spreadsheet(), TIMESHEET_MAIL_SHEET_TITLE)
+    if ws is None:
+        return []
+    header = [_cell(c) for c in ws.row_values(1)]
+    if not header:
+        return []
+    return records_from_worksheet(ws, timesheet_mail_columns())
+
+
+def build_timesheet_mail_audit_record(record, action=None, user=None, when=None):
+    action = _cell(action) or TIMESHEET_MAIL_ACTION_COMPOSER
+    when = when or datetime.now(ZoneInfo("America/Los_Angeles"))
+    email = timesheet_verified_signin_email(user) or ""
+    return {
+        "Timestamp": when.strftime("%Y-%m-%d %H:%M:%S %Z"),
+        "Entry ID": _cell(record.get("Entry ID")),
+        "Action": action,
+        "Employee": _cell(record.get("Employee")),
+        "Week Of": _cell(record.get("Week Of")),
+        "Recipient": TIMESHEET_EMAIL_TO,
+        "Subject": timesheet_email_subject(record),
+        "Content Hash": _cell(record.get("Content Hash")),
+        "Initials": _cell(record.get("Initials")),
+        "Signed-in Email": email,
+        "Status": "Opened",
+    }
+
+
+def save_timesheet_mail_audit_record(audit, spreadsheet=None):
+    ws, _created = ensure_timesheet_mail_worksheet(spreadsheet or _gsheets_spreadsheet())
+    header = [_cell(c) for c in ws.row_values(1)]
+    if not header:
+        raise RuntimeError("Time Sheet Mail worksheet has no header")
+    ws.append_row([str(audit.get(c, "")) for c in header], value_input_option="RAW")
+    return "Google Sheets (Time Sheet Mail)"
+
+
+def timesheet_access_message(state):
+    if state == "login_required":
+        return "Sign in with Google to view or edit your weekly time sheet."
+    if state == "unverified":
+        return "The signed-in Google account is not a verified email match, so this time sheet stays closed."
+    if state == "unmapped":
+        return "This Google account is not mapped to a time-sheet employee, so this time sheet stays closed."
+    if state == "other_employee":
+        return "You can only open your own weekly time sheet. Another employee's payroll is not shown."
+    return "This weekly time sheet is not available."
+
+
+def show_timesheet_signin_controls(key_prefix="ts_auth"):
+    """Sign-in chrome for timesheet protection only. Does not lock the rest of the app."""
+    if not timesheet_auth_configured():
+        return
+    user = timesheet_user_info()
+    if user.get("is_logged_in"):
+        identity = timesheet_employee_for_identity(user)
+        if identity:
+            st.caption("Signed in as " + identity + ".")
+        else:
+            st.caption("Signed in with Google, but this account is not mapped to a time-sheet employee.")
+        if st.button("Sign out", key=key_prefix + "_logout"):
+            st.logout()
+            st.rerun()
+        return
+    st.caption("Sign in with the Google account listed for you to open your weekly time sheet.")
+    if st.button("Sign in with Google", key=key_prefix + "_login"):
+        st.login()
 
 
 def timesheet_bundle_path(filename):
@@ -3229,9 +3595,14 @@ def show_employee_timesheet(employee):
     """Weekly time sheet for one eligible employee, matching the official form."""
     st.subheader("Weekly Time Sheet")
     st.caption("Official Central Valley Helicopters weekly time sheet. Name is filled from this employee page.")
+    access = timesheet_access_state(employee)
+    if access not in ("allowed", "auth_not_configured"):
+        st.info(timesheet_access_message(access))
+        show_timesheet_signin_controls(key_prefix="ts_gate_" + employee_button_key(employee))
+        return
     today = datetime.now(ZoneInfo("America/Los_Angeles")).date()
     try:
-        records = load_timesheet_records_readonly()
+        records = load_timesheet_records_readonly(employee=employee)
         load_ok = True
     except Exception as exc:
         records = []
@@ -3430,17 +3801,41 @@ def show_employee_timesheet(employee):
     elif form_error:
         st.error(form_error)
 
-    st.button(
-        "Email to patti@centralvalleyheli.com",
-        disabled=True,
-        use_container_width=True,
-        key=prefix + "email",
+    composer_ok = (
+        form_ok and preview
+        and timesheet_composer_allowed(preview, saved=saved, current=preview)
     )
-    st.caption(timesheet_email_block_reason(preview if form_ok else None))
+    if composer_ok:
+        st.markdown("**Email from your own account**")
+        st.caption(timesheet_email_block_reason(preview, saved=saved, current=preview))
+        st.markdown("**To:** " + TIMESHEET_EMAIL_TO)
+        st.markdown("**Subject:** " + timesheet_email_subject(preview))
+        st.text_area(
+            "Message body (not sent by this app)",
+            value=timesheet_email_body(preview),
+            height=140,
+            disabled=True,
+            key=prefix + "email_body",
+        )
+        st.caption("Download the PDF first. Opening email does not attach the file or send the message.")
+        st.link_button(
+            "Open email to Patti in your email app",
+            timesheet_email_compose(preview),
+            use_container_width=True,
+        )
+    else:
+        st.button(
+            "Email to patti@centralvalleyheli.com",
+            disabled=True,
+            use_container_width=True,
+            key=prefix + "email",
+        )
+        st.caption(timesheet_email_block_reason(preview if form_ok else None, saved=saved, current=preview if form_ok else None))
 
 
 def show_employees_page():
     """Employee buttons at the top, Calendar below, and per-person pages."""
+    show_timesheet_signin_controls(key_prefix="employees_auth")
     selected = _cell(st.session_state.get("employees_selected"))
     show_cal = bool(st.session_state.get("employees_show_calendar"))
     names = list(EMPLOYEES)
