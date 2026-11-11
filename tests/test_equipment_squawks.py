@@ -117,8 +117,13 @@ def _exec_equipment_helpers():
              (isinstance(n, ast.Assign) and any(isinstance(t, ast.Name) and t.id in names for t in n.targets))
              or (isinstance(n, ast.FunctionDef) and n.name in functions)]
     from datetime import date, time as dt_time, timedelta
+    import sys
     import uuid
-    scope = {"datetime": datetime, "date": date, "dt_time": dt_time, "timedelta": timedelta, "ZoneInfo": ZoneInfo, "uuid": uuid, "__file__": str(APP)}
+    repo_root = str(Path(__file__).resolve().parents[1])
+    if repo_root not in sys.path:
+        sys.path.insert(0, repo_root)
+    import timesheet_mail
+    scope = {"datetime": datetime, "date": date, "dt_time": dt_time, "timedelta": timedelta, "ZoneInfo": ZoneInfo, "uuid": uuid, "timesheet_mail": timesheet_mail, "__file__": str(APP)}
     exec(compile(ast.Module(body=nodes, type_ignores=[]), str(APP), "exec"), scope)
     return scope
 
@@ -994,20 +999,17 @@ class PlaceholderAndLogicTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(ValueError, "can only be addressed to"):
             s["timesheet_email_compose"](rec, to="other@example.com")
-        link = s["timesheet_email_compose"](rec)
-        self.assertTrue(link.startswith("mailto:patti@centralvalleyheli.com?"))
-        self.assertNotIn("other@example.com", link)
-        self.assertNotIn("attach=", link.lower())
-        decoded = unquote(link)
-        self.assertIn("CVH Weekly Time Sheet — Carl Mulvaney — week of 2026-11-08", decoded)
-        self.assertIn("attached it myself", decoded)
-        self.assertIn("did not send", decoded)
+        # Mailto is not the send path. In-app send stays off without the callback service.
         self.assertFalse(s["timesheet_email_can_send"](rec, user=carl, secrets=auth_secrets))
+        self.assertFalse(s["timesheet_email_can_send"](
+            rec, user=carl, secrets=auth_secrets, access_allowed=True, initials_match=True,
+            pdf_bytes=b"%PDF-1.4 test", filename="sheet.pdf",
+        ))
         reason = s["timesheet_email_block_reason"](
             rec, user=carl, saved=rec, current=rec, secrets=auth_secrets,
         )
         self.assertIn("does not send mail", reason)
-        self.assertIn("cannot attach", reason)
+        self.assertNotIn("attach the PDF yourself", reason)
         stale_reason = s["timesheet_email_block_reason"](
             rec, user=carl, saved=rec, current=stale, secrets=auth_secrets,
         )
