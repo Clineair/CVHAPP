@@ -19,38 +19,50 @@ explicitly press Send.
 - Official weekly mileage uses the IRS business rate that applies to the
   actual travel date, including a week that spans a rate change. Historic
   saved amounts are left alone. Anthony's form has no mileage fields.
-- Preview of To, From, subject, body, and the official generated PDF
-  attachment, with an explicit employee Send button.
-- Fixed recipient `patti@centralvalleyheli.com`. Initials must still match
-  the current week content. A duplicate send of the same employee + week +
-  content hash already marked Sent is blocked.
+- Preview of To, From, subject, body, and the official generated PDF, then an
+  explicit Send button. Send posts that same PDF to the callback service.
+  Mailto is not used as fulfillment.
+- The recipient is `[timesheet_mail].recipient` when that secret is set.
+  If it is absent, the long-standing fixed recipient remains the only allowed
+  To. Initials must still match the current week content.
+- Mail audit rows and a durable employee + week + content-hash claim both
+  feed the send gate. A duplicate Sent claim is blocked. A timeout or 5xx is
+  Uncertain and is not retried unless the employee explicitly confirms they
+  checked Sent.
 - Google sign-in for time sheets (`st.login()` / `st.user` / `st.logout()`,
   reserved callback `/oauth2callback`). Sign-in email may differ from the
-  send-from mailbox. Optional Microsoft sign-in remains in the code if a
-  named `[auth.microsoft]` client is added later; it is **not** required for
-  the current six employees.
+  send-from mailbox. The sign-in client is separate from the `gmail.send`
+  client. Optional Microsoft sign-in remains in the code if a named
+  `[auth.microsoft]` client is added later; it is **not** required for the
+  current six employees.
 - Official Gmail send path (Gmail API `gmail.send`, authorization-code +
-  PKCE, session-only access token, mailbox email from official userinfo must
-  match the configured send-from address).
-- Official iCloud and Yahoo paths are recognized as SMTP + app-specific
-  password, and stay fail-closed until a vault exists. Passwords are never
-  collected in the app, chat, or Sheets.
-- A standalone callback service in `timesheet_mail_callback.py` with `/healthz`,
-  `/timesheet-mail/start`, and `/timesheet-mail/callback/gmail`, plus a
-  Dockerfile recipe under `deploy/timesheet-mail-callback/`. It is not started
-  by the Streamlit app and is not deployed.
+  PKCE, expiring single-use HMAC state, mailbox email from official userinfo
+  must match the configured send-from address).
+- Authenticated `POST /timesheet-mail/redeem` and `POST /timesheet-mail/send`.
+  Streamlit signs a short-lived HMAC. The callback redeems the ready ticket
+  into consent metadata only. The access token stays in the shared store.
+  The public OAuth start and callback routes cannot send mail.
+- Shared token store: `FirestoreMailTokenStore` for Cloud Run, with
+  `MemoryMailTokenStore` kept as the test double and an explicit local
+  override. Pending PKCE state, access tokens, tickets, API nonces, and
+  idempotency claims expire and survive a process restart only in Firestore.
+- iCloud SMTP (`smtp.mail.me.com:587` STARTTLS) and Yahoo SMTP
+  (`smtp.mail.yahoo.com:587` STARTTLS or `:465` SSL). The Cloud Run service
+  account reads each app-specific password from Secret Manager at send time.
+  There is no password form in the app. Microsoft Graph send remains in the
+  code and is dormant for the current roster.
+- A non-root Dockerfile under `deploy/timesheet-mail-callback/`. It installs
+  the callback dependencies and does not bake a serve override or secrets.
+  Documented Cloud Run bounds are min instances 0 and max instances 2.
 
-**Still placeholders / not done (do not treat these as finished):**
+**Still external setup (do not treat the feature as turned on):**
 
-- No callback host is deployed. There is no `fly.toml`, `render.yaml`, or
-  `wrangler.toml`, and no live Cloud Run service.
-- No OAuth clients, Streamlit `[auth]` secrets, mailbox maps, or SMTP vault
-  have been created in this work. Secret *names* are documented here; secret
-  values are not in the repo.
-- `timesheet_email_can_send` stays False until `[timesheet_mail].enabled`,
-  the Gmail send client, `[timesheet_mail_backend]`, and (for iCloud/Yahoo)
-  a vaulted SMTP store are all present, plus identity, initials, PDF, and
-  the fixed recipient.
+- No callback host is deployed. No OAuth clients, Streamlit secrets, mailbox
+  maps, Firestore database, or Secret Manager versions have been created.
+- `[timesheet_mail].enabled` stays false until the steps below are done.
+  `timesheet_email_can_send` stays false until that flag, the backend, a
+  mail client or SMTP vault, identity, initials, the previewed PDF, and the
+  fixed recipient are all present.
 - Microsoft Graph mail-send remains in the code for a future Hotmail or
   Outlook mailbox, but **no current employee uses it**, so a Microsoft
   mail-send app is not a current prerequisite.
@@ -262,8 +274,9 @@ for the current roster.
 ```toml
 [timesheet_mail]
 enabled = false
-# Flip to true only after the callback host is deployed and the Gmail send
-# client is registered.
+# Flip to true only after the callback host is deployed, the Gmail send
+# client is registered, and any iCloud or Yahoo secret versions exist.
+recipient = "the-fixed-patti-address"
 
 [timesheet_mail.gmail]
 client_id = "separate-gmail-send-client-id"
@@ -285,11 +298,12 @@ app_base_url = "https://cvhapp-fpzzanc7kwhapubsvkjx67.streamlit.app/"
 # "Skylar Fingerle" = { email = "their-icloud@example.com", provider = "icloud" }
 # "Barry Markham" = { email = "their-yahoo@example.com", provider = "yahoo" }
 
-# Presence flag only for a vaulted SMTP store. Never put app-specific
-# passwords in this file if it might be copied or logged. Use a real secret
-# manager on the callback host.
-# [timesheet_smtp]
-# configured = false
+# Presence flag only. Never put app-specific passwords in this file.
+# The callback reads passwords from Secret Manager, not from this section.
+[timesheet_smtp]
+configured = false
+project = "YOUR-GCP-PROJECT"
+# yahoo_port = 587
 ```
 
 Gmail send: POST `https://gmail.googleapis.com/gmail/v1/users/me/messages/send`
@@ -298,22 +312,42 @@ later store refresh tokens in Testing mode they expire in 7 days. This
 preparation prefers session-only access tokens (about one hour).
 
 The authorized mailbox email from official userinfo must match the configured
-employee send-from address. Access tokens stay in callback-host memory only.
+employee send-from address. Access tokens stay in the shared Firestore store
+on the callback host. Streamlit receives consent metadata from
+`POST /timesheet-mail/redeem` and never copies the access token into the
+session, Sheets, or the query string. The ready redirect still carries only
+the one-time opaque ticket.
 HTTP 200 or 202 means the provider accepted the message, not proof of delivery.
 
-### iCloud and Yahoo (SMTP vault; later)
+### iCloud and Yahoo (Secret Manager)
 
-If you enable those providers:
+The callback sends with TLS SMTP. iCloud uses `smtp.mail.me.com:587` with
+STARTTLS. Yahoo uses `smtp.mail.yahoo.com:587` with STARTTLS, or port 465
+with SSL when `[timesheet_smtp].yahoo_port` is `465`. It does not try the
+other port after a failure, because that could send twice.
+
+There is no password form. An admin creates these Secret Manager versions
+later and pastes the app-specific password there:
+
+- `timesheet-smtp-carl-mulvaney`
+- `timesheet-smtp-skylar-fingerle`
+- `timesheet-smtp-barry-markham`
+
+The id is `timesheet-smtp-` plus the employee name in lowercase with spaces
+as hyphens. It does not contain the mailbox address. The Cloud Run service
+account needs `secretmanager.secretAccessor` on those secrets. Gmail
+employees do not need an SMTP secret.
 
 1. Each person generates an app-specific / app password on Apple or Yahoo
    account security (2FA required). Never collect those in chat or the app.
-2. Store them only in a secret manager the callback host can read.
-3. Set `[timesheet_smtp].configured = true` (or equivalent employee keys on
-   the host) without putting the passwords in Streamlit forms or Sheets.
-4. Sending remains off until that store is actually present.
+2. An admin pastes each value into Secret Manager. The app cannot do that.
+3. Set `[timesheet_smtp].configured = true` and `project` to the GCP project
+   id. Do not put the passwords in Streamlit secrets or Sheets.
+4. Sending for that employee stays off until the secret version exists.
+   A missing or revoked secret is a denial, not an automatic retry.
 
 Gmail employees can be enabled first, after the callback host and Gmail send
-client exist, without waiting for the iCloud/Yahoo vault.
+client exist, without waiting for the iCloud/Yahoo secrets.
 
 ## Send rules
 
@@ -343,25 +377,61 @@ client exist, without waiting for the iCloud/Yahoo vault.
 
 ## What remains
 
-Do not create a billing account, Cloud Run service, OAuth client, or secret,
-and do not send a test timesheet, until that step is explicitly approved.
+Nothing below has been done. Do not create a billing account, Cloud Run
+service, OAuth client, or secret, and do not send a test timesheet, until
+that step is explicitly approved. `[timesheet_mail].enabled` stays false
+until you finish the relevant path and flip it yourself.
 
-1. **Decide the callback host** (the next concrete choice): approve Google
-   Cloud Run in the same project as the (not-yet-created) Google OAuth
-   clients, accepting that a billing account / payment method is required
-   even if expected Cloud Run cost is $0 under the official Free Tier; or
-   say you do not want a Google billing account, and a Cloudflare Workers
-   port can be prepared instead ($0/month, with the Free-plan CPU limit
-   noted above).
-2. After that host exists: create the Google OAuth web client for sign-in
-   (no Gmail scopes) and a **separate** Gmail send client whose redirect URI
-   is only on the callback host. Put `[auth]`, `[timesheet_employees]`,
-   `[timesheet_employee_mail]`, and `[timesheet_mail_backend]` in Streamlit
-   Cloud secrets. Do not commit them.
-3. Add test users, try sign-in on the live app, then publish the consent
-   screen when ready.
-4. For iCloud and Yahoo send, vault app-specific passwords on that host
-   later. Flip `[timesheet_mail].enabled` only after the relevant path is
-   actually configured.
-5. Do not enable production sending, grant live mail consent, or send a test
-   timesheet until you explicitly approve that later step.
+1. Create a Google Cloud project and attach a billing account. Billing is
+   required even when Cloud Run stays inside the Free Tier. Enable Cloud
+   Run, Firestore, and Secret Manager. Create a Firestore Native database.
+   Expected Cloud Run cost at this volume is $0/month after the free amounts
+   listed above; a payment method is still required, and overage is billed.
+2. Deploy `deploy/timesheet-mail-callback/Dockerfile` to Cloud Run in
+   us-central1 with `--min-instances=0 --max-instances=2 --port=8080
+   --timeout=60 --concurrency=20 --allow-unauthenticated`. The browser has
+   to reach the OAuth redirect. Send and redeem stay HMAC-authenticated.
+   Give the runtime service account Cloud Datastore User and Secret Manager
+   Secret Accessor. Set `GOOGLE_CLOUD_PROJECT` and
+   `TIMESHEET_MAIL_TOKEN_STORE=firestore`. Mount the same mail configuration
+   JSON as `TIMESHEET_MAIL_SECRETS_JSON` from Secret Manager. Do not put
+   SMTP passwords in that JSON.
+3. Optional but recommended: a Firestore TTL policy on collection
+   `timesheet_mail_tokens`, field `expire_at`. Reads already ignore expired
+   documents if the policy is not created yet.
+4. Create two OAuth web clients in that project. Do not combine them.
+   - Sign-in client: scopes `openid`, `profile`, and `email` only. Redirects:
+     `http://localhost:8501/oauth2callback` and
+     `https://cvhapp-fpzzanc7kwhapubsvkjx67.streamlit.app/oauth2callback`.
+   - Gmail send client: scope `https://www.googleapis.com/auth/gmail.send`
+     only. Redirect only
+     `https://YOUR-CALLBACK-HOST/timesheet-mail/callback/gmail`.
+   Leave the consent screen in Testing and add the employees as test users
+   before anyone tries. Publish it only when you want everyone to use it.
+   Do not register a Microsoft mail-send client for the current roster.
+5. In Streamlit secrets, not in git, set `[auth]` for the sign-in client,
+   `[timesheet_employees]` to each person's Google sign-in address,
+   `[timesheet_employee_mail]` to the send-from mailbox and provider
+   (`gmail`, `icloud`, or `yahoo`), `[timesheet_mail].enabled = false`,
+   `[timesheet_mail].recipient` to Patti's address, `[timesheet_mail.gmail]`
+   to the send client, and `[timesheet_mail_backend]` with `public_base_url`,
+   the same `state_secret` the callback has, and `app_base_url`.
+6. For Carl, Skylar, and Barry, generate Apple or Yahoo app-specific
+   passwords outside this app. An admin pastes them into Secret Manager
+   under the ids above. Then set `[timesheet_smtp].configured = true` and
+   `project` to the GCP project. Gmail employees can be turned on without
+   those three secrets.
+7. Put the same non-password configuration on the callback
+   (`TIMESHEET_MAIL_SECRETS_JSON`), including `timesheet_employees`,
+   `timesheet_employee_mail`, the Gmail send client, `state_secret`, and
+   `recipient`. The sign-in email on the HMAC request must map to the
+   employee, and the Gmail userinfo address must match that employee's
+   send-from mailbox.
+8. Confirm a timesheet still saves, the Email button stays disabled while
+   `enabled` is false, then set `enabled = true`. Each employee signs in,
+   initials the current week, previews the PDF, authorizes Gmail send or
+   waits for the vaulted SMTP session, and presses Send. The first unclear
+   result must be checked in the sender's Sent folder before anyone sends
+   that same week again.
+9. Do not merge this PR, enable production sending, grant live mail consent,
+   or send a test timesheet until you explicitly approve that later step.

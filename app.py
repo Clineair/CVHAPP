@@ -478,6 +478,7 @@ TIMESHEET_MAIL_SHEET_TITLE = "Time Sheet Mail"
 TIMESHEET_MAIL_COLUMNS = [
     "Timestamp", "Entry ID", "Action", "Employee", "Week Of",
     "Recipient", "Subject", "Content Hash", "Initials", "Signed-in Email", "Status",
+    "Idempotency Key", "Provider", "Result Detail",
 ]
 TIMESHEET_MAIL_ACTION_COMPOSER = "Composer opened"
 TIME_OFF_SHEET_TITLE = "Time Off"
@@ -3710,7 +3711,7 @@ def load_timesheet_mail_records_readonly(spreadsheet=None):
     return records_from_worksheet(ws, timesheet_mail_columns())
 
 
-def build_timesheet_mail_audit_record(record, action=None, user=None, when=None):
+def build_timesheet_mail_audit_record(record, action=None, user=None, when=None, status=None, idempotency_key=None, provider=None, detail=None, recipient=None):
     action = _cell(action) or TIMESHEET_MAIL_ACTION_COMPOSER
     when = when or datetime.now(ZoneInfo("America/Los_Angeles"))
     email = timesheet_verified_signin_email(user) or ""
@@ -3720,13 +3721,34 @@ def build_timesheet_mail_audit_record(record, action=None, user=None, when=None)
         "Action": action,
         "Employee": _cell(record.get("Employee")),
         "Week Of": _cell(record.get("Week Of")),
-        "Recipient": TIMESHEET_EMAIL_TO,
+        "Recipient": _cell(recipient) or TIMESHEET_EMAIL_TO,
         "Subject": timesheet_email_subject(record),
         "Content Hash": _cell(record.get("Content Hash")),
         "Initials": _cell(record.get("Initials")),
         "Signed-in Email": email,
-        "Status": "Opened",
+        "Status": _cell(status) or "Opened",
+        "Idempotency Key": _cell(idempotency_key),
+        "Provider": _cell(provider),
+        "Result Detail": timesheet_mail.scrub_audit_detail(detail or ""),
     }
+
+
+def apply_timesheet_send_result(record, result, user=None, spreadsheet=None, when=None):
+    """Write one send outcome. Does not retry the send if the sheet write fails."""
+    result = result or {}
+    audit = build_timesheet_mail_audit_record(
+        record,
+        action=timesheet_mail.TIMESHEET_MAIL_ACTION_SEND,
+        user=user,
+        when=when,
+        status=result.get("status") or timesheet_mail.TIMESHEET_MAIL_STATUS_UNCERTAIN,
+        idempotency_key=result.get("idempotency_key"),
+        provider=result.get("provider"),
+        detail=result.get("error") or "",
+        recipient=result.get("to") or TIMESHEET_EMAIL_TO,
+    )
+    save_timesheet_mail_audit_record(audit, spreadsheet=spreadsheet)
+    return audit
 
 
 def save_timesheet_mail_audit_record(audit, spreadsheet=None):
@@ -5070,54 +5092,144 @@ def show_employee_timesheet(employee):
     )
 
 
+def _mail_runtime_secrets():
+    try:
+        return st.secrets
+    except Exception:
+        return {}
+
+
+def _take_timesheet_mail_ticket():
+    """Read and clear the one-time ready ticket. Never an access token."""
+    try:
+        params = st.query_params
+        ready = params.get("timesheet_mail")
+        ticket = params.get("ticket")
+    except Exception:
+        return ""
+    if isinstance(ready, (list, tuple)):
+        ready = ready[0] if ready else ""
+    if isinstance(ticket, (list, tuple)):
+        ticket = ticket[0] if ticket else ""
+    ready = _cell(ready)
+    ticket = _cell(ticket)
+    if ready != "ready" or not ticket:
+        return ""
+    try:
+        if "timesheet_mail" in params:
+            del params["timesheet_mail"]
+        if "ticket" in params:
+            del params["ticket"]
+    except Exception:
+        pass
+    return ticket
+
+
 def show_timesheet_email_section(employee, preview, saved=None, form_ok=False, prefix="ts_mail_", pdf_bytes=None):
-    """Preview and explicit Send. Mailto is not used as fulfillment."""
+    """Preview, then an explicit Send that posts the PDF to the mail backend.
+
+    Mailto is not used as fulfillment. Access tokens are not stored in the session.
+    """
+    secrets = _mail_runtime_secrets()
     if preview and employee_has_anthony_timesheet(employee):
         filename = anthony_timesheet_pdf_filename(preview)
     elif preview:
         filename = timesheet_pdf_filename(preview)
     else:
         filename = ""
-    identity = timesheet_employee_for_identity()
-    access_ok = timesheet_access_state(employee) == "allowed"
+    identity = timesheet_employee_for_identity(secrets=secrets)
+    signin_email = timesheet_verified_signin_email() or ""
+    access_ok = timesheet_access_state(employee, secrets=secrets) == "allowed"
     initials_ok = bool(preview and timesheet_initials_match_current(saved, preview))
-    setup_ready = timesheet_mail.timesheet_mail_secure_setup_ready()
-    mailbox = timesheet_mail.timesheet_mailbox_for_employee(employee) if setup_ready else None
+    setup_ready = timesheet_mail.timesheet_mail_secure_setup_ready(secrets)
+    mailbox = timesheet_mail.timesheet_mailbox_for_employee(employee, secrets) if setup_ready else None
+    recipient = timesheet_mail.timesheet_mail_recipient(secrets)
+    consent_key = "timesheet_mail_consent_" + employee
     consent = None
     if setup_ready and identity == employee:
-        # Session metadata only; Streamlit never reads access tokens from query params.
-        consent = st.session_state.get("timesheet_mail_consent_" + employee)
+        ticket = _take_timesheet_mail_ticket()
+        if ticket:
+            redeemed = timesheet_mail.redeem_ready_ticket_http(
+                ticket, employee, signin_email, secrets,
+            )
+            if redeemed and redeemed.get("employee") == employee and "access_token" not in redeemed and "password" not in redeemed:
+                st.session_state[consent_key] = redeemed
+        consent = st.session_state.get(consent_key)
         if consent and consent.get("exp") and consent.get("exp") < __import__("time").time():
             consent = None
-            st.session_state.pop("timesheet_mail_consent_" + employee, None)
-    can_send = timesheet_email_can_send(
-        preview,
-        user_employee=identity,
-        consent=consent,
-        initials_match=initials_ok,
-        access_allowed=access_ok,
-        pdf_bytes=pdf_bytes,
-        filename=filename,
-    )
+            st.session_state.pop(consent_key, None)
+        if consent and ("access_token" in consent or "password" in consent):
+            consent = None
+            st.session_state.pop(consent_key, None)
+    smtp_mode = bool(mailbox and timesheet_mail.timesheet_mail_auth_mode(mailbox["provider"]) == "smtp_app_password")
+    if setup_ready and access_ok and identity == employee and smtp_mode and initials_ok and not consent:
+        checked_key = "timesheet_mail_smtp_checked_" + employee
+        if not st.session_state.get(checked_key):
+            st.session_state[checked_key] = True
+            opened = timesheet_mail.open_smtp_session_http(employee, signin_email, secrets)
+            if opened and opened.get("employee") == employee and "password" not in opened and "access_token" not in opened:
+                st.session_state[consent_key] = opened
+                st.rerun()
+    if setup_ready and identity == employee:
+        consent = st.session_state.get(consent_key)
+    audit_records = []
+    audit_failed = False
+    if setup_ready and access_ok and identity == employee:
+        try:
+            loaded = load_timesheet_mail_records_readonly()
+            audit_records = timesheet_mail.compact_mail_audit(loaded, employee)
+        except Exception:
+            audit_failed = True
+            audit_records = None
+    uncertain = bool(preview and audit_records and timesheet_mail.timesheet_uncertain_send(audit_records, preview))
+    acknowledge = False
+    if uncertain and initials_ok and access_ok and identity == employee:
+        acknowledge = st.checkbox(
+            "I checked my Sent folder. Send again only if it is not there. This is not an automatic retry.",
+            key=prefix + "ack_uncertain",
+        )
+    can_send = False
+    if not audit_failed:
+        can_send = timesheet_email_can_send(
+            preview,
+            user_employee=identity,
+            consent=consent,
+            secrets=secrets,
+            initials_match=initials_ok,
+            access_allowed=access_ok,
+            pdf_bytes=pdf_bytes,
+            filename=filename,
+            audit_records=audit_records,
+            acknowledge_uncertain=acknowledge,
+        )
+    if audit_failed:
+        block = "Time-sheet mail history could not be read, so sending stays off."
+    elif not setup_ready:
+        block = timesheet_email_block_reason(
+            preview,
+            user=None,
+            saved=saved,
+            current=preview,
+            secrets=secrets,
+        )
+    else:
+        block = timesheet_mail.timesheet_mail_block_reason(
+            preview,
+            user_employee=identity,
+            consent=consent,
+            secrets=secrets,
+            initials_match=initials_ok,
+            access_allowed=access_ok,
+            pdf_bytes=pdf_bytes,
+            filename=filename,
+            audit_records=audit_records,
+            acknowledge_uncertain=acknowledge,
+        )
     st.markdown("**Email this week's time sheet**")
-    st.caption(timesheet_email_block_reason(
-        preview,
-        user=None,
-        saved=saved,
-        current=preview,
-        # Keep the existing helper for initials/access copy, then append send-setup reason.
-    ) if not timesheet_mail.timesheet_mail_secure_setup_ready() else timesheet_mail.timesheet_mail_block_reason(
-        preview,
-        user_employee=identity,
-        consent=consent,
-        initials_match=initials_ok,
-        access_allowed=access_ok,
-        pdf_bytes=pdf_bytes,
-        filename=filename,
-    ))
+    st.caption(block)
     if preview and form_ok:
         from_addr = (consent or {}).get("mailbox_email") or ((mailbox or {}).get("email") if mailbox else "")
-        st.markdown("**To:** " + TIMESHEET_EMAIL_TO)
+        st.markdown("**To:** " + recipient)
         st.markdown("**From:** " + (from_addr or "(authorize your mailbox first)"))
         st.markdown("**Subject:** " + timesheet_email_subject(preview))
         st.text_area(
@@ -5129,30 +5241,69 @@ def show_timesheet_email_section(employee, preview, saved=None, form_ok=False, p
         )
         st.caption("Attachment: " + (filename or "weekly time sheet PDF") + " — official generated PDF only.")
         if setup_ready and access_ok and identity == employee and mailbox and not can_send and initials_ok:
-            if timesheet_mail.timesheet_mail_auth_mode(mailbox["provider"]) == "smtp_app_password":
+            if smtp_mode and not timesheet_mail.timesheet_smtp_store_configured(secrets):
                 st.caption(timesheet_mail.timesheet_smtp_setup_reason(mailbox["provider"]))
-            else:
+            elif smtp_mode and not consent:
+                st.caption("The vaulted mailbox is not ready yet. This app does not ask for a mail password.")
+                if st.button("Check vaulted mailbox", key=prefix + "smtp_check", use_container_width=True):
+                    st.session_state.pop("timesheet_mail_smtp_checked_" + employee, None)
+                    st.rerun()
+            elif not smtp_mode:
                 app_url = ""
                 try:
-                    app_url = _cell(st.secrets.get("timesheet_mail_backend", {}).get("app_base_url"))
+                    app_url = _cell(secrets["timesheet_mail_backend"]["app_base_url"])
                 except Exception:
                     app_url = ""
                 if not app_url:
                     app_url = "https://cvhapp-fpzzanc7kwhapubsvkjx67.streamlit.app/"
-                start = timesheet_mail.timesheet_mail_start_link(employee, mailbox["provider"], app_url)
+                start = timesheet_mail.timesheet_mail_start_link(employee, mailbox["provider"], app_url, secrets)
                 if start:
                     label = "Authorize " + mailbox["provider"] + " to send this timesheet"
                     st.link_button(label, start, use_container_width=True)
                     st.caption("Signing in does not grant send permission. Mail access is session-only and expires in about an hour; you will need to authorize again later.")
-        st.button(
-            "Send to patti@centralvalleyheli.com" if can_send else "Email to patti@centralvalleyheli.com",
+        send_clicked = st.button(
+            "Send to " + recipient if can_send else "Email to " + recipient,
             disabled=not can_send,
             use_container_width=True,
             key=prefix + "email",
         )
+        if send_clicked and can_send and pdf_bytes:
+            result = timesheet_mail.submit_signed_timesheet_send(
+                preview,
+                pdf_bytes,
+                filename,
+                secrets=secrets,
+                signin_email=signin_email,
+                user_employee=identity,
+                preview_pdf_bytes=pdf_bytes,
+                initials_match=True,
+                saved_content_hash=_cell((saved or preview).get("Content Hash")),
+                audit_records=audit_records,
+                acknowledge_uncertain=acknowledge,
+            )
+            flash = {
+                "status": result.get("status") or "",
+                "error": timesheet_mail.scrub_audit_detail(result.get("error") or ""),
+            }
+            try:
+                apply_timesheet_send_result(preview, result)
+            except Exception as exc:
+                flash["audit_error"] = timesheet_mail.scrub_audit_detail(exc)
+            st.session_state["timesheet_mail_flash_" + employee] = flash
+            if result.get("status") == timesheet_mail.TIMESHEET_MAIL_STATUS_DENIED and "expired" in _cell(result.get("error")).lower():
+                st.session_state.pop(consent_key, None)
+        flash = st.session_state.get("timesheet_mail_flash_" + employee) or {}
+        if flash.get("status") == timesheet_mail.TIMESHEET_MAIL_STATUS_SENT:
+            st.success("Sent this week's time sheet to " + recipient + ".")
+        elif flash.get("status") == timesheet_mail.TIMESHEET_MAIL_STATUS_UNCERTAIN:
+            st.warning(flash.get("error") or "No clear send result. Check your Sent folder. The app will not retry automatically.")
+        elif flash.get("status"):
+            st.error(flash.get("error") or "Send was not accepted.")
+        if flash.get("audit_error"):
+            st.caption("The send result could not be recorded in the mail history. It was not sent again.")
     else:
         st.button(
-            "Email to patti@centralvalleyheli.com",
+            "Email to " + recipient,
             disabled=True,
             use_container_width=True,
             key=prefix + "email",

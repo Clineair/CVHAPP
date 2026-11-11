@@ -1,11 +1,13 @@
 """Per-user timesheet mail send for Gmail, Microsoft 365/Outlook/Hotmail, iCloud, and Yahoo.
 
-This module implements official provider HTTP routes, consent binding, and
-send gates. It does not start an HTTP server and does not enable sending
-on Streamlit Community Cloud by itself. A separate HTTPS callback service
-(see timesheet_mail_callback.py) is required before timesheet_email_can_send
-can be true. Tokens are never written to Sheets, logs, query strings, or
-the repo.
+This module implements official provider routes, consent binding, and send
+gates. It does not start an HTTP server and does not enable sending by
+itself. A separate HTTPS callback (see timesheet_mail_callback.py) must be
+configured before timesheet_email_can_send can be true. Access tokens stay
+in that service's shared store. SMTP app passwords are read from Secret
+Manager at send time and are never written to Sheets, logs, query strings,
+or the repo. Microsoft send stays available for a later roster change and
+is not used by the current employees.
 """
 from __future__ import annotations
 
@@ -16,8 +18,12 @@ import json
 import os
 import re
 import secrets as pysecrets
+import smtplib
+import socket
+import ssl
+import threading
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from email.message import EmailMessage
 from urllib.parse import urlencode, urlparse
 from zoneinfo import ZoneInfo
@@ -33,6 +39,12 @@ TIMESHEET_MAIL_ENABLED_KEY = "enabled"
 TIMESHEET_MAIL_STATE_TTL_SEC = 600
 TIMESHEET_MAIL_TOKEN_TTL_SEC = 3300  # short of a typical one-hour access token
 TIMESHEET_MAIL_TICKET_TTL_SEC = 120
+TIMESHEET_MAIL_API_TTL_SEC = 120
+TIMESHEET_MAIL_CLAIM_TTL_SEC = 180
+TIMESHEET_MAIL_IDEMPOTENCY_TTL_SEC = 180 * 24 * 60 * 60
+TIMESHEET_SMTP_SECRET_PREFIX = "timesheet-smtp-"
+TIMESHEET_MAIL_STORE_COLLECTION = "timesheet_mail_tokens"
+TIMESHEET_SIGNIN_SECTION = "timesheet_employees"
 
 TIMESHEET_MAIL_GMAIL_SCOPES = (
     "https://www.googleapis.com/auth/gmail.send",
@@ -100,8 +112,8 @@ TIMESHEET_MAIL_STATUS_DUPLICATE = "Duplicate blocked"
 TIMESHEET_MAIL_ACTION_SEND = "Send"
 
 _SECRET_PATTERNS = re.compile(
-    r"(access_token|refresh_token|id_token|client_secret|state_secret|bearer\s+[a-z0-9._\-=]+|"
-    r"code=[^&\s]+|client_secret=[^&\s]+|app.specific password|app password)",
+    r"((?:access_token|refresh_token|id_token|client_secret|state_secret)(?:=|:)?\S*|"
+    r"bearer\s+\S+|code=[^&\s]+|app[- ]specific password|app password)",
     re.I,
 )
 
@@ -119,11 +131,81 @@ def _lower_email(value):
     return text
 
 
-def sanitize_mail_error(exc):
+def sanitize_mail_error(exc, extra=()):
     """Return a short error string with credentials and tokens removed."""
     text = _cell(exc if isinstance(exc, str) else "%s" % exc)
+    for secret in extra or ():
+        secret_text = secret if isinstance(secret, str) else ""
+        if len(secret_text) >= 4:
+            text = text.replace(secret_text, "[redacted]")
     text = _SECRET_PATTERNS.sub("[redacted]", text)
+    text = re.sub(r"[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}", "[redacted-address]", text, flags=re.I)
     return text[:300]
+
+
+def scrub_audit_detail(text):
+    """Short sheet-safe result text. No mailbox addresses, tokens, or passwords."""
+    cleaned = sanitize_mail_error(text)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned[:120]
+
+
+def timesheet_mail_recipient(secrets=None):
+    """Fixed recipient. Secrets override the long-standing default; send fails closed on a bad value.
+
+    Employee mailbox addresses are never read here. When [timesheet_mail].recipient
+    is absent, the historical fixed recipient is used so existing gates stay stable.
+    Production should set the secret and treat that value as the only allowed To.
+    """
+    section = timesheet_secret_section(secrets, TIMESHEET_MAIL_SECTION)
+    configured = ""
+    if section is not None:
+        try:
+            if "recipient" in section:
+                configured = _lower_email(section["recipient"])
+        except Exception:
+            configured = ""
+    if configured:
+        return configured
+    return TIMESHEET_EMAIL_TO
+
+
+def timesheet_employee_for_signin_email(email, secrets=None):
+    """Map one verified sign-in email to one employee. Fail closed on duplicates or misses."""
+    section = timesheet_secret_section(secrets, TIMESHEET_SIGNIN_SECTION)
+    if section is None:
+        return None
+    wanted = _lower_email(email)
+    if not wanted:
+        return None
+    matches = []
+    try:
+        keys = list(section.keys())
+    except Exception:
+        return None
+    for name in keys:
+        try:
+            mapped = _lower_email(section[name])
+        except Exception:
+            continue
+        if mapped and mapped == wanted:
+            matches.append(_cell(name))
+    if len(matches) != 1:
+        return None
+    return matches[0]
+
+
+def timesheet_pdf_sha256(pdf_bytes):
+    return hashlib.sha256(pdf_bytes or b"").hexdigest()
+
+
+def timesheet_smtp_secret_id(employee, prefix=None):
+    """Secret Manager id derived from the employee name. Never an email address."""
+    slug = re.sub(r"[^a-z0-9]+", "-", _cell(employee).lower()).strip("-")
+    if not slug:
+        raise ValueError("Employee name is required for the SMTP secret id.")
+    prefix = prefix or TIMESHEET_SMTP_SECRET_PREFIX
+    return prefix + slug
 
 
 def timesheet_secret_section(secrets, name):
@@ -352,14 +434,25 @@ def timesheet_mail_state_secret(secrets=None):
         return ""
 
 
-def timesheet_sign_state(payload, secret, now=None):
+def timesheet_sign_state(payload, secret, now=None, ttl=None):
     if not secret:
         raise ValueError("Mail OAuth state signing is not configured.")
     body = dict(payload)
-    body["exp"] = int((now or time.time()) + TIMESHEET_MAIL_STATE_TTL_SEC)
+    lifetime = TIMESHEET_MAIL_STATE_TTL_SEC if ttl is None else int(ttl)
+    body["exp"] = int((now or time.time()) + lifetime)
     raw = base64.urlsafe_b64encode(json.dumps(body, separators=(",", ":"), sort_keys=True).encode()).decode().rstrip("=")
     sig = hmac.new(_secret_bytes(secret), raw.encode("ascii"), hashlib.sha256).hexdigest()
     return raw + "." + sig
+
+
+def timesheet_sign_api_request(payload, secret, now=None):
+    """HMAC body for Streamlit-to-backend redeem/send. Short-lived and replay-protected by nonce."""
+    body = dict(payload or {})
+    if not _cell(body.get("nonce")):
+        body["nonce"] = pysecrets.token_urlsafe(24)
+    if not _cell(body.get("kind")):
+        raise ValueError("Mail API request kind is required.")
+    return timesheet_sign_state(body, secret, now=now, ttl=TIMESHEET_MAIL_API_TTL_SEC)
 
 
 def _secret_bytes(secret):
@@ -468,68 +561,93 @@ def mailbox_matches_employee(employee, mailbox_email, secrets=None):
 
 
 class MemoryMailTokenStore:
-    """Process-local access-token store for the callback service. Not Sheets.
+    """In-process mail store used by tests and an explicit local override.
 
-    Tokens are keyed by employee name and never returned in query parameters.
-    Refresh tokens are not stored. Entries expire with the access token.
+    Production Cloud Run must use FirestoreMailTokenStore. This class is not
+    shared across instances and does not survive a restart. Tokens are keyed
+    by employee name and never returned in query parameters. Refresh tokens
+    are not stored. SMTP app passwords are never stored here.
     """
 
     def __init__(self, clock=None):
         self._items = {}
         self._pending = {}
         self._tickets = {}
+        self._nonces = {}
+        self._idempotency = {}
         self._clock = clock or time.time
+        self._lock = threading.Lock()
 
     def put_pending(self, nonce, record):
-        self._pending[nonce] = dict(record)
-        self._pending[nonce]["exp"] = self._clock() + TIMESHEET_MAIL_STATE_TTL_SEC
+        with self._lock:
+            self._pending[nonce] = dict(record)
+            self._pending[nonce]["exp"] = self._clock() + TIMESHEET_MAIL_STATE_TTL_SEC
 
     def pop_pending(self, nonce):
-        rec = self._pending.pop(nonce, None)
-        if not rec or rec.get("exp", 0) < self._clock():
-            return None
-        return rec
+        with self._lock:
+            rec = self._pending.pop(nonce, None)
+            if not rec or rec.get("exp", 0) < self._clock():
+                return None
+            return rec
 
     def put_access(self, employee, provider, mailbox_email, access_token, expires_in=None):
         ttl = int(expires_in or TIMESHEET_MAIL_TOKEN_TTL_SEC)
         ttl = min(max(ttl, 60), TIMESHEET_MAIL_TOKEN_TTL_SEC)
-        self._items[_cell(employee)] = {
-            "provider": _cell(provider).lower(),
-            "mailbox_email": _lower_email(mailbox_email),
-            "access_token": access_token,
-            "exp": self._clock() + ttl,
-        }
+        with self._lock:
+            self._items[_cell(employee)] = {
+                "provider": _cell(provider).lower(),
+                "mailbox_email": _lower_email(mailbox_email),
+                "access_token": access_token,
+                "kind": "oauth",
+                "exp": self._clock() + ttl,
+            }
+
+    def put_smtp_session(self, employee, provider, mailbox_email, ttl=None):
+        """Record that a vaulted SMTP mailbox may send. Does not store the password."""
+        lifetime = int(ttl or TIMESHEET_MAIL_TOKEN_TTL_SEC)
+        lifetime = min(max(lifetime, 60), TIMESHEET_MAIL_TOKEN_TTL_SEC)
+        with self._lock:
+            self._items[_cell(employee)] = {
+                "provider": _cell(provider).lower(),
+                "mailbox_email": _lower_email(mailbox_email),
+                "kind": "smtp",
+                "exp": self._clock() + lifetime,
+            }
 
     def get_access(self, employee):
-        rec = self._items.get(_cell(employee))
-        if not rec or rec.get("exp", 0) < self._clock():
-            self._items.pop(_cell(employee), None)
-            return None
-        return rec
+        with self._lock:
+            rec = self._items.get(_cell(employee))
+            if not rec or rec.get("exp", 0) < self._clock():
+                self._items.pop(_cell(employee), None)
+                return None
+            return dict(rec)
 
     def drop(self, employee):
-        self._items.pop(_cell(employee), None)
+        with self._lock:
+            self._items.pop(_cell(employee), None)
 
     def issue_ticket(self, employee):
         ticket = pysecrets.token_urlsafe(32)
-        self._tickets[ticket] = {"employee": _cell(employee), "exp": self._clock() + TIMESHEET_MAIL_TICKET_TTL_SEC}
+        with self._lock:
+            self._tickets[ticket] = {"employee": _cell(employee), "exp": self._clock() + TIMESHEET_MAIL_TICKET_TTL_SEC}
         return ticket
 
     def redeem_ticket(self, ticket):
-        rec = self._tickets.pop(_cell(ticket), None)
-        if not rec or rec.get("exp", 0) < self._clock():
-            return None
-        access = self.get_access(rec["employee"])
-        if not access:
-            return None
-        # Return metadata only plus a handle; callers in Streamlit should
-        # prefer asking the store to send rather than copying the token.
-        return {
-            "employee": rec["employee"],
-            "provider": access["provider"],
-            "mailbox_email": access["mailbox_email"],
-            "exp": access["exp"],
-        }
+        with self._lock:
+            rec = self._tickets.pop(_cell(ticket), None)
+            if not rec or rec.get("exp", 0) < self._clock():
+                return None
+            access = self._items.get(rec["employee"])
+            if not access or access.get("exp", 0) < self._clock():
+                return None
+            # Metadata only. Streamlit must not receive the access token.
+            return {
+                "employee": rec["employee"],
+                "provider": access["provider"],
+                "mailbox_email": access["mailbox_email"],
+                "exp": access["exp"],
+                "kind": access.get("kind") or "oauth",
+            }
 
     def consent_metadata(self, employee):
         rec = self.get_access(employee)
@@ -540,12 +658,544 @@ class MemoryMailTokenStore:
             "provider": rec["provider"],
             "mailbox_email": rec["mailbox_email"],
             "exp": rec["exp"],
+            "kind": rec.get("kind") or "oauth",
         }
 
+    def remember_nonce(self, nonce, exp, now=None):
+        """Return True the first time a signed API nonce is seen. False on replay."""
+        nonce = _cell(nonce)
+        if not nonce:
+            return False
+        with self._lock:
+            current = self._clock() if now is None else float(now)
+            expired = [key for key, until in self._nonces.items() if until < current]
+            for key in expired:
+                self._nonces.pop(key, None)
+            if nonce in self._nonces:
+                return False
+            self._nonces[nonce] = float(exp or 0)
+            return True
 
-def build_timesheet_mime(record, pdf_bytes, filename, from_email, to=None):
-    if to is not None and _lower_email(to) != TIMESHEET_EMAIL_TO:
-        raise ValueError("Timesheet email can only be addressed to " + TIMESHEET_EMAIL_TO + ".")
+    def claim_send(self, key, employee, week, content_hash, acknowledge_uncertain=False):
+        """Atomically claim one employee + week + content hash send.
+
+        Returns claimed, sent, uncertain, or in_progress. Uncertain and expired
+        in-progress claims are not retried unless the caller explicitly acknowledges.
+        """
+        key = _cell(key)
+        if not key:
+            return "uncertain"
+        with self._lock:
+            now = self._clock()
+            rec = self._idempotency.get(key)
+            if rec:
+                status = rec.get("status")
+                if status == TIMESHEET_MAIL_STATUS_SENT:
+                    return "sent"
+                if status == TIMESHEET_MAIL_STATUS_UNCERTAIN:
+                    if not acknowledge_uncertain:
+                        return "uncertain"
+                    rec["status"] = "InProgress"
+                    rec["exp"] = now + TIMESHEET_MAIL_CLAIM_TTL_SEC
+                    return "claimed"
+                if status == "InProgress":
+                    if rec.get("exp", 0) >= now:
+                        return "in_progress"
+                    if not acknowledge_uncertain:
+                        rec["status"] = TIMESHEET_MAIL_STATUS_UNCERTAIN
+                        rec["exp"] = now + TIMESHEET_MAIL_IDEMPOTENCY_TTL_SEC
+                        return "uncertain"
+                    rec["status"] = "InProgress"
+                    rec["exp"] = now + TIMESHEET_MAIL_CLAIM_TTL_SEC
+                    return "claimed"
+            self._idempotency[key] = {
+                "status": "InProgress",
+                "employee": _cell(employee),
+                "week": _cell(week),
+                "content_hash": _cell(content_hash),
+                "exp": now + TIMESHEET_MAIL_CLAIM_TTL_SEC,
+            }
+            return "claimed"
+
+    def finish_send(self, key, status):
+        """Record the provider outcome. Denied releases the claim. Uncertain stays blocked."""
+        key = _cell(key)
+        if not key:
+            return
+        with self._lock:
+            rec = self._idempotency.get(key)
+            now = self._clock()
+            if status == TIMESHEET_MAIL_STATUS_DENIED:
+                self._idempotency.pop(key, None)
+                return
+            if rec is None:
+                rec = {
+                    "employee": "",
+                    "week": "",
+                    "content_hash": "",
+                }
+                self._idempotency[key] = rec
+            if status == TIMESHEET_MAIL_STATUS_SENT:
+                rec["status"] = TIMESHEET_MAIL_STATUS_SENT
+                rec["exp"] = now + TIMESHEET_MAIL_IDEMPOTENCY_TTL_SEC
+                return
+            if status == TIMESHEET_MAIL_STATUS_UNCERTAIN:
+                rec["status"] = TIMESHEET_MAIL_STATUS_UNCERTAIN
+                rec["exp"] = now + TIMESHEET_MAIL_IDEMPOTENCY_TTL_SEC
+                return
+            if status == TIMESHEET_MAIL_STATUS_DUPLICATE:
+                return
+            self._idempotency.pop(key, None)
+
+
+def _store_doc_id(prefix, value):
+    digest = hashlib.sha256(_cell(value).encode("utf-8")).hexdigest()
+    return prefix + "_" + digest
+
+
+def _expire_at(exp):
+    return datetime.fromtimestamp(float(exp), tz=timezone.utc)
+
+
+class FirestoreMailTokenStore:
+    """Shared short-lived store for Cloud Run. Survives restarts and multiple instances.
+
+    Documents live in one Firestore collection. Reads enforce exp even if a TTL
+    policy is not configured yet. Access tokens and PKCE verifiers stay in this
+    store; redeem and consent methods never return them. SMTP passwords are
+    not written here.
+    """
+
+    def __init__(self, project, client=None, clock=None, collection=None):
+        self.project = _cell(project)
+        if not self.project:
+            raise ValueError("Firestore token store requires a Google Cloud project id.")
+        self._client = client
+        self._clock = clock or time.time
+        self.collection = collection or TIMESHEET_MAIL_STORE_COLLECTION
+
+    @property
+    def client(self):
+        if self._client is None:
+            try:
+                from google.cloud import firestore
+            except Exception as exc:
+                raise SystemExit("google-cloud-firestore is not installed.") from exc
+            self._client = firestore.Client(project=self.project)
+        return self._client
+
+    def _doc(self, doc_id):
+        return self.client.collection(self.collection).document(doc_id)
+
+    def _transact(self, fn):
+        client = self.client
+        runner = getattr(client, "run_transaction", None)
+        if runner is not None:
+            return runner(fn)
+        from google.cloud import firestore
+        transaction = client.transaction()
+        return firestore.transactional(fn)(transaction)
+
+    def _mutate(self, doc_id, mutator):
+        def run(transaction):
+            ref = self._doc(doc_id)
+            snap = ref.get(transaction=transaction)
+            current = snap.to_dict() if getattr(snap, "exists", False) else None
+            new_value, result = mutator(current)
+            if new_value is None:
+                if current is not None:
+                    transaction.delete(ref)
+            else:
+                new_value = dict(new_value)
+                if "exp" in new_value and "expire_at" not in new_value:
+                    new_value["expire_at"] = _expire_at(new_value["exp"])
+                transaction.set(ref, new_value)
+            return result
+        return self._transact(run)
+
+    def _live(self, current, now=None):
+        if not current:
+            return None
+        if float(current.get("exp") or 0) < float(now or self._clock()):
+            return None
+        return current
+
+    def put_pending(self, nonce, record):
+        data = dict(record)
+        data.pop("access_token", None)
+        data.pop("refresh_token", None)
+        data["exp"] = self._clock() + TIMESHEET_MAIL_STATE_TTL_SEC
+        self._mutate(_store_doc_id("pending", nonce), lambda _current: (data, True))
+
+    def pop_pending(self, nonce):
+        def mutator(current):
+            live = self._live(current)
+            if not live:
+                return None, None
+            return None, dict(live)
+        return self._mutate(_store_doc_id("pending", nonce), mutator)
+
+    def put_access(self, employee, provider, mailbox_email, access_token, expires_in=None):
+        ttl = int(expires_in or TIMESHEET_MAIL_TOKEN_TTL_SEC)
+        ttl = min(max(ttl, 60), TIMESHEET_MAIL_TOKEN_TTL_SEC)
+        data = {
+            "employee": _cell(employee),
+            "provider": _cell(provider).lower(),
+            "mailbox_email": _lower_email(mailbox_email),
+            "access_token": access_token,
+            "kind": "oauth",
+            "exp": self._clock() + ttl,
+        }
+        self._mutate(_store_doc_id("access", employee), lambda _current: (data, True))
+
+    def put_smtp_session(self, employee, provider, mailbox_email, ttl=None):
+        lifetime = int(ttl or TIMESHEET_MAIL_TOKEN_TTL_SEC)
+        lifetime = min(max(lifetime, 60), TIMESHEET_MAIL_TOKEN_TTL_SEC)
+        data = {
+            "employee": _cell(employee),
+            "provider": _cell(provider).lower(),
+            "mailbox_email": _lower_email(mailbox_email),
+            "kind": "smtp",
+            "exp": self._clock() + lifetime,
+        }
+        self._mutate(_store_doc_id("access", employee), lambda _current: (data, True))
+
+    def get_access(self, employee):
+        def mutator(current):
+            live = self._live(current)
+            if not live:
+                return None, None
+            return live, dict(live)
+        return self._mutate(_store_doc_id("access", employee), mutator)
+
+    def drop(self, employee):
+        self._mutate(_store_doc_id("access", employee), lambda _current: (None, True))
+
+    def issue_ticket(self, employee):
+        ticket = pysecrets.token_urlsafe(32)
+        data = {"employee": _cell(employee), "exp": self._clock() + TIMESHEET_MAIL_TICKET_TTL_SEC}
+        self._mutate(_store_doc_id("ticket", ticket), lambda _current: (data, True))
+        return ticket
+
+    def redeem_ticket(self, ticket):
+        def mutator(current):
+            live = self._live(current)
+            if not live:
+                return None, None
+            return None, dict(live)
+        rec = self._mutate(_store_doc_id("ticket", ticket), mutator)
+        if not rec:
+            return None
+        access = self.get_access(rec.get("employee"))
+        if not access:
+            return None
+        return {
+            "employee": rec.get("employee"),
+            "provider": access.get("provider"),
+            "mailbox_email": access.get("mailbox_email"),
+            "exp": access.get("exp"),
+            "kind": access.get("kind") or "oauth",
+        }
+
+    def consent_metadata(self, employee):
+        rec = self.get_access(employee)
+        if not rec:
+            return None
+        return {
+            "employee": _cell(employee),
+            "provider": rec.get("provider"),
+            "mailbox_email": rec.get("mailbox_email"),
+            "exp": rec.get("exp"),
+            "kind": rec.get("kind") or "oauth",
+        }
+
+    def remember_nonce(self, nonce, exp, now=None):
+        nonce = _cell(nonce)
+        if not nonce:
+            return False
+        current_time = self._clock() if now is None else float(now)
+
+        def mutator(current):
+            live = self._live(current, now=current_time)
+            if live:
+                return live, False
+            return {"exp": float(exp or 0)}, True
+        return self._mutate(_store_doc_id("nonce", nonce), mutator)
+
+    def claim_send(self, key, employee, week, content_hash, acknowledge_uncertain=False):
+        key = _cell(key)
+        if not key:
+            return "uncertain"
+
+        def mutator(current):
+            now = self._clock()
+            rec = dict(current) if current else None
+            if rec:
+                status = rec.get("status")
+                if status == TIMESHEET_MAIL_STATUS_SENT and float(rec.get("exp") or 0) >= now:
+                    return rec, "sent"
+                if status == TIMESHEET_MAIL_STATUS_UNCERTAIN and float(rec.get("exp") or 0) >= now:
+                    if not acknowledge_uncertain:
+                        return rec, "uncertain"
+                    rec["status"] = "InProgress"
+                    rec["exp"] = now + TIMESHEET_MAIL_CLAIM_TTL_SEC
+                    return rec, "claimed"
+                if status == "InProgress":
+                    if float(rec.get("exp") or 0) >= now:
+                        return rec, "in_progress"
+                    if not acknowledge_uncertain:
+                        rec["status"] = TIMESHEET_MAIL_STATUS_UNCERTAIN
+                        rec["exp"] = now + TIMESHEET_MAIL_IDEMPOTENCY_TTL_SEC
+                        return rec, "uncertain"
+                    rec["status"] = "InProgress"
+                    rec["exp"] = now + TIMESHEET_MAIL_CLAIM_TTL_SEC
+                    return rec, "claimed"
+            created = {
+                "status": "InProgress",
+                "employee": _cell(employee),
+                "week": _cell(week),
+                "content_hash": _cell(content_hash),
+                "exp": now + TIMESHEET_MAIL_CLAIM_TTL_SEC,
+            }
+            return created, "claimed"
+        return self._mutate(_store_doc_id("idem", key), mutator)
+
+    def finish_send(self, key, status):
+        key = _cell(key)
+        if not key:
+            return
+
+        def mutator(current):
+            now = self._clock()
+            if status == TIMESHEET_MAIL_STATUS_DENIED:
+                return None, True
+            rec = dict(current) if current else {"employee": "", "week": "", "content_hash": ""}
+            if status == TIMESHEET_MAIL_STATUS_SENT:
+                rec["status"] = TIMESHEET_MAIL_STATUS_SENT
+                rec["exp"] = now + TIMESHEET_MAIL_IDEMPOTENCY_TTL_SEC
+                return rec, True
+            if status == TIMESHEET_MAIL_STATUS_UNCERTAIN:
+                rec["status"] = TIMESHEET_MAIL_STATUS_UNCERTAIN
+                rec["exp"] = now + TIMESHEET_MAIL_IDEMPOTENCY_TTL_SEC
+                return rec, True
+            if status == TIMESHEET_MAIL_STATUS_DUPLICATE:
+                return current, True
+            return None, True
+        self._mutate(_store_doc_id("idem", key), mutator)
+
+
+class MailSendUncertain(Exception):
+    """The provider may have accepted the message. Do not retry automatically."""
+
+
+class MailProviderDown(Exception):
+    """The provider connection failed before the message was handed off."""
+
+
+class MailAuthRejected(Exception):
+    """SMTP authentication failed. The password must not be included."""
+
+
+class SecretAccessError(Exception):
+    def __init__(self, reason):
+        super().__init__(reason)
+        self.reason = reason
+
+
+def _secret_access_reason(exc):
+    text = (type(exc).__name__ + " " + _cell(exc)).lower()
+    if "permission" in text or "403" in text or "denied" in text:
+        return "permission_denied"
+    if "notfound" in text or "not found" in text or "404" in text or isinstance(exc, KeyError):
+        return "not_found"
+    return "unavailable"
+
+
+class SecretManagerAppPasswords:
+    """Read per-employee SMTP app passwords from Secret Manager at send time.
+
+    An admin creates the secret versions later in Secret Manager. This class
+    has no write path and no password-entry form. Values are never logged.
+    """
+
+    def __init__(self, project, client=None, prefix=None):
+        self.project = _cell(project)
+        if not self.project:
+            raise ValueError("Secret Manager project id is required.")
+        self._client = client
+        self.prefix = prefix or TIMESHEET_SMTP_SECRET_PREFIX
+
+    @property
+    def client(self):
+        if self._client is None:
+            try:
+                from google.cloud import secretmanager
+            except Exception as exc:
+                raise SystemExit("google-cloud-secret-manager is not installed.") from exc
+            self._client = secretmanager.SecretManagerServiceClient()
+        return self._client
+
+    def secret_version_name(self, employee):
+        secret_id = timesheet_smtp_secret_id(employee, prefix=self.prefix)
+        return "projects/%s/secrets/%s/versions/latest" % (self.project, secret_id)
+
+    def get_password(self, employee):
+        name = self.secret_version_name(employee)
+        try:
+            response = self.client.access_secret_version(request={"name": name})
+            data = response.payload.data
+        except SecretAccessError:
+            raise
+        except Exception as exc:
+            raise SecretAccessError(_secret_access_reason(exc)) from None
+        if isinstance(data, bytes):
+            text = data.decode("utf-8")
+        else:
+            text = _cell(data)
+        text = text.strip()
+        if not text:
+            raise SecretAccessError("not_found")
+        return text
+
+    def exists(self, employee):
+        try:
+            return bool(self.get_password(employee))
+        except SecretAccessError:
+            return False
+
+
+def timesheet_smtp_connection_spec(provider, secrets=None):
+    """Official Apple or Yahoo SMTP endpoint. Ports are only 587 STARTTLS or 465 SSL."""
+    provider = _cell(provider).lower()
+    base = TIMESHEET_MAIL_SMTP_SPEC.get(provider)
+    if not base:
+        raise ValueError("Unsupported SMTP provider.")
+    spec = {
+        "provider": provider,
+        "host": base["host"],
+        "port": int(base["port"]),
+        "security": "starttls",
+    }
+    if provider == "yahoo":
+        port = 587
+        section = timesheet_secret_section(secrets, TIMESHEET_SMTP_SECTION)
+        try:
+            if section is not None and "yahoo_port" in section:
+                port = int(section["yahoo_port"])
+        except Exception:
+            port = 587
+        if port == 465:
+            spec["port"] = 465
+            spec["security"] = "ssl"
+        else:
+            spec["port"] = 587
+            spec["security"] = "starttls"
+    elif provider == "icloud":
+        spec["host"] = "smtp.mail.me.com"
+        spec["port"] = 587
+        spec["security"] = "starttls"
+    if spec["host"] not in ("smtp.mail.me.com", "smtp.mail.yahoo.com"):
+        raise ValueError("Unsupported SMTP host.")
+    if spec["port"] not in (465, 587):
+        raise ValueError("Unsupported SMTP port.")
+    return spec
+
+
+def _smtp_deliver(spec, username, password, message, smtp_module=None):
+    """TLS SMTP send. iCloud is 587 STARTTLS. Yahoo is 587 STARTTLS or 465 SSL."""
+    smtp_module = smtp_module or smtplib
+    host = spec["host"]
+    port = int(spec["port"])
+    security = spec["security"]
+    if host not in ("smtp.mail.me.com", "smtp.mail.yahoo.com") or port not in (465, 587):
+        raise MailProviderDown()
+    context = ssl.create_default_context()
+    client = None
+    started_send = False
+    try:
+        if security == "ssl" or port == 465:
+            client = smtp_module.SMTP_SSL(host, port, timeout=30, context=context)
+            client.login(username, password)
+            started_send = True
+            client.send_message(message)
+        else:
+            client = smtp_module.SMTP(host, port, timeout=30)
+            client.ehlo()
+            client.starttls(context=context)
+            client.ehlo()
+            client.login(username, password)
+            started_send = True
+            client.send_message(message)
+    except (MailSendUncertain, MailAuthRejected, MailProviderDown):
+        raise
+    except (TimeoutError, socket.timeout):
+        raise MailSendUncertain()
+    except smtplib.SMTPAuthenticationError:
+        raise MailAuthRejected()
+    except (ConnectionError, OSError, smtplib.SMTPConnectError, smtplib.SMTPServerDisconnected):
+        if started_send:
+            raise MailSendUncertain()
+        raise MailProviderDown()
+    except smtplib.SMTPException:
+        if started_send:
+            raise MailSendUncertain()
+        raise MailProviderDown()
+    finally:
+        if client is not None:
+            try:
+                client.quit()
+            except Exception:
+                pass
+
+
+def send_via_smtp(provider, username, password, record, pdf_bytes, filename, mailer=None, to=None, secrets=None):
+    """Send the previewed PDF through official TLS SMTP. Password is not returned or logged."""
+    provider = _cell(provider).lower()
+    if timesheet_mail_auth_mode(provider) != "smtp_app_password":
+        raise ValueError("Unsupported SMTP provider.")
+    if not password:
+        return {
+            "status": TIMESHEET_MAIL_STATUS_DENIED,
+            "error": "The vaulted SMTP app password is missing or revoked.",
+        }
+    spec = timesheet_smtp_connection_spec(provider, secrets)
+    message = build_timesheet_mime(record, pdf_bytes, filename, username, to=to, secrets=secrets)
+    deliver = mailer or _smtp_deliver
+    try:
+        deliver(spec, username, password, message)
+    except MailSendUncertain:
+        return {
+            "status": TIMESHEET_MAIL_STATUS_UNCERTAIN,
+            "error": "The mail provider did not confirm delivery. Check the Sent folder. The app will not retry automatically.",
+        }
+    except MailAuthRejected:
+        return {
+            "status": TIMESHEET_MAIL_STATUS_DENIED,
+            "error": "The mailbox rejected the vaulted app password.",
+        }
+    except MailProviderDown:
+        return {
+            "status": TIMESHEET_MAIL_STATUS_DENIED,
+            "error": "The mail provider is unavailable.",
+        }
+    except (TimeoutError, socket.timeout):
+        return {
+            "status": TIMESHEET_MAIL_STATUS_UNCERTAIN,
+            "error": "The mail provider did not answer in time. Check the Sent folder. The app will not retry automatically.",
+        }
+    except Exception as exc:
+        uncertain = isinstance(exc, (TimeoutError, socket.timeout))
+        return {
+            "status": TIMESHEET_MAIL_STATUS_UNCERTAIN if uncertain else TIMESHEET_MAIL_STATUS_DENIED,
+            "error": sanitize_mail_error(exc, extra=(password, username)),
+        }
+    return {"status": TIMESHEET_MAIL_STATUS_SENT, "error": ""}
+
+
+def build_timesheet_mime(record, pdf_bytes, filename, from_email, to=None, secrets=None):
+    recipient = timesheet_mail_recipient(secrets)
+    if to is not None and _lower_email(to) != recipient:
+        raise ValueError("Timesheet email can only be addressed to " + recipient + ".")
     if not pdf_bytes or not _cell(filename).lower().endswith(".pdf"):
         raise ValueError("Only the generated timesheet PDF can be attached.")
     if pdf_bytes[:5] != b"%PDF-":
@@ -554,7 +1204,7 @@ def build_timesheet_mime(record, pdf_bytes, filename, from_email, to=None):
     if not from_addr:
         raise ValueError("A bound mailbox address is required.")
     msg = EmailMessage()
-    msg["To"] = TIMESHEET_EMAIL_TO
+    msg["To"] = recipient
     msg["From"] = from_addr
     msg["Subject"] = timesheet_email_subject(record)
     msg.set_content(timesheet_email_body(record))
@@ -583,9 +1233,10 @@ def timesheet_gmail_send_payload(mime_message):
     return {"raw": raw}
 
 
-def timesheet_microsoft_send_payload(record, pdf_bytes, filename, from_email, to=None):
-    if to is not None and _lower_email(to) != TIMESHEET_EMAIL_TO:
-        raise ValueError("Timesheet email can only be addressed to " + TIMESHEET_EMAIL_TO + ".")
+def timesheet_microsoft_send_payload(record, pdf_bytes, filename, from_email, to=None, secrets=None):
+    recipient = timesheet_mail_recipient(secrets)
+    if to is not None and _lower_email(to) != recipient:
+        raise ValueError("Timesheet email can only be addressed to " + recipient + ".")
     if not pdf_bytes or pdf_bytes[:5] != b"%PDF-" or not _cell(filename).lower().endswith(".pdf"):
         raise ValueError("Only the generated timesheet PDF can be attached.")
     encoded = base64.b64encode(pdf_bytes).decode("ascii")
@@ -593,7 +1244,7 @@ def timesheet_microsoft_send_payload(record, pdf_bytes, filename, from_email, to
         "message": {
             "subject": timesheet_email_subject(record),
             "body": {"contentType": "Text", "content": timesheet_email_body(record)},
-            "toRecipients": [{"emailAddress": {"address": TIMESHEET_EMAIL_TO}}],
+            "toRecipients": [{"emailAddress": {"address": recipient}}],
             "from": {"emailAddress": {"address": _lower_email(from_email)}},
             "attachments": [{
                 "@odata.type": "#microsoft.graph.fileAttachment",
@@ -725,13 +1376,17 @@ def timesheet_mail_send_gates(
             return False, timesheet_smtp_setup_reason(mailbox["provider"])
     elif not timesheet_mail_provider_configured(mailbox["provider"], secrets):
         return False, "The " + mailbox["provider"] + " mail client is not configured, so sending stays off."
-    if to is not None and _lower_email(to) != TIMESHEET_EMAIL_TO:
-        return False, "Timesheet email can only be addressed to " + TIMESHEET_EMAIL_TO + "."
+    recipient = timesheet_mail_recipient(secrets)
+    if to is not None and _lower_email(to) != recipient:
+        return False, "Timesheet email can only be addressed to " + recipient + "."
     if initials_match is not True:
         return False, "Initial and save this week's current time-sheet content before sending."
     if not consent:
         if timesheet_mail_auth_mode(mailbox["provider"]) == "smtp_app_password":
-            return False, timesheet_smtp_setup_reason(mailbox["provider"])
+            return False, (
+                "The vaulted SMTP session for this mailbox is not ready. "
+                "This app does not ask for a mail password."
+            )
         return False, (
             "Authorize " + mailbox["provider"] + " mail send for this session. Signing in "
             "does not grant permission to send mail. Access lasts only for this short session."
@@ -768,10 +1423,10 @@ def timesheet_mail_block_reason(*args, **kwargs):
     return reason or "This app does not send mail until you review the message and press Send."
 
 
-def timesheet_mail_preview(record, consent=None, filename=None):
+def timesheet_mail_preview(record, consent=None, filename=None, secrets=None):
     from_email = _lower_email((consent or {}).get("mailbox_email"))
     return {
-        "to": TIMESHEET_EMAIL_TO,
+        "to": timesheet_mail_recipient(secrets),
         "from": from_email,
         "subject": timesheet_email_subject(record),
         "body": timesheet_email_body(record),
@@ -780,22 +1435,23 @@ def timesheet_mail_preview(record, consent=None, filename=None):
     }
 
 
-def send_via_provider(provider, access_token, record, pdf_bytes, filename, from_email, http_post=None, to=None):
+def send_via_provider(provider, access_token, record, pdf_bytes, filename, from_email, http_post=None, to=None, secrets=None):
     """POST the official send API. http_post(url, headers, json=None, timeout=) must be injected or requests."""
-    if to is not None and _lower_email(to) != TIMESHEET_EMAIL_TO:
-        raise ValueError("Timesheet email can only be addressed to " + TIMESHEET_EMAIL_TO + ".")
+    recipient = timesheet_mail_recipient(secrets)
+    if to is not None and _lower_email(to) != recipient:
+        raise ValueError("Timesheet email can only be addressed to " + recipient + ".")
     if not access_token:
         raise ValueError("Mail authorization is missing.")
     urls = timesheet_provider_urls(provider)
     headers = {"Authorization": "Bearer " + access_token}
     if provider == "gmail":
-        mime = build_timesheet_mime(record, pdf_bytes, filename, from_email, to=to)
+        mime = build_timesheet_mime(record, pdf_bytes, filename, from_email, to=to, secrets=secrets)
         body = timesheet_gmail_send_payload(mime)
         headers["Content-Type"] = "application/json"
         payload = body
         json_body = payload
     elif provider == "microsoft":
-        json_body = timesheet_microsoft_send_payload(record, pdf_bytes, filename, from_email, to=to)
+        json_body = timesheet_microsoft_send_payload(record, pdf_bytes, filename, from_email, to=to, secrets=secrets)
         headers["Content-Type"] = "application/json"
     else:
         raise ValueError("Unsupported mail provider.")
@@ -819,6 +1475,35 @@ def _default_http_post(url, headers=None, json=None, timeout=30):
     return response.status_code, response.text
 
 
+def _claim_block_result(claim, key):
+    if claim == "sent":
+        return {
+            "status": TIMESHEET_MAIL_STATUS_DENIED,
+            "error": "This exact initialed time sheet was already sent. Change and re-initial the week before sending again.",
+            "idempotency_key": key,
+        }
+    if claim == "uncertain":
+        return {
+            "status": TIMESHEET_MAIL_STATUS_DENIED,
+            "error": (
+                "A previous send for this week did not get a clear result. Check your Sent folder "
+                "before sending again. The app will not retry automatically."
+            ),
+            "idempotency_key": key,
+        }
+    if claim == "in_progress":
+        return {
+            "status": TIMESHEET_MAIL_STATUS_DUPLICATE,
+            "error": "Send is already in progress or finished for this week.",
+            "idempotency_key": key,
+        }
+    return {
+        "status": TIMESHEET_MAIL_STATUS_UNCERTAIN,
+        "error": "Send could not be claimed safely. The app will not retry automatically.",
+        "idempotency_key": key,
+    }
+
+
 def execute_timesheet_send(
     record,
     *,
@@ -836,13 +1521,17 @@ def execute_timesheet_send(
     acknowledge_uncertain=False,
     http_post=None,
     in_flight=None,
+    smtp_password=None,
+    smtp_mailer=None,
 ):
-    """Send once through the official provider API using a server-side token store.
+    """Send once through the official provider using a server-side token store.
 
-    Never retries automatically on uncertain results. Rerun-safe if the same
-    idempotency key is in in_flight or already marked Sent in audit_records.
+    Never retries automatically on uncertain results. Audit rows and the
+    store's atomic employee + week + content-hash claim both block duplicates.
+    SMTP app passwords are read only for this call and are not stored.
     """
-    consent = store.consent_metadata(user_employee or _cell((record or {}).get("Employee"))) if store else None
+    employee = user_employee or _cell((record or {}).get("Employee"))
+    consent = store.consent_metadata(employee) if store else None
     ok, reason = timesheet_mail_send_gates(
         record,
         user_employee=user_employee,
@@ -863,27 +1552,87 @@ def execute_timesheet_send(
         return {"status": TIMESHEET_MAIL_STATUS_DUPLICATE, "error": "Send is already in progress or finished for this week.", "idempotency_key": key}
     if not ok:
         return {"status": TIMESHEET_MAIL_STATUS_DENIED, "error": reason, "idempotency_key": key}
-    access = store.get_access(user_employee or record.get("Employee"))
-    if not access or not access.get("access_token"):
+    access = store.get_access(employee) if store else None
+    provider = _cell((access or {}).get("provider")).lower()
+    mode = timesheet_mail_auth_mode(provider)
+    if mode == "smtp_app_password":
+        if not access or access.get("kind") != "smtp":
+            return {"status": TIMESHEET_MAIL_STATUS_DENIED, "error": "Mail authorization is missing or expired.", "idempotency_key": key}
+    elif not access or not access.get("access_token"):
         return {"status": TIMESHEET_MAIL_STATUS_DENIED, "error": "Mail authorization is missing or expired.", "idempotency_key": key}
+    if store is not None and key and hasattr(store, "claim_send"):
+        claim = store.claim_send(
+            key,
+            employee,
+            (record or {}).get("Week Of"),
+            (record or {}).get("Content Hash"),
+            acknowledge_uncertain=acknowledge_uncertain,
+        )
+        if claim != "claimed":
+            return _claim_block_result(claim, key)
     if in_flight is not None and key:
         in_flight.add(key)
-    result = send_via_provider(
-        access["provider"],
-        access["access_token"],
-        record,
-        pdf_bytes,
-        filename,
-        access["mailbox_email"],
-        http_post=http_post,
-        to=to,
-    )
+    try:
+        if mode == "smtp_app_password":
+            try:
+                if smtp_password is None:
+                    raise SecretAccessError("not_found")
+                password = smtp_password(employee) if callable(smtp_password) else smtp_password
+            except SecretAccessError as exc:
+                if exc.reason == "unavailable":
+                    result = {
+                        "status": TIMESHEET_MAIL_STATUS_DENIED,
+                        "error": "The credential store is unavailable.",
+                    }
+                else:
+                    result = {
+                        "status": TIMESHEET_MAIL_STATUS_DENIED,
+                        "error": "The vaulted SMTP app password is missing or revoked.",
+                    }
+            else:
+                result = send_via_smtp(
+                    provider,
+                    access.get("mailbox_email"),
+                    password,
+                    record,
+                    pdf_bytes,
+                    filename,
+                    mailer=smtp_mailer,
+                    to=to,
+                    secrets=secrets,
+                )
+        else:
+            result = send_via_provider(
+                access["provider"],
+                access["access_token"],
+                record,
+                pdf_bytes,
+                filename,
+                access["mailbox_email"],
+                http_post=http_post,
+                to=to,
+                secrets=secrets,
+            )
+    except Exception as exc:
+        result = {
+            "status": TIMESHEET_MAIL_STATUS_UNCERTAIN,
+            "error": sanitize_mail_error(exc),
+        }
+    if store is not None and key and hasattr(store, "finish_send"):
+        store.finish_send(key, result.get("status"))
     result["idempotency_key"] = key
-    result["from"] = access["mailbox_email"]
-    result["provider"] = access["provider"]
-    result["to"] = TIMESHEET_EMAIL_TO
-    if result.get("status") == TIMESHEET_MAIL_STATUS_DENIED and result.get("http_status") in (401, 403):
-        store.drop(user_employee or record.get("Employee"))
+    result["from"] = (access or {}).get("mailbox_email") or ""
+    result["provider"] = provider
+    result["to"] = timesheet_mail_recipient(secrets)
+    result.pop("access_token", None)
+    result.pop("password", None)
+    if (
+        mode == "oauth"
+        and result.get("status") == TIMESHEET_MAIL_STATUS_DENIED
+        and result.get("http_status") in (401, 403)
+        and store is not None
+    ):
+        store.drop(employee)
         result["error"] = "Mail authorization was rejected or expired. Authorize again to send."
     return result
 
@@ -966,3 +1715,215 @@ def app_return_url(app_base_url, ticket=None):
         # One-time opaque ticket only — never an access token or auth code.
         return base + ("&" if "?" in base else "?") + urlencode({"timesheet_mail": "ready", "ticket": ticket})
     return base + ("&" if "?" in base else "?") + urlencode({"timesheet_mail": "ready"})
+
+
+def compact_mail_audit(audit_records, employee):
+    """Audit fields the send gate needs. No mailbox addresses or tokens."""
+    employee = _cell(employee)
+    compact = []
+    for row in audit_records or []:
+        if not isinstance(row, dict):
+            continue
+        if employee and _cell(row.get("Employee")) not in ("", employee):
+            continue
+        compact.append({
+            "Employee": _cell(row.get("Employee")) or employee,
+            "Week Of": _cell(row.get("Week Of")),
+            "Content Hash": _cell(row.get("Content Hash")),
+            "Status": _cell(row.get("Status")),
+            "Idempotency Key": _cell(row.get("Idempotency Key")),
+        })
+    return compact[-50:]
+
+
+def _mail_api_url(secrets, path):
+    base = timesheet_mail_backend_base(secrets)
+    if not base:
+        raise ValueError("The mail callback service is not configured.")
+    return base + path
+
+
+def _default_json_post(url, payload, timeout=35):
+    import requests
+    response = requests.post(
+        url,
+        json=payload,
+        timeout=timeout,
+        headers={"Content-Type": "application/json", "Accept": "application/json"},
+    )
+    return response.status_code, response.text
+
+
+def post_mail_api(path, signed_token, secrets, extra=None, http_post=None, timeout=35):
+    """One POST to the callback service. A transport error is Uncertain and is not retried."""
+    body = {"token": signed_token}
+    if extra:
+        body.update(extra)
+    poster = http_post or _default_json_post
+    try:
+        status, text = poster(_mail_api_url(secrets, path), body, timeout)
+    except Exception as exc:
+        return {
+            "ok": False,
+            "status": TIMESHEET_MAIL_STATUS_UNCERTAIN,
+            "error": "The mail service did not answer. Check the Sent folder before trying again. The app will not retry automatically.",
+            "transport_error": sanitize_mail_error(exc),
+        }
+    try:
+        data = json.loads(text or "{}")
+    except Exception:
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    data.pop("access_token", None)
+    data.pop("password", None)
+    data.pop("pdf_base64", None)
+    if status >= 500 or not data:
+        return {
+            "ok": False,
+            "status": TIMESHEET_MAIL_STATUS_UNCERTAIN,
+            "error": "The mail service did not return a clear result. The app will not retry automatically.",
+            "http_status": status,
+        }
+    data["http_status"] = status
+    if "status" not in data and status >= 400:
+        data["status"] = TIMESHEET_MAIL_STATUS_DENIED
+        data["ok"] = False
+    return data
+
+
+def redeem_ready_ticket_http(ticket, employee, signin_email, secrets, http_post=None, now=None):
+    """Redeem a one-time ready ticket. The response is consent metadata, never an access token."""
+    secret = timesheet_mail_state_secret(secrets)
+    if not secret or not _cell(ticket):
+        return None
+    signed = timesheet_sign_api_request({
+        "kind": "redeem",
+        "ticket": _cell(ticket),
+        "employee": _cell(employee),
+        "signin_email": _lower_email(signin_email),
+    }, secret, now=now)
+    result = post_mail_api("/timesheet-mail/redeem", signed, secrets, http_post=http_post)
+    consent = result.get("consent") if isinstance(result, dict) else None
+    if not isinstance(consent, dict):
+        return None
+    consent.pop("access_token", None)
+    consent.pop("password", None)
+    if _cell(consent.get("employee")) != _cell(employee):
+        return None
+    return consent
+
+
+def open_smtp_session_http(employee, signin_email, secrets, http_post=None, now=None):
+    """Ask the backend to confirm a vaulted SMTP secret exists. The password is not returned."""
+    secret = timesheet_mail_state_secret(secrets)
+    if not secret:
+        return None
+    signed = timesheet_sign_api_request({
+        "kind": "smtp-session",
+        "employee": _cell(employee),
+        "signin_email": _lower_email(signin_email),
+    }, secret, now=now)
+    result = post_mail_api("/timesheet-mail/smtp-session", signed, secrets, http_post=http_post)
+    consent = result.get("consent") if isinstance(result, dict) else None
+    if not isinstance(consent, dict):
+        return None
+    consent.pop("access_token", None)
+    consent.pop("password", None)
+    return consent
+
+
+def submit_signed_timesheet_send(
+    record,
+    pdf_bytes,
+    filename,
+    *,
+    secrets,
+    signin_email,
+    user_employee,
+    preview_pdf_bytes=None,
+    initials_match=None,
+    saved_content_hash=None,
+    audit_records=None,
+    acknowledge_uncertain=False,
+    http_post=None,
+    now=None,
+):
+    """What the Send button calls. One signed request. Timeout becomes Uncertain with no retry.
+
+    The signed preview hash and the PDF bytes must match. Saved initials must
+    still match the current content hash. Another employee's identity is rejected
+    before the request is signed.
+    """
+    employee = _cell((record or {}).get("Employee"))
+    key = timesheet_send_idempotency_key(record) if record else ""
+    if not employee or _cell(user_employee) != employee:
+        return {
+            "status": TIMESHEET_MAIL_STATUS_DENIED,
+            "error": "Only the signed-in employee can send their own initialed time sheet. This app does not send mail for others.",
+            "idempotency_key": key,
+        }
+    if initials_match is not True:
+        return {
+            "status": TIMESHEET_MAIL_STATUS_DENIED,
+            "error": "Initial and save this week's current time-sheet content before sending.",
+            "idempotency_key": key,
+        }
+    current_hash = _cell((record or {}).get("Content Hash"))
+    saved_hash = _cell(saved_content_hash or current_hash)
+    if not current_hash or saved_hash != current_hash:
+        return {
+            "status": TIMESHEET_MAIL_STATUS_DENIED,
+            "error": "Initial and save this week's current time-sheet content before sending.",
+            "idempotency_key": key,
+        }
+    if not pdf_bytes or pdf_bytes[:5] != b"%PDF-" or not _cell(filename).lower().endswith(".pdf"):
+        return {
+            "status": TIMESHEET_MAIL_STATUS_DENIED,
+            "error": "The official generated timesheet PDF is required.",
+            "idempotency_key": key,
+        }
+    preview = pdf_bytes if preview_pdf_bytes is None else preview_pdf_bytes
+    pdf_hash = timesheet_pdf_sha256(pdf_bytes)
+    preview_hash = timesheet_pdf_sha256(preview)
+    if preview_hash != pdf_hash:
+        return {
+            "status": TIMESHEET_MAIL_STATUS_DENIED,
+            "error": "The PDF no longer matches the preview.",
+            "idempotency_key": key,
+        }
+    secret = timesheet_mail_state_secret(secrets)
+    if not secret or not timesheet_mail_backend_base(secrets):
+        return {
+            "status": TIMESHEET_MAIL_STATUS_DENIED,
+            "error": "In-app sending is disabled until the mail callback service is configured. This app does not send mail yet.",
+            "idempotency_key": key,
+        }
+    signed = timesheet_sign_api_request({
+        "kind": "send",
+        "employee": employee,
+        "signin_email": _lower_email(signin_email),
+        "week": _cell((record or {}).get("Week Of")),
+        "content_hash": current_hash,
+        "saved_content_hash": saved_hash,
+        "initials": _cell((record or {}).get("Initials")),
+        "initials_match": True,
+        "entry_id": _cell((record or {}).get("Entry ID")),
+        "filename": _cell(filename),
+        "pdf_sha256": pdf_hash,
+        "preview_sha256": preview_hash,
+        "acknowledge_uncertain": bool(acknowledge_uncertain),
+        "audit": compact_mail_audit(audit_records, employee),
+    }, secret, now=now)
+    result = post_mail_api(
+        "/timesheet-mail/send",
+        signed,
+        secrets,
+        extra={"pdf_base64": base64.b64encode(pdf_bytes).decode("ascii")},
+        http_post=http_post,
+    )
+    result.setdefault("idempotency_key", key)
+    result.setdefault("status", TIMESHEET_MAIL_STATUS_UNCERTAIN)
+    result.pop("access_token", None)
+    result.pop("password", None)
+    return result
