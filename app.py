@@ -384,7 +384,8 @@ EMPLOYEES = [
     "Skylar Fingerle",
 ]
 # Weekly time sheet is only for these employees, in Ron's listed order.
-# Ron Cline and Anthony Root do not get a time sheet.
+# Official weekly form for these five employees. Ron Cline has no timesheet.
+# Anthony Root uses a separate official form (see ANTHONY_TIMESHEET_*).
 TIMESHEET_EMPLOYEES = [
     "Carl Mulvaney",
     "Barry Markham",
@@ -393,6 +394,30 @@ TIMESHEET_EMPLOYEES = [
     "Skylar Fingerle",
 ]
 TIMESHEET_SHEET_TITLE = "Time Sheets"
+ANTHONY_TIMESHEET_EMPLOYEE = "Anthony Root"
+ANTHONY_TIMESHEET_SHEET_TITLE = "Anthony Time Sheets"
+ANTHONY_TIMESHEET_TEMPLATE = "anthony_timesheet_template.xlsx"
+ANTHONY_TIMESHEET_DAYS = ("Sun", "Mon", "Tues", "Wed", "Thur", "Fri", "Sat")
+# Field keys match the official header labels, including the typo "Survery Hrs".
+ANTHONY_TIMESHEET_DAY_FIELDS = (
+    ("L&I Ground Hours", "L&I Ground Hours"),
+    ("L&I Flight Hours", "L&I Flight Hours"),
+    ("Spraying App Acres", "Spraying App Acres"),
+    ("Forestry App Acres", "Forestry App Acres"),
+    ("BNSF App Acres", "BNSF App Acres"),
+    ("Seeding Acres", "Seeding Acres"),
+    ("Survery Hrs", "Survery Hrs"),
+    ("Standby Hrs", "Standby Hrs"),
+    ("Per Diem", "Per Diem"),
+    ("Notes", "Notes"),
+)
+ANTHONY_TIMESHEET_GRID_ROWS = 22  # official template input rows 9-30
+ANTHONY_TIMESHEET_WEEK_ROWS = 7
+ANTHONY_TIMESHEET_NUMERIC_FIELDS = {
+    "L&I Ground Hours", "L&I Flight Hours", "Spraying App Acres",
+    "Forestry App Acres", "BNSF App Acres", "Seeding Acres",
+    "Survery Hrs", "Standby Hrs",
+}
 TIMESHEET_DAYS = ("Sun", "Mon", "Tues", "Wed", "Thur", "Fri", "Sat")
 TIMESHEET_DAY_FIELDS = (
     ("Location", "Location"),
@@ -2557,8 +2582,19 @@ def show_time_off_calendar_page():
 
 
 def employee_has_timesheet(name):
-    """True when this employee gets the weekly time sheet (not Ron or Anthony)."""
+    """True when this employee gets a time sheet (official weekly form or Anthony's form)."""
+    name = _cell(name)
+    return name in list(TIMESHEET_EMPLOYEES) or name == ANTHONY_TIMESHEET_EMPLOYEE
+
+
+def employee_has_official_weekly_timesheet(name):
+    """True for the five employees on the official Central Valley Helicopters weekly form."""
     return _cell(name) in list(TIMESHEET_EMPLOYEES)
+
+
+def employee_has_anthony_timesheet(name):
+    """True only for Anthony Root's separate official form."""
+    return _cell(name) == ANTHONY_TIMESHEET_EMPLOYEE
 
 
 def timesheet_week_start(value, today=None):
@@ -2676,7 +2712,11 @@ def timesheet_content_payload(record):
 def timesheet_content_hash(record):
     import hashlib
     import json
-    body = json.dumps(timesheet_content_payload(record), sort_keys=True, separators=(",", ":"))
+    if _cell((record or {}).get("Form")) == "Anthony":
+        payload = anthony_timesheet_content_payload(record)
+    else:
+        payload = timesheet_content_payload(record)
+    body = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(body.encode("utf-8")).hexdigest()
 
 
@@ -3225,6 +3265,439 @@ def _timesheet_wrap_label(text, width):
     return lines or [text]
 
 
+def anthony_timesheet_columns():
+    cols = ["Timestamp", "Entry ID", "Action", "Form", "Employee", "Week Of"]
+    for day in ANTHONY_TIMESHEET_DAYS:
+        cols.append(timesheet_day_column(day, "Date"))
+        for field, _label in ANTHONY_TIMESHEET_DAY_FIELDS:
+            cols.append(timesheet_day_column(day, field))
+    cols.extend(["Initials", "Content Hash", "Status"])
+    return cols
+
+
+def anthony_timesheet_template_labels():
+    return [
+        "Employee",
+        "Week of",
+        "Date",
+        "L&I Ground Hours",
+        "L&I Flight Hours",
+        "Spraying App Acres",
+        "Forestry App Acres",
+        "BNSF App Acres",
+        "Seeding Acres",
+        "Survery Hrs",
+        "Standby Hrs",
+        "Per Diem",
+        "Notes",
+    ]
+
+
+def anthony_timesheet_content_payload(record):
+    """Fields that initials lock on Anthony's form; initials metadata excluded."""
+    days = {}
+    for day in ANTHONY_TIMESHEET_DAYS:
+        days[day] = {
+            "Date": format_equipment_date((record or {}).get(timesheet_day_column(day, "Date"))),
+        }
+        for field, _label in ANTHONY_TIMESHEET_DAY_FIELDS:
+            value = (record or {}).get(timesheet_day_column(day, field))
+            if field == "Per Diem":
+                days[day][field] = timesheet_format_money(value)
+            elif field in ANTHONY_TIMESHEET_NUMERIC_FIELDS:
+                days[day][field] = timesheet_format_hours(value)
+            else:
+                days[day][field] = _cell(value)
+    return {
+        "Form": "Anthony",
+        "Employee": _cell((record or {}).get("Employee")),
+        "Week Of": format_equipment_date((record or {}).get("Week Of")),
+        "Days": days,
+    }
+
+
+def new_anthony_timesheet_entry_id(when=None):
+    when = when or datetime.now(ZoneInfo("America/Los_Angeles"))
+    return "ANT-" + when.strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:4]
+
+
+def build_anthony_timesheet_record(
+    employee,
+    week_of,
+    day_values=None,
+    initials="",
+    when=None,
+    entry_id=None,
+    today=None,
+):
+    employee = _cell(employee)
+    if not employee_has_anthony_timesheet(employee):
+        raise ValueError("This employee does not have Anthony's time sheet")
+    week = timesheet_week_start(week_of, today=today)
+    if parse_equipment_date(week_of) is None:
+        raise ValueError("Week of (Sunday's Date) is required")
+    day_values = day_values or {}
+    dates = timesheet_day_dates(week, today=today)
+    cleaned = {}
+    for i, day in enumerate(ANTHONY_TIMESHEET_DAYS):
+        row = dict(day_values.get(day) or {})
+        row["Date"] = format_equipment_date(dates[i])
+        for field, _label in ANTHONY_TIMESHEET_DAY_FIELDS:
+            raw = row.get(field, "")
+            if field in ANTHONY_TIMESHEET_NUMERIC_FIELDS or field == "Per Diem":
+                if _cell(raw) and timesheet_parse_number(raw) is None:
+                    raise ValueError(day + " " + field + " must be a number")
+                number = timesheet_parse_number(raw)
+                if number is not None and number < 0:
+                    raise ValueError(day + " " + field + " cannot be negative")
+                row[field] = (
+                    timesheet_format_money(raw) if field == "Per Diem" else timesheet_format_hours(raw)
+                )
+            else:
+                row[field] = _cell(raw)
+        cleaned[day] = row
+    when = when or datetime.now(ZoneInfo("America/Los_Angeles"))
+    record = {
+        "Timestamp": when.strftime("%Y-%m-%d %H:%M:%S"),
+        "Entry ID": _cell(entry_id) or new_anthony_timesheet_entry_id(when=when),
+        "Action": "Save",
+        "Form": "Anthony",
+        "Employee": employee,
+        "Week Of": format_equipment_date(week),
+        "Initials": _cell(initials),
+        "Status": "Saved",
+    }
+    for day in ANTHONY_TIMESHEET_DAYS:
+        record[timesheet_day_column(day, "Date")] = cleaned[day]["Date"]
+        for field, _label in ANTHONY_TIMESHEET_DAY_FIELDS:
+            record[timesheet_day_column(day, field)] = cleaned[day].get(field, "")
+    if record["Initials"]:
+        record["Content Hash"] = timesheet_content_hash(record)
+        record["Status"] = "Initialed"
+    else:
+        record["Content Hash"] = ""
+    return record
+
+
+def ensure_anthony_timesheets_worksheet(spreadsheet):
+    """Create the Anthony Time Sheets tab with a header when it is missing.
+
+    Never alters an existing header, and never writes FRAT, Time Sheets, or other tabs.
+    """
+    cols = list(anthony_timesheet_columns())
+    ws = _worksheet_or_none(spreadsheet, ANTHONY_TIMESHEET_SHEET_TITLE)
+    created = False
+    if ws is None:
+        ws = spreadsheet.add_worksheet(title=ANTHONY_TIMESHEET_SHEET_TITLE, rows=400, cols=max(len(cols), 16))
+        ws.append_row(cols, value_input_option="RAW")
+        created = True
+    else:
+        header = [_cell(c) for c in ws.row_values(1)]
+        if not header:
+            ws.append_row(cols, value_input_option="RAW")
+            created = True
+    return ws, created
+
+
+def load_anthony_timesheet_records(spreadsheet=None):
+    ws, _created = ensure_anthony_timesheets_worksheet(spreadsheet or _gsheets_spreadsheet())
+    return records_from_worksheet(ws, anthony_timesheet_columns())
+
+
+def load_anthony_timesheet_records_readonly(spreadsheet=None):
+    """Read the Anthony Time Sheets tab without creating or changing it."""
+    ws = _worksheet_or_none(spreadsheet or _gsheets_spreadsheet(), ANTHONY_TIMESHEET_SHEET_TITLE)
+    if ws is None:
+        return []
+    header = [_cell(c) for c in ws.row_values(1)]
+    if not header:
+        return []
+    return records_from_worksheet(ws, anthony_timesheet_columns())
+
+
+def save_anthony_timesheet_record(record, spreadsheet=None):
+    ws, _created = ensure_anthony_timesheets_worksheet(spreadsheet or _gsheets_spreadsheet())
+    header = [_cell(c) for c in ws.row_values(1)]
+    if not header:
+        raise RuntimeError("Anthony Time Sheets worksheet has no header")
+    ws.append_row([str(record.get(c, "")) for c in header], value_input_option="RAW")
+    return "Google Sheets (Anthony Time Sheets)"
+
+
+def anthony_timesheet_pdf_filename(record):
+    employee = _cell(record.get("Employee")).replace(" ", "_") or "Anthony_Root"
+    week = format_equipment_date(record.get("Week Of")) or "week"
+    return "Anthony_Time_Sheet_" + employee + "_" + week + ".pdf"
+
+
+def anthony_timesheet_xlsx_filename(record):
+    employee = _cell(record.get("Employee")).replace(" ", "_") or "Anthony_Root"
+    week = format_equipment_date(record.get("Week Of")) or "week"
+    return "Anthony_Time_Sheet_" + employee + "_" + week + ".xlsx"
+
+
+def build_anthony_timesheet_xlsx(record):
+    """Fill Anthony's official template workbook. Extra blank rows stay blank."""
+    import io
+    from openpyxl import load_workbook
+
+    path = timesheet_bundle_path(ANTHONY_TIMESHEET_TEMPLATE)
+    wb = load_workbook(path)
+    ws = wb[wb.sheetnames[0]]
+    employee = _cell(record.get("Employee")) or ANTHONY_TIMESHEET_EMPLOYEE
+    week = format_equipment_date(record.get("Week Of"))
+    ws["A1"] = "Employee"
+    ws["B1"] = employee
+    ws["A4"] = "Week of " + week
+    dates = timesheet_day_dates(week)
+    for i, day in enumerate(ANTHONY_TIMESHEET_DAYS):
+        row = 9 + i
+        ws.cell(row, 1, format_equipment_date(dates[i]))
+        for col, (field, _label) in enumerate(ANTHONY_TIMESHEET_DAY_FIELDS, start=2):
+            ws.cell(row, col, _cell(record.get(timesheet_day_column(day, field))))
+    # Official grid continues through row 30; leave those extra rows empty.
+    initials = _cell(record.get("Initials"))
+    if initials:
+        ws["A32"] = "Initials: " + initials
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+def build_anthony_timesheet_pdf(record, logo_path=None):
+    """One-page landscape letter PDF matching Anthony's official daily-row form."""
+    import io
+    from reportlab.lib.pagesizes import letter, landscape
+    from reportlab.lib.units import inch
+    from reportlab.pdfgen import canvas
+    from reportlab.lib.colors import black
+
+    buf = io.BytesIO()
+    page = landscape(letter)
+    c = canvas.Canvas(buf, pagesize=page)
+    width, height = page
+    employee = _cell(record.get("Employee")) or ANTHONY_TIMESHEET_EMPLOYEE
+    week = format_equipment_date(record.get("Week Of"))
+    c.setTitle("Time Sheet — " + employee)
+    c.setAuthor("Central Valley Helicopters")
+
+    def _s(size, bold=False):
+        c.setFont("Helvetica-Bold" if bold else "Helvetica", size)
+
+    y = height - 0.45 * inch
+    _s(16, True)
+    c.drawString(0.4 * inch, y, "Employee  " + employee)
+    y -= 22
+    _s(14, True)
+    c.drawString(0.4 * inch, y, "Week of  " + week)
+
+    headers = ["Date"] + [label for _field, label in ANTHONY_TIMESHEET_DAY_FIELDS]
+    left = 0.35 * inch
+    col_w = [
+        0.85 * inch, 0.85 * inch, 0.85 * inch, 0.85 * inch, 0.85 * inch,
+        0.8 * inch, 0.75 * inch, 0.75 * inch, 0.75 * inch, 0.7 * inch, 1.3 * inch,
+    ]
+    header_h = 0.48 * inch
+    row_h = 0.32 * inch
+    rows = 1 + ANTHONY_TIMESHEET_WEEK_ROWS
+    cols = len(headers)
+    grid_top = y - 16
+    grid_height = header_h + row_h * ANTHONY_TIMESHEET_WEEK_ROWS
+    grid_width = sum(col_w)
+    c.setStrokeColor(black)
+    c.setLineWidth(0.6)
+    yy = grid_top
+    for r in range(rows + 1):
+        c.line(left, yy, left + grid_width, yy)
+        yy -= header_h if r == 0 else row_h
+    xx = left
+    for col in range(cols + 1):
+        c.line(xx, grid_top, xx, grid_top - grid_height)
+        if col < cols:
+            xx += col_w[col]
+
+    _s(6.5, True)
+    xx = left
+    for i, label in enumerate(headers):
+        text_y = grid_top - 12
+        for line in _timesheet_wrap_label(label, 14):
+            c.drawCentredString(xx + col_w[i] / 2, text_y, line)
+            text_y -= 8
+        xx += col_w[i]
+
+    dates = timesheet_day_dates(week)
+    yy = grid_top - header_h
+    for r, day in enumerate(ANTHONY_TIMESHEET_DAYS):
+        values = [format_equipment_date(dates[r])]
+        for field, _label in ANTHONY_TIMESHEET_DAY_FIELDS:
+            values.append(_cell(record.get(timesheet_day_column(day, field))))
+        xx = left
+        for i, val in enumerate(values):
+            _s(7, False)
+            shown = val
+            if shown and i == len(values) - 1:
+                shown = shown[:22]
+            elif shown:
+                shown = shown[:12]
+            if shown:
+                c.drawCentredString(xx + col_w[i] / 2, yy - 14, shown)
+            xx += col_w[i]
+        yy -= row_h
+
+    y = grid_top - grid_height - 20
+    _s(10, True)
+    initials = _cell(record.get("Initials"))
+    c.drawString(0.4 * inch, y, "Initials: " + (initials or "________"))
+    c.showPage()
+    c.save()
+    return buf.getvalue()
+
+
+def show_anthony_timesheet(employee):
+    """Anthony Root's official daily-row weekly time sheet."""
+    st.subheader("Time Sheet")
+    st.caption("Official time sheet for Anthony Root. Name is filled from this employee page.")
+    today = datetime.now(ZoneInfo("America/Los_Angeles")).date()
+    try:
+        records = load_anthony_timesheet_records_readonly()
+        load_ok = True
+    except Exception as exc:
+        records = []
+        load_ok = False
+        st.error("Could not load time sheets: " + str(exc))
+
+    default_week = timesheet_week_start(today, today=today)
+    if st.session_state.get("anthony_ts_week_" + employee) is None:
+        st.session_state["anthony_ts_week_" + employee] = default_week
+    nav1, nav2, nav3 = st.columns(3)
+    with nav1:
+        if st.button("Previous week", key="ats_prev_" + employee, use_container_width=True):
+            current = timesheet_week_start(st.session_state.get("anthony_ts_week_" + employee), today=today)
+            st.session_state["anthony_ts_week_" + employee] = current - timedelta(days=7)
+            st.session_state["anthony_ts_gen_" + employee] = int(st.session_state.get("anthony_ts_gen_" + employee) or 0) + 1
+            st.rerun()
+    with nav3:
+        if st.button("Next week", key="ats_next_" + employee, use_container_width=True):
+            current = timesheet_week_start(st.session_state.get("anthony_ts_week_" + employee), today=today)
+            st.session_state["anthony_ts_week_" + employee] = current + timedelta(days=7)
+            st.session_state["anthony_ts_gen_" + employee] = int(st.session_state.get("anthony_ts_gen_" + employee) or 0) + 1
+            st.rerun()
+    week_picked = st.date_input(
+        "Week of (Sunday's Date)",
+        value=st.session_state.get("anthony_ts_week_" + employee) or default_week,
+        format="YYYY-MM-DD",
+        key="ats_week_input_" + employee,
+    )
+    week = timesheet_week_start(week_picked, today=today)
+    if week != week_picked:
+        st.caption("Week of uses Sunday's date. This week starts " + week.isoformat() + ".")
+    if week != st.session_state.get("anthony_ts_week_" + employee):
+        st.session_state["anthony_ts_week_" + employee] = week
+        st.session_state["anthony_ts_gen_" + employee] = int(st.session_state.get("anthony_ts_gen_" + employee) or 0) + 1
+        st.rerun()
+    with nav2:
+        st.markdown("**Week of " + week.isoformat() + "**")
+
+    saved = latest_timesheet_record(records, employee, week, today=today) if load_ok else None
+    gen = int(st.session_state.get("anthony_ts_gen_" + employee) or 0)
+    prefix = "ats_" + employee_button_key(employee) + "_" + week.isoformat() + "_" + str(gen) + "_"
+
+    if st.session_state.get("anthony_ts_saved_" + employee):
+        st.success(st.session_state.pop("anthony_ts_saved_" + employee))
+
+    def _saved(field, default=""):
+        return (saved or {}).get(field, default) if saved else default
+
+    st.markdown("**Employee:** " + ANTHONY_TIMESHEET_EMPLOYEE)
+    dates = timesheet_day_dates(week, today=today)
+    for i, day in enumerate(ANTHONY_TIMESHEET_DAYS):
+        title = day + "  " + dates[i].isoformat()
+        with st.expander(title, expanded=(dates[i] == today)):
+            st.markdown("**Date:** " + dates[i].isoformat())
+            for field, label in ANTHONY_TIMESHEET_DAY_FIELDS:
+                key = prefix + day + "_" + field.replace(" ", "_")
+                st.text_input(label, value=_saved(timesheet_day_column(day, field)), key=key)
+
+    st.text_input("Initials (required before email)", value=_saved("Initials"), key=prefix + "initials")
+
+    def _form_record(initials=None):
+        day_values = {}
+        for day in ANTHONY_TIMESHEET_DAYS:
+            day_values[day] = {}
+            for field, _label in ANTHONY_TIMESHEET_DAY_FIELDS:
+                key = prefix + day + "_" + field.replace(" ", "_")
+                day_values[day][field] = st.session_state.get(key, "")
+        return build_anthony_timesheet_record(
+            employee,
+            week,
+            day_values=day_values,
+            initials=initials if initials is not None else st.session_state.get(prefix + "initials", ""),
+            today=today,
+        )
+
+    try:
+        preview = _form_record()
+        form_ok = True
+        form_error = ""
+    except Exception as exc:
+        preview = None
+        form_ok = False
+        form_error = str(exc)
+
+    if form_ok and preview:
+        if timesheet_initials_match_current(saved, preview):
+            st.success("Initialed for this week's current time-sheet content: " + _cell((saved or preview).get("Initials")))
+        elif saved and timesheet_initials_valid(saved):
+            st.warning("Time-sheet content changed since the last initials. Save the week again with initials to re-initial.")
+        else:
+            st.info("Initial this week before email. Initials no longer count if the time sheet changes after you save.")
+
+    if st.button("Save week", type="primary", key=prefix + "save", use_container_width=True):
+        try:
+            record = _form_record()
+            save_anthony_timesheet_record(record)
+        except Exception as exc:
+            st.error("Could not save time sheet: " + str(exc))
+        else:
+            st.session_state["anthony_ts_gen_" + employee] = gen + 1
+            st.session_state["anthony_ts_saved_" + employee] = "Saved time sheet for week of " + week.isoformat() + "."
+            st.rerun()
+
+    if form_ok and preview:
+        pdf_bytes = build_anthony_timesheet_pdf(preview)
+        xlsx_bytes = build_anthony_timesheet_xlsx(preview)
+        d1, d2 = st.columns(2)
+        with d1:
+            st.download_button(
+                "Download PDF",
+                data=pdf_bytes,
+                file_name=anthony_timesheet_pdf_filename(preview),
+                mime="application/pdf",
+                use_container_width=True,
+                key=prefix + "pdf",
+            )
+        with d2:
+            st.download_button(
+                "Download Excel",
+                data=xlsx_bytes,
+                file_name=anthony_timesheet_xlsx_filename(preview),
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+                key=prefix + "xlsx",
+            )
+    elif form_error:
+        st.error(form_error)
+
+    st.button(
+        "Email to patti@centralvalleyheli.com",
+        disabled=True,
+        use_container_width=True,
+        key=prefix + "email",
+    )
+    st.caption(timesheet_email_block_reason(preview if form_ok else None))
+
+
+
 def show_employee_timesheet(employee):
     """Weekly time sheet for one eligible employee, matching the official form."""
     st.subheader("Weekly Time Sheet")
@@ -3469,7 +3942,9 @@ def show_employees_page():
         if st.button("Back", key="employees_back", use_container_width=True):
             st.session_state.employees_selected = None
             st.rerun()
-        if employee_has_timesheet(selected):
+        if employee_has_anthony_timesheet(selected):
+            show_anthony_timesheet(selected)
+        elif employee_has_timesheet(selected):
             show_employee_timesheet(selected)
         return
 
