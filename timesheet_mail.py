@@ -706,8 +706,9 @@ def timesheet_mail_send_gates(
     if not timesheet_mail_secure_setup_ready(secrets):
         return False, (
             "In-app sending is disabled until Google sign-in, the employee mailbox "
-            "map, Gmail and/or Microsoft mail OAuth clients, and a separate HTTPS "
-            "mail callback service are configured. This app does not send mail yet."
+            "map, a Gmail mail OAuth client, a separate HTTPS mail callback service, "
+            "and (for iCloud or Yahoo) a vaulted SMTP app-password store are configured. "
+            "This app does not send mail yet."
         )
     if not record:
         return False, "A time sheet is required."

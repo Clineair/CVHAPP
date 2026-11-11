@@ -9,6 +9,72 @@ Ron or shared mailbox sender. Each employee must send from their own authorized
 mailbox, only to `patti@centralvalleyheli.com`, only after they review and
 explicitly press Send.
 
+## Implemented vs still a placeholder
+
+**Implemented in this branch, but live sending stays off:**
+
+- Time-sheet access for all six employees who have a form: the five official
+  weekly forms, and Anthony Root's separate official form. Ron Cline has no
+  time sheet.
+- Official weekly mileage uses the IRS business rate that applies to the
+  actual travel date, including a week that spans a rate change. Historic
+  saved amounts are left alone. Anthony's form has no mileage fields.
+- Preview of To, From, subject, body, and the official generated PDF
+  attachment, with an explicit employee Send button.
+- Fixed recipient `patti@centralvalleyheli.com`. Initials must still match
+  the current week content. A duplicate send of the same employee + week +
+  content hash already marked Sent is blocked.
+- Google sign-in for time sheets (`st.login()` / `st.user` / `st.logout()`,
+  reserved callback `/oauth2callback`). Sign-in email may differ from the
+  send-from mailbox. Optional Microsoft sign-in remains in the code if a
+  named `[auth.microsoft]` client is added later; it is **not** required for
+  the current six employees.
+- Official Gmail send path (Gmail API `gmail.send`, authorization-code +
+  PKCE, session-only access token, mailbox email from official userinfo must
+  match the configured send-from address).
+- Official iCloud and Yahoo paths are recognized as SMTP + app-specific
+  password, and stay fail-closed until a vault exists. Passwords are never
+  collected in the app, chat, or Sheets.
+- A standalone callback service in `timesheet_mail_callback.py` with `/healthz`,
+  `/timesheet-mail/start`, and `/timesheet-mail/callback/gmail`, plus a
+  Dockerfile recipe under `deploy/timesheet-mail-callback/`. It is not started
+  by the Streamlit app and is not deployed.
+
+**Still placeholders / not done (do not treat these as finished):**
+
+- No callback host is deployed. There is no `fly.toml`, `render.yaml`, or
+  `wrangler.toml`, and no live Cloud Run service.
+- No OAuth clients, Streamlit `[auth]` secrets, mailbox maps, or SMTP vault
+  have been created in this work. Secret *names* are documented here; secret
+  values are not in the repo.
+- `timesheet_email_can_send` stays False until `[timesheet_mail].enabled`,
+  the Gmail send client, `[timesheet_mail_backend]`, and (for iCloud/Yahoo)
+  a vaulted SMTP store are all present, plus identity, initials, PDF, and
+  the fixed recipient.
+- Microsoft Graph mail-send remains in the code for a future Hotmail or
+  Outlook mailbox, but **no current employee uses it**, so a Microsoft
+  mail-send app is not a current prerequisite.
+
+## Current mailboxes (names and providers only)
+
+Employee send-from addresses are not stored in the repo. Configure them later
+only in Streamlit / backend secrets. Do not invent or commit real addresses.
+
+For the current six time-sheet employees, the send-from providers are:
+
+| Employee | Send-from provider |
+| --- | --- |
+| Carl Mulvaney | iCloud (SMTP + app-specific password, later) |
+| Barry Markham | Yahoo (SMTP + app password, later) |
+| Robert Rackley | Gmail (OAuth send) |
+| Gary Grant | Gmail (OAuth send) |
+| Skylar Fingerle | iCloud (SMTP + app-specific password, later) |
+| Anthony Root | Gmail (OAuth send) |
+
+There is no Hotmail, Outlook, or Microsoft 365 mailbox in this current set.
+Do not register a Microsoft mail-send client unless a later roster change
+needs one.
+
 ## Architectural decision: Streamlit Cloud cannot host the mail OAuth callback
 
 Streamlit Community Cloud reserves `/oauth2callback` for `st.login()`. The app
@@ -17,32 +83,24 @@ app URL as a second OAuth redirect would put an authorization code in the
 browser query string and history, which this project forbids.
 
 A second, separate HTTPS callback service is therefore a hard prerequisite for
-Gmail and Microsoft Graph sending. The Streamlit app never exchanges the
-authorization code, never stores refresh tokens, and never puts access tokens
-in query parameters, Sheets, the repo, logs, or another employee's session.
-`timesheet_mail_callback.py` is a scaffold only; it is not started by the
-Streamlit app and is not a production host by itself. Until that service is
-deployed and `[timesheet_mail].enabled`, mail client keys, and
-`[timesheet_mail_backend]` are all present, `timesheet_email_can_send` stays
+Gmail sending. The Streamlit app never exchanges the authorization code, never
+stores refresh tokens, and never puts access tokens in query parameters,
+Sheets, the repo, logs, or another employee's session. Until that service is
+deployed and the secrets above are present, `timesheet_email_can_send` stays
 False.
 
-Signing in with Google OpenID does not grant permission to send mail. Mail
-send uses a separate, least-privilege consent (`gmail.send` or Microsoft
-`Mail.Send`) and a short-lived access token when the official OAuth path
-applies.
+Signing in with Google OpenID does not grant permission to send mail. Gmail
+send uses a separate, least-privilege `gmail.send` consent and a short-lived
+access token.
 
 ## Official provider support
 
-Employee send-from addresses are not stored in the repo. Configure them later
-only in Streamlit / backend secrets. Do not invent addresses.
-
-| Provider | Official send method | Prerequisite |
+| Provider | Official send method | Needed for current six? |
 | --- | --- | --- |
-| Gmail | OAuth 2.0 + Gmail API `gmail.send` (session-only access token; `access_type=online`) | Separate callback host, Google mail OAuth client, employee mailbox mapping |
-| Microsoft 365, Outlook.com, Hotmail, Live.com | OAuth 2.0 + Microsoft Graph `Mail.Send` (work or personal; tenant `common` or `consumers`) | Separate callback host, Microsoft mail OAuth client, employee mailbox mapping |
-| iCloud Mail | **SMTP only** (`smtp.mail.me.com:587`, STARTTLS). Apple publishes no public OAuth or REST send API for third-party apps. Username is the full iCloud address. Password must be an [app-specific password](https://support.apple.com/en-us/102654) from account.apple.com (2FA required), never the Apple Account password. See [Apple Mail server settings](https://support.apple.com/en-us/102525). | Secure backend/vault to hold the app-specific password. Fail closed until that vault exists. |
-| Yahoo Mail | **SMTP** (`smtp.mail.yahoo.com:587` or `465`) with a [Yahoo app password](https://help.yahoo.com/kb/mail/generate-password-sln15241.html). Yahoo IMAP/SMTP OAuth (`mail-w`) exists only after a commercial access application; it is not self-serve in the developer console. Sign in with Yahoo is login only, not mail send. | Secure backend/vault to hold the app password, or approved Yahoo commercial OAuth later. Fail closed until that exists. |
-| Other personal providers | Not claimed. There is no generic SMTP form in the app. | Do not add a password field to Streamlit or Sheets. |
+| Gmail | OAuth 2.0 + Gmail API `gmail.send` (session-only access token; `access_type=online`) | Yes, for the three Gmail mailboxes. Requires the callback host and a separate Gmail send client. |
+| iCloud Mail | **SMTP only** (`smtp.mail.me.com:587`, STARTTLS). Apple publishes no public OAuth or REST send API for third-party apps. Username is the full iCloud address. Password must be an [app-specific password](https://support.apple.com/en-us/102654) from account.apple.com (2FA required), never the Apple Account password. See [Apple Mail server settings](https://support.apple.com/en-us/102525). | Yes, later, for the two iCloud mailboxes. Fail closed until a vault exists. |
+| Yahoo Mail | **SMTP** (`smtp.mail.yahoo.com:587` or `465`) with a [Yahoo app password](https://help.yahoo.com/kb/mail/generate-password-sln15241.html). Yahoo IMAP/SMTP OAuth (`mail-w`) exists only after a commercial access application; it is not self-serve in the developer console. | Yes, later, for the one Yahoo mailbox. Fail closed until a vault exists. |
+| Microsoft 365, Outlook.com, Hotmail, Live.com | OAuth 2.0 + Microsoft Graph `Mail.Send` | **Not needed now.** Code remains fail-closed if a mailbox is later mapped to `microsoft`. |
 
 App-specific passwords are long-lived secrets, which is a substantially
 different architecture from session-only OAuth. This app will never ask an
@@ -51,45 +109,89 @@ credentials in Google Sheets or in a downloaded timesheet. Provision those
 secrets later only into a secure backend or vault if you choose to enable
 iCloud or Yahoo sending.
 
-The product is not limited to Gmail and Microsoft. iCloud and Yahoo are
-recognized providers, but sending for those mailboxes stays off until the
-vaulted SMTP path is actually configured. Do not treat a `mailto:` helper as
-fulfillment of in-app send.
+Do not treat a `mailto:` helper as fulfillment of in-app send.
 
-## What shipped in the app
+## Identity for iCloud and Yahoo staff
 
-- **Employee sign-in** uses Streamlit's documented Google OpenID Connect flow
-  (`st.login()` / `st.user` / `st.logout()`, callback path `/oauth2callback`).
-  See [Use the Google Auth Platform to authenticate users](https://docs.streamlit.io/develop/tutorials/authentication/google)
-  and [st.login](https://docs.streamlit.io/develop/api-reference/user/st.login).
-- **Identity mapping** is configuration-only: a verified Google email (issuer
-  `https://accounts.google.com`, `email_verified` true) is mapped to one exact
-  time-sheet employee name. The employee cannot pick a name, and an arbitrary
-  email domain is not trusted by itself. The sign-in address may differ from
-  the send-from mailbox.
-- **Employee emails are not stored in the repo.** `[timesheet_employees]`
-  (sign-in) and `[timesheet_employee_mail]` (send-from address + provider)
-  stay empty until you add real values in secrets. Until then, once `[auth]`
-  is present, time sheets fail closed. Duplicate mapped emails also fail closed.
-- **Protection is limited to time sheets.** FRAT, equipment, calendar, and
-  other header pages stay usable without signing in. When auth is configured,
-  a person can still open another employee *page*, but that person's time-sheet
-  form and records are not shown or loaded.
-- **If `[auth]` is not configured**, time-sheet fill / save / download stay as
-  they are today, and email stays disabled. That open access is the current
-  default; it is not weakened, and it is not treated as signed-in email.
-- **In-app sending is prepared but disabled.** Preview shows To, From, subject,
-  body, and the official generated PDF attachment name. The Send button stays
-  disabled until secure setup, identity, initials, consent, and the PDF are
-  all valid. No automatic or routine sends.
+Do not assume every employee has a Google mailbox. They do not need one to
+*send*, because send-from and sign-in are configured separately.
+
+For the current setup, time-sheet sign-in uses Streamlit's documented Google
+OpenID Connect flow. An iCloud or Yahoo employee can sign in with a Google
+account that is listed for them in `[timesheet_employees]`, then later send
+from iCloud or Yahoo once the SMTP vault exists.
+
+There is no official Streamlit iCloud or Yahoo login. Sign in with Apple would
+need an [Apple Developer Program](https://developer.apple.com/programs/)
+membership (currently $99 USD per year) and is not part of this step.
+Optional Microsoft sign-in is already wired if `[auth.microsoft]` is added
+later; it is not a current prerequisite because no current employee sends
+from Hotmail or Outlook, and Google sign-in covers the planned access path.
+
+If someone has neither a Google nor a Microsoft account, they cannot use
+official Streamlit login until a later option (Apple, or a magic link after
+the SMTP vault exists) is approved.
+
+## Recommended callback host and verified cost
+
+No callback host is deployed today. Existing artifacts in this repo are only
+the Python scaffold, the Dockerfile recipe, and this document. There are no
+hosting connectors installed in this bot, and no secrets file is in the
+checkout.
+
+**Recommended default: Google Cloud Run**, in the same Google Cloud project
+you will already create for the Google sign-in client and the separate Gmail
+send client. The existing Python callback can run there without a rewrite.
+
+Official sources (checked 2026-11-11):
+
+- [Cloud Run pricing](https://cloud.google.com/run/pricing)
+- [Google Cloud Free Tier](https://docs.cloud.google.com/free/docs/free-cloud-features)
+- [Learn about Cloud Billing](https://docs.cloud.google.com/docs/get-started/learn-about-billing)
+
+Request-based billing Free Tier (us-central1 / Tier 1, per billing account,
+resets monthly):
+
+- 2 million requests
+- 180,000 vCPU-seconds
+- 360,000 GB-seconds of memory
+- 1 GB outbound data transfer from North America
+
+At this app's expected volume (occasional employee sends), usage should stay
+inside those limits, so the expected monthly Cloud Run cost is **$0**.
+
+Honest caveats:
+
+- Official documentation states that **a Google Cloud billing account is
+  required** to use Google Cloud services, including Free Tier. A payment
+  method is typically placed on file. Usage above the monthly limits is
+  billed at standard rates.
+- Published standard rates after the free amount (Tier 1, subject to change)
+  are on the Cloud Run pricing page, including $0.40 per million requests,
+  $0.0000240 per vCPU-second, and $0.0000025 per GiB-second, plus data
+  transfer. Set a budget alert if you attach a billing account.
+- This work does **not** create a project, billing account, or Cloud Run
+  service until you explicitly approve that step.
+
+**$0 alternative without a Google billing account: Cloudflare Workers Free.**
+Official [Workers Paid vs Free limits](https://developers.cloudflare.com/workers/platform/pricing/):
+$0/month, 100,000 requests/day, and 10 ms CPU per invocation on the Free plan
+(Workers Paid is $5/month). This would require porting the Python scaffold to
+JavaScript, and the 10 ms Free CPU cap may be tight for a token exchange.
+It is the fallback if you do not want a Google billing account.
+
+Render free instances spin down and are a poor fit for OAuth redirects. Paid
+Render, Fly, or other hosts are not the recommendation.
 
 ## Streamlit Cloud / local sign-in setup
 
-Do this in Google Cloud and Streamlit secrets. Do not paste client secrets into
-the repo, chat, or logs.
+Do this in Google Cloud and Streamlit secrets after the callback-host decision.
+Do not paste client secrets into the repo, chat, or logs.
 
 1. In a Google Cloud project, configure the Google Auth Platform branding and
-   audience as described in the Streamlit Google tutorial above.
+   audience as described in
+   [Use the Google Auth Platform to authenticate users](https://docs.streamlit.io/develop/tutorials/authentication/google)
+   and [st.login](https://docs.streamlit.io/develop/api-reference/user/st.login).
 2. Create a **Web application** OAuth client used only for sign-in. Request the
    default Streamlit scopes only: `openid profile email`. Do **not** add
    `gmail.send` or other Gmail scopes to this client, and do **not** set
@@ -111,27 +213,29 @@ client_secret = "your-google-oauth-client-secret"
 server_metadata_url = "https://accounts.google.com/.well-known/openid-configuration"
 
 # Use each employee's exact time-sheet name and the Google account they will
-# sign in with (company or personal). Leave a name out until you have the
-# real address. Do not guess.
+# sign in with (company or personal). This may differ from the send-from
+# mailbox. Leave a name out until you have the real address. Do not guess
+# or commit real addresses.
 [timesheet_employees]
-# "Carl Mulvaney" = "their-google-account@example.com"
-# "Barry Markham" = "their-google-account@example.com"
-# "Robert Rackley" = "their-google-account@example.com"
-# "Gary Grant" = "their-google-account@example.com"
-# "Skylar Fingerle" = "their-google-account@example.com"
+# "Carl Mulvaney" = "their-signin-account@example.com"
+# "Barry Markham" = "their-signin-account@example.com"
+# "Robert Rackley" = "their-signin-account@example.com"
+# "Gary Grant" = "their-signin-account@example.com"
+# "Skylar Fingerle" = "their-signin-account@example.com"
+# "Anthony Root" = "their-signin-account@example.com"
 ```
 
 6. After deploy, the `redirect_uri` in secrets must match a URI registered on
    the Google client.
 
-Time-sheet employees on the official weekly form (Ron Cline has no timesheet;
-Anthony Root is not on this email-preparation change):
+Time-sheet employees (Ron Cline has no timesheet):
 
 - Carl Mulvaney
 - Barry Markham
 - Robert Rackley
 - Gary Grant
 - Skylar Fingerle
+- Anthony Root (separate official form)
 
 ### Testing mode and verification (sign-in client)
 
@@ -151,24 +255,20 @@ non-sensitive Sign in with Google scopes.
 
 ## Mail send setup (later; not enabled now)
 
-Use a **separate** Google OAuth client and a **separate** Microsoft app for
-mail send. Do not add send scopes to the Streamlit sign-in client.
+Use a **separate** Google OAuth client for Gmail send. Do not add send scopes
+to the Streamlit sign-in client. Do not create a Microsoft mail-send client
+for the current roster.
 
 ```toml
 [timesheet_mail]
 enabled = false
-# Flip to true only after the callback host is deployed and clients are registered.
+# Flip to true only after the callback host is deployed and the Gmail send
+# client is registered.
 
 [timesheet_mail.gmail]
 client_id = "separate-gmail-send-client-id"
 client_secret = "separate-gmail-send-client-secret"
 redirect_uri = "https://YOUR-CALLBACK-HOST/timesheet-mail/callback/gmail"
-
-[timesheet_mail.microsoft]
-client_id = "separate-microsoft-send-client-id"
-client_secret = "separate-microsoft-send-client-secret"
-redirect_uri = "https://YOUR-CALLBACK-HOST/timesheet-mail/callback/microsoft"
-tenant = "common"
 
 [timesheet_mail_backend]
 public_base_url = "https://YOUR-CALLBACK-HOST"
@@ -176,11 +276,13 @@ state_secret = "generate-a-long-random-secret"
 app_base_url = "https://cvhapp-fpzzanc7kwhapubsvkjx67.streamlit.app/"
 
 # Send-from mailbox and official provider. Leave empty until real values exist.
-# provider must be one of: gmail, microsoft, icloud, yahoo.
+# For the current six, provider is one of: gmail, icloud, yahoo.
 [timesheet_employee_mail]
 # "Gary Grant" = { email = "their-gmail@example.com", provider = "gmail" }
-# "Robert Rackley" = { email = "their-hotmail@example.com", provider = "microsoft" }
+# "Robert Rackley" = { email = "their-gmail@example.com", provider = "gmail" }
+# "Anthony Root" = { email = "their-gmail@example.com", provider = "gmail" }
 # "Carl Mulvaney" = { email = "their-icloud@example.com", provider = "icloud" }
+# "Skylar Fingerle" = { email = "their-icloud@example.com", provider = "icloud" }
 # "Barry Markham" = { email = "their-yahoo@example.com", provider = "yahoo" }
 
 # Presence flag only for a vaulted SMTP store. Never put app-specific
@@ -195,12 +297,9 @@ with a raw base64url MIME message. `gmail.send` is a sensitive scope; if you
 later store refresh tokens in Testing mode they expire in 7 days. This
 preparation prefers session-only access tokens (about one hour).
 
-Microsoft send: POST `https://graph.microsoft.com/v1.0/me/sendMail` with a
-file attachment. HTTP 200 or 202 from Gmail or Graph means the provider
-accepted the message, not proof of delivery.
-
 The authorized mailbox email from official userinfo must match the configured
 employee send-from address. Access tokens stay in callback-host memory only.
+HTTP 200 or 202 means the provider accepted the message, not proof of delivery.
 
 ### iCloud and Yahoo (SMTP vault; later)
 
@@ -212,6 +311,9 @@ If you enable those providers:
 3. Set `[timesheet_smtp].configured = true` (or equivalent employee keys on
    the host) without putting the passwords in Streamlit forms or Sheets.
 4. Sending remains off until that store is actually present.
+
+Gmail employees can be enabled first, after the callback host and Gmail send
+client exist, without waiting for the iCloud/Yahoo vault.
 
 ## Send rules
 
@@ -228,29 +330,38 @@ If you enable those providers:
 ## Hard limitations
 
 - In-app send is not available on Streamlit Community Cloud alone. A separate
-  HTTPS callback service is required for Gmail and Microsoft OAuth send.
+  HTTPS callback service is required for Gmail OAuth send.
 - iCloud has no public OAuth send API; Yahoo mail-w OAuth is not self-serve.
-  Those two stay fail-closed until a vaulted SMTP path exists.
+  Those stay fail-closed until a vaulted SMTP path exists.
 - `mailto:`, Gmail compose URLs, and Outlook compose URLs cannot attach the
   generated PDF (RFC 6068). They are not used as fulfillment.
-- Unmapped, unverified, or someone else's Google account cannot open a
+- Unmapped, unverified, or someone else's sign-in account cannot open a
   time sheet or send once `[auth]` is configured.
 - Stale initials cannot send. Until `[auth]`, `[timesheet_mail].enabled`,
-  clients, and the backend (and, for iCloud/Yahoo, the SMTP vault) are
-  configured, the Email button stays disabled.
+  the Gmail client, and the backend (and, for iCloud/Yahoo, the SMTP vault)
+  are configured, the Email button stays disabled.
 
-## What remains for you
+## What remains
 
-1. Create the Google OAuth web client for sign-in (no Gmail scopes) and put
-   `[auth]` plus each real `[timesheet_employees]` address in Streamlit Cloud
-   secrets. Do not commit them.
-2. Add test users, try sign-in on the live app, then publish the consent
+Do not create a billing account, Cloud Run service, OAuth client, or secret,
+and do not send a test timesheet, until that step is explicitly approved.
+
+1. **Decide the callback host** (the next concrete choice): approve Google
+   Cloud Run in the same project as the (not-yet-created) Google OAuth
+   clients, accepting that a billing account / payment method is required
+   even if expected Cloud Run cost is $0 under the official Free Tier; or
+   say you do not want a Google billing account, and a Cloudflare Workers
+   port can be prepared instead ($0/month, with the Free-plan CPU limit
+   noted above).
+2. After that host exists: create the Google OAuth web client for sign-in
+   (no Gmail scopes) and a **separate** Gmail send client whose redirect URI
+   is only on the callback host. Put `[auth]`, `[timesheet_employees]`,
+   `[timesheet_employee_mail]`, and `[timesheet_mail_backend]` in Streamlit
+   Cloud secrets. Do not commit them.
+3. Add test users, try sign-in on the live app, then publish the consent
    screen when ready.
-3. Deploy a separate HTTPS callback host from `timesheet_mail_callback.py`
-   (production hardening is still required) and register separate Gmail and
-   Microsoft mail-send clients, with redirect URIs on that host only.
-4. Put `[timesheet_employee_mail]` provider mappings and, if you choose to
-   support iCloud or Yahoo, vaulted app-specific passwords on that host.
-   Flip `[timesheet_mail].enabled` only after that is done.
-5. Do not enable production sending, grant live OAuth consent, or send a test
+4. For iCloud and Yahoo send, vault app-specific passwords on that host
+   later. Flip `[timesheet_mail].enabled` only after the relevant path is
+   actually configured.
+5. Do not enable production sending, grant live mail consent, or send a test
    timesheet until you explicitly approve that later step.

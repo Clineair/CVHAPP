@@ -465,10 +465,14 @@ TIMESHEET_MILEAGE_SOURCE_IRS = "IRS"
 TIMESHEET_MILEAGE_SOURCE_COMPANY = "Company override"
 TIMESHEET_MILEAGE_SOURCE_SAVED = "Previously saved"
 TIMESHEET_EMAIL_TO = "patti@centralvalleyheli.com"
-TIMESHEET_AUTH_REQUIRED_KEYS = (
-    "redirect_uri", "cookie_secret", "client_id", "client_secret", "server_metadata_url",
-)
+TIMESHEET_AUTH_SHARED_KEYS = ("redirect_uri", "cookie_secret")
+TIMESHEET_AUTH_PROVIDER_KEYS = ("client_id", "client_secret", "server_metadata_url")
+TIMESHEET_AUTH_REQUIRED_KEYS = TIMESHEET_AUTH_SHARED_KEYS + TIMESHEET_AUTH_PROVIDER_KEYS
 TIMESHEET_GOOGLE_ISSUERS = ("https://accounts.google.com", "accounts.google.com")
+TIMESHEET_MICROSOFT_ISSUER_PREFIXES = (
+    "https://login.microsoftonline.com/",
+    "https://sts.windows.net/",
+)
 TIMESHEET_EMPLOYEE_EMAILS_SECTION = "timesheet_employees"
 TIMESHEET_MAIL_SHEET_TITLE = "Time Sheet Mail"
 TIMESHEET_MAIL_COLUMNS = [
@@ -3343,12 +3347,39 @@ def timesheet_section_has_keys(section, required):
         return False
 
 
+def timesheet_auth_login_providers(secrets=None):
+    """Named Streamlit providers with client keys, or ('default',) for a flat [auth] client.
+
+    Never reads secret values, only key presence.
+    """
+    section = timesheet_secret_section(secrets, "auth")
+    if section is None:
+        return ()
+    providers = []
+    try:
+        for name in ("google", "microsoft"):
+            nested = section[name] if name in section else None
+            if timesheet_section_has_keys(nested, TIMESHEET_AUTH_PROVIDER_KEYS):
+                providers.append(name)
+    except Exception:
+        providers = []
+    if providers:
+        return tuple(providers)
+    if timesheet_section_has_keys(section, TIMESHEET_AUTH_PROVIDER_KEYS):
+        return ("default",)
+    return ()
+
+
 def timesheet_auth_configured(secrets=None):
-    """True when Streamlit Google OIDC [auth] keys are present. Never reads secret values."""
-    return timesheet_section_has_keys(
-        timesheet_secret_section(secrets, "auth"),
-        TIMESHEET_AUTH_REQUIRED_KEYS,
-    )
+    """True when Streamlit OIDC [auth] shared keys and at least one provider client are present.
+
+    Supports a flat Google-only [auth] block, or official named [auth.google] /
+    [auth.microsoft] providers. Never reads secret values.
+    """
+    section = timesheet_secret_section(secrets, "auth")
+    if not timesheet_section_has_keys(section, TIMESHEET_AUTH_SHARED_KEYS):
+        return False
+    return bool(timesheet_auth_login_providers(secrets))
 
 
 def timesheet_gmail_configured(secrets=None):
@@ -3366,7 +3397,10 @@ def timesheet_employee_email_map(secrets=None):
         return {}
     mapping = {}
     seen = {}
-    for name in TIMESHEET_EMPLOYEES:
+    names = list(TIMESHEET_EMPLOYEES)
+    if ANTHONY_TIMESHEET_EMPLOYEE not in names:
+        names.append(ANTHONY_TIMESHEET_EMPLOYEE)
+    for name in names:
         raw = None
         try:
             if name in section:
@@ -3415,8 +3449,19 @@ def timesheet_user_info(user=None):
     }
 
 
+def timesheet_trusted_signin_issuer(issuer):
+    """True for official Google or Microsoft identity issuers only."""
+    issuer = _cell(issuer).strip().rstrip("/")
+    if not issuer:
+        return False
+    if issuer in TIMESHEET_GOOGLE_ISSUERS:
+        return True
+    lowered = issuer.lower()
+    return any(lowered.startswith(prefix) for prefix in TIMESHEET_MICROSOFT_ISSUER_PREFIXES)
+
+
 def timesheet_verified_signin_email(user=None):
-    """Return the lowercase verified Google email, or None if identity cannot be trusted."""
+    """Return the lowercase verified Google or Microsoft email, or None if untrusted."""
     info = timesheet_user_info(user)
     if not info.get("is_logged_in"):
         return None
@@ -3425,14 +3470,15 @@ def timesheet_verified_signin_email(user=None):
     email = _cell(info.get("email")).strip().lower()
     if not email or "@" not in email or " " in email:
         return None
-    issuer = _cell(info.get("iss")).strip().rstrip("/")
-    if issuer and issuer not in TIMESHEET_GOOGLE_ISSUERS:
+    issuer = _cell(info.get("iss")).strip()
+    # Tests and some identity snapshots may omit iss; require a trusted issuer when present.
+    if issuer and not timesheet_trusted_signin_issuer(issuer):
         return None
     return email
 
 
 def timesheet_employee_for_identity(user=None, mapping=None, secrets=None):
-    """Map a verified Google sign-in email to exactly one configured employee, or None."""
+    """Map a verified Google or Microsoft sign-in email to exactly one configured employee, or None."""
     if mapping is None:
         mapping = timesheet_employee_email_map(secrets)
     email = timesheet_verified_signin_email(user)
@@ -3591,8 +3637,8 @@ def timesheet_email_block_reason(
     if not auth_configured:
         return (
             "This app does not send mail. In-app sending from your own mailbox needs "
-            "Google sign-in, a mailbox map, and either official Gmail/Microsoft OAuth "
-            "plus a separate HTTPS callback service, or a vaulted SMTP app-password "
+            "Google sign-in, a mailbox map, a Gmail send client plus a separate HTTPS "
+            "callback service for Gmail mailboxes, or a vaulted SMTP app-password "
             "store for iCloud and Yahoo. The Email button stays off until that "
             "setup is complete. Passwords are never collected in this app."
         )
@@ -3627,8 +3673,9 @@ def timesheet_email_block_reason(
         return "This app does not send mail."
     return (
         "This app does not send mail until the mail callback service is configured and "
-        "you authorize your Gmail or Microsoft 365 mailbox. Signing in does not grant "
-        "send permission. Mailto is not used to send this time sheet."
+        "you authorize your Gmail mailbox, or a vaulted SMTP store is present for "
+        "iCloud or Yahoo. Signing in does not grant send permission. Mailto is not "
+        "used to send this time sheet."
     )
 
 
@@ -3708,19 +3755,41 @@ def show_timesheet_signin_controls(key_prefix="ts_auth"):
     if not timesheet_auth_configured():
         return
     user = timesheet_user_info()
+    providers = timesheet_auth_login_providers()
     if user.get("is_logged_in"):
         identity = timesheet_employee_for_identity(user)
         if identity:
             st.caption("Signed in as " + identity + ".")
         else:
-            st.caption("Signed in with Google, but this account is not mapped to a time-sheet employee.")
+            st.caption("Signed in, but this account is not mapped to a time-sheet employee.")
         if st.button("Sign out", key=key_prefix + "_logout"):
             st.logout()
             st.rerun()
         return
-    st.caption("Sign in with the Google account listed for you to open your weekly time sheet.")
-    if st.button("Sign in with Google", key=key_prefix + "_login"):
-        st.login()
+    if "google" in providers and "microsoft" in providers:
+        st.caption(
+            "Sign in with the Google or Microsoft account listed for you to open your time sheet. "
+            "That sign-in account can be different from the mailbox that will send the PDF."
+        )
+    elif "microsoft" in providers and "google" not in providers and "default" not in providers:
+        st.caption(
+            "Sign in with the Microsoft account listed for you to open your time sheet. "
+            "That sign-in account can be different from the mailbox that will send the PDF."
+        )
+    else:
+        st.caption(
+            "Sign in with the Google account listed for you to open your time sheet. "
+            "That sign-in account can be different from the mailbox that will send the PDF."
+        )
+    if "google" in providers or "default" in providers:
+        if st.button("Sign in with Google", key=key_prefix + "_login_google"):
+            if "google" in providers:
+                st.login("google")
+            else:
+                st.login()
+    if "microsoft" in providers:
+        if st.button("Sign in with Microsoft", key=key_prefix + "_login_microsoft"):
+            st.login("microsoft")
 
 
 def timesheet_bundle_path(filename):
@@ -4342,15 +4411,22 @@ def load_anthony_timesheet_records(spreadsheet=None):
     return records_from_worksheet(ws, anthony_timesheet_columns())
 
 
-def load_anthony_timesheet_records_readonly(spreadsheet=None):
-    """Read the Anthony Time Sheets tab without creating or changing it."""
+def load_anthony_timesheet_records_readonly(spreadsheet=None, employee=None):
+    """Read the Anthony Time Sheets tab without creating or changing it.
+
+    When employee is set, only that person's rows are returned.
+    """
     ws = _worksheet_or_none(spreadsheet or _gsheets_spreadsheet(), ANTHONY_TIMESHEET_SHEET_TITLE)
     if ws is None:
         return []
     header = [_cell(c) for c in ws.row_values(1)]
     if not header:
         return []
-    return records_from_worksheet(ws, anthony_timesheet_columns())
+    records = records_from_worksheet(ws, anthony_timesheet_columns())
+    wanted = _cell(employee)
+    if wanted:
+        records = [row for row in records if _cell(row.get("Employee")) == wanted]
+    return records
 
 
 def save_anthony_timesheet_record(record, spreadsheet=None):
@@ -4495,9 +4571,14 @@ def show_anthony_timesheet(employee):
     """Anthony Root's official daily-row weekly time sheet."""
     st.subheader("Time Sheet")
     st.caption("Official time sheet for Anthony Root. Name is filled from this employee page.")
+    access = timesheet_access_state(employee)
+    if access not in ("allowed", "auth_not_configured"):
+        st.info(timesheet_access_message(access))
+        show_timesheet_signin_controls(key_prefix="ts_gate_" + employee_button_key(employee))
+        return
     today = datetime.now(ZoneInfo("America/Los_Angeles")).date()
     try:
-        records = load_anthony_timesheet_records_readonly()
+        records = load_anthony_timesheet_records_readonly(employee=employee)
         load_ok = True
     except Exception as exc:
         records = []
@@ -4626,13 +4707,14 @@ def show_anthony_timesheet(employee):
     elif form_error:
         st.error(form_error)
 
-    st.button(
-        "Email to patti@centralvalleyheli.com",
-        disabled=True,
-        use_container_width=True,
-        key=prefix + "email",
+    show_timesheet_email_section(
+        employee,
+        preview if form_ok else None,
+        saved=saved,
+        form_ok=form_ok,
+        prefix=prefix,
+        pdf_bytes=pdf_bytes if form_ok and preview else None,
     )
-    st.caption(timesheet_email_block_reason(preview if form_ok else None))
 
 
 
@@ -4990,7 +5072,12 @@ def show_employee_timesheet(employee):
 
 def show_timesheet_email_section(employee, preview, saved=None, form_ok=False, prefix="ts_mail_", pdf_bytes=None):
     """Preview and explicit Send. Mailto is not used as fulfillment."""
-    filename = timesheet_pdf_filename(preview) if preview else ""
+    if preview and employee_has_anthony_timesheet(employee):
+        filename = anthony_timesheet_pdf_filename(preview)
+    elif preview:
+        filename = timesheet_pdf_filename(preview)
+    else:
+        filename = ""
     identity = timesheet_employee_for_identity()
     access_ok = timesheet_access_state(employee) == "allowed"
     initials_ok = bool(preview and timesheet_initials_match_current(saved, preview))

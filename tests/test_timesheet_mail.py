@@ -492,6 +492,20 @@ class TimesheetMailTests(unittest.TestCase):
             "",
         )
 
+    def test_callback_env_secrets_and_serve_guard(self):
+        import json
+        self.assertIsNone(cb.secrets_from_env({}))
+        self.assertIsNone(cb.secrets_from_env({"TIMESHEET_MAIL_SECRETS_JSON": "not-json"}))
+        payload = {"timesheet_mail_backend": {"public_base_url": "https://mail-callback.example.com"}}
+        loaded = cb.secrets_from_env({"TIMESHEET_MAIL_SECRETS_JSON": json.dumps(payload)})
+        self.assertEqual(loaded["timesheet_mail_backend"]["public_base_url"], "https://mail-callback.example.com")
+        with self.assertRaises(SystemExit) as raised:
+            cb.main(environ={})
+        self.assertIn("TIMESHEET_MAIL_ALLOW_SERVE=1", str(raised.exception))
+        self.assertEqual(cb.official_http_token_fetch({}), {})
+        self.assertEqual(cb.official_http_userinfo_fetch("", ""), {})
+
+
 
 
 if __name__ == "__main__":

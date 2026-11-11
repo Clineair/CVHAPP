@@ -1,8 +1,9 @@
 """Standalone HTTPS callback service scaffold for timesheet mail OAuth.
 
 This is not started by the Streamlit app and is not a Streamlit route.
-Deploy it on its own HTTPS host, register its redirect URIs on the Gmail
-and Microsoft OAuth clients, and point [timesheet_mail_backend] at it.
+Deploy it on its own HTTPS host, register its redirect URI on the Gmail
+send client (and a Microsoft client only if a later mailbox needs one),
+and point [timesheet_mail_backend] at it.
 
 Official flow: authorization-code + PKCE + signed state. The callback
 exchanges the code on this host, stores only a short-lived access token
@@ -14,7 +15,11 @@ tokens in Sheets or the repo. Do not run this as a general mail relay.
 """
 from __future__ import annotations
 
+import json
+import os
+from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urlencode, urlparse
+from urllib.request import Request, urlopen
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import timesheet_mail as tm
@@ -119,32 +124,180 @@ def redeem_or_send(store, ticket=None, employee=None, send_kwargs=None):
     return None
 
 
-class _LocalHandler(BaseHTTPRequestHandler):
-    """Local development only. Do not use this server in production."""
+HTTP_TIMEOUT_SEC = 15
+
+
+def secrets_from_env(environ=None):
+    """Load callback secrets from TIMESHEET_MAIL_SECRETS_JSON only. Never logs values."""
+    source = environ if environ is not None else os.environ
+    raw = source.get("TIMESHEET_MAIL_SECRETS_JSON") or ""
+    if not raw:
+        return None
+    try:
+        data = json.loads(raw)
+    except Exception:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def official_http_token_fetch(payload):
+    """POST the official token endpoint. Returns a dict. Does not log the body."""
+    if not payload or not payload.get("url") or not payload.get("data"):
+        return {}
+    body = urlencode(payload["data"]).encode("utf-8")
+    request = Request(payload["url"], data=body, method="POST")
+    request.add_header("Content-Type", "application/x-www-form-urlencoded")
+    request.add_header("Accept", "application/json")
+    try:
+        with urlopen(request, timeout=HTTP_TIMEOUT_SEC) as response:
+            raw = response.read()
+    except (HTTPError, URLError, TimeoutError, OSError, ValueError):
+        return {}
+    try:
+        data = json.loads(raw.decode("utf-8"))
+    except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def official_http_userinfo_fetch(url, access_token):
+    """GET the official userinfo endpoint with the access token. Does not log it."""
+    if not url or not access_token:
+        return {}
+    request = Request(url, method="GET")
+    request.add_header("Authorization", "Bearer " + access_token)
+    request.add_header("Accept", "application/json")
+    try:
+        with urlopen(request, timeout=HTTP_TIMEOUT_SEC) as response:
+            raw = response.read()
+    except (HTTPError, URLError, TimeoutError, OSError, ValueError):
+        return {}
+    try:
+        data = json.loads(raw.decode("utf-8"))
+    except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _first_query_value(params, key):
+    values = params.get(key) or []
+    if not values:
+        return ""
+    return values[0]
+
+
+class CallbackHandler(BaseHTTPRequestHandler):
+    """HTTPS callback routes for start and provider redirects. Not a Streamlit route."""
 
     secrets = None
+    store = None
+    app_base_fallback = ""
 
     def log_message(self, format, *args):
         # Avoid writing query strings that may include temporary authorization codes.
-        self.server.log_lines.append(self.path.split("?")[0])
+        path = self.path.split("?")[0]
+        if hasattr(self.server, "log_lines"):
+            self.server.log_lines.append(path)
+
+    def _redirect(self, location, status=302):
+        self.send_response(status)
+        self.send_header("Location", location)
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+
+    def _text(self, status, body):
+        payload = body.encode("utf-8") if isinstance(body, str) else body
+        self.send_response(status)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
 
     def do_GET(self):
         parsed = urlparse(self.path)
-        if parsed.path == "/healthz":
-            self.send_response(200)
-            self.end_headers()
-            self.wfile.write(b"ok")
+        path = parsed.path.rstrip("/") or "/"
+        if path == "/healthz":
+            self._text(200, "ok")
             return
-        self.send_response(501)
-        self.end_headers()
-        self.wfile.write(b"Configure a production HTTPS host. This built-in server is a scaffold only.")
+        secrets = self.secrets or getattr(self.server, "secrets", None) or secrets_from_env()
+        store = self.store or getattr(self.server, "store", None) or STORE
+        fallback = self.app_base_fallback or getattr(self.server, "app_base_fallback", "") or ""
+        if not secrets:
+            self._text(503, "callback secrets are not configured")
+            return
+        params = parse_qs(parsed.query, keep_blank_values=True)
+        if path == "/timesheet-mail/start":
+            token = _first_query_value(params, "start") or _first_query_value(params, "token")
+            try:
+                status, location, _msg = handle_start(secrets, token, store=store)
+            except Exception:
+                self._text(400, "invalid_start")
+                return
+            if status == 302 and location:
+                self._redirect(location)
+                return
+            self._text(status or 400, "invalid_start")
+            return
+        if path in ("/timesheet-mail/callback/gmail", "/timesheet-mail/callback/microsoft"):
+            query = {key: _first_query_value(params, key) for key in params}
+            try:
+                status, location, _msg = handle_provider_callback(
+                    secrets,
+                    query,
+                    official_http_userinfo_fetch,
+                    official_http_token_fetch,
+                    store=store,
+                    app_base_fallback=fallback,
+                )
+            except Exception:
+                self._text(400, "callback_failed")
+                return
+            if status == 302 and location:
+                self._redirect(location)
+                return
+            self._text(status or 400, "callback_failed")
+            return
+        self._text(404, "not found")
 
 
-def main():
+# Backward-compatible name used by earlier local-scaffold notes.
+_LocalHandler = CallbackHandler
+
+
+def serve(secrets=None, host="0.0.0.0", port=None, store=None):
+    """Start the callback HTTP server. Call only on a dedicated HTTPS fronted host."""
+    secrets = secrets or secrets_from_env()
+    if not secrets:
+        raise SystemExit("TIMESHEET_MAIL_SECRETS_JSON is missing or invalid.")
+    try:
+        port = int(port if port is not None else os.environ.get("PORT") or 8080)
+    except (TypeError, ValueError):
+        port = 8080
+    server = HTTPServer((host, port), CallbackHandler)
+    server.secrets = secrets
+    server.store = store or STORE
+    server.app_base_fallback = backend_public_base(secrets)
+    try:
+        section = tm.timesheet_secret_section(secrets, tm.TIMESHEET_MAIL_BACKEND_SECTION)
+        if section and "app_base_url" in section:
+            server.app_base_fallback = tm._cell(section["app_base_url"]) or server.app_base_fallback
+    except Exception:
+        pass
+    server.log_lines = []
+    server.serve_forever()
+
+
+def main(environ=None):
+    source = environ if environ is not None else os.environ
+    if source.get("TIMESHEET_MAIL_ALLOW_SERVE") == "1":
+        serve(secrets=secrets_from_env(source))
+        return
     raise SystemExit(
-        "Do not start this scaffold as production mail sending. Deploy "
-        "timesheet_mail_callback on a dedicated HTTPS host with registered "
-        "redirect URIs, then set [timesheet_mail_backend] in Streamlit secrets."
+        "Do not start this scaffold as production mail sending unless "
+        "TIMESHEET_MAIL_ALLOW_SERVE=1 is set on a dedicated HTTPS host. "
+        "Deploy timesheet_mail_callback with registered redirect URIs, then set "
+        "[timesheet_mail_backend] in Streamlit secrets."
     )
 
 

@@ -25,7 +25,8 @@ def _exec_equipment_helpers():
         "IFTA_UNITS", "DRIVERS", "EMPLOYEES", "IFTA_TRIPS_SHEET_TITLE", "IFTA_FUEL_SHEET_TITLE", "IFTA_TRIPS_COLUMNS", "IFTA_FUEL_COLUMNS", "IFTA_RECEIPT_COLUMN", "IFTA_DEFAULT_JURISDICTION", "IFTA_JURISDICTIONS",
         "DOM_AIRCRAFT", "DOM_ACTION_ANNUAL", "YEARLY_ITEMS_SHEET_TITLE", "YEARLY_ITEMS_COLUMNS", "YEARLY_ITEM_GROUPS", "TIME_OFF_SHEET_TITLE", "TIME_OFF_COLUMNS", "TIME_OFF_TYPES", "TIME_OFF_TYPE_FULL", "TIME_OFF_TYPE_PARTIAL", "TIME_OFF_TYPE_VACATION", "TIME_OFF_STATUS_ACTIVE", "TIME_OFF_STATUS_CANCELLED", "TIME_OFF_ACTION_CREATE", "TIME_OFF_ACTION_CANCEL", "TIME_OFF_MAX_PAST_DAYS", "TIME_OFF_MAX_FUTURE_DAYS", "TIME_OFF_MAX_SPAN_DAYS", "TIMESHEET_EMPLOYEES", "TIMESHEET_SHEET_TITLE", "TIMESHEET_DAYS", "TIMESHEET_DAY_FIELDS", "TIMESHEET_EMAIL_TO", "TIMESHEET_IRS_BUSINESS_MILEAGE_RATES", "TIMESHEET_IRS_MILEAGE_RATES_START", "TIMESHEET_IRS_MILEAGE_RATES_END", "TIMESHEET_IRS_MILEAGE_SOURCE_URL", "TIMESHEET_MILEAGE_SHEET_TITLE", "TIMESHEET_MILEAGE_COLUMNS", "TIMESHEET_MILEAGE_SOURCE_IRS", "TIMESHEET_MILEAGE_SOURCE_COMPANY", "TIMESHEET_MILEAGE_SOURCE_SAVED",
         "ANTHONY_TIMESHEET_EMPLOYEE", "ANTHONY_TIMESHEET_SHEET_TITLE", "ANTHONY_TIMESHEET_TEMPLATE", "ANTHONY_TIMESHEET_DAYS", "ANTHONY_TIMESHEET_DAY_FIELDS", "ANTHONY_TIMESHEET_GRID_ROWS", "ANTHONY_TIMESHEET_WEEK_ROWS", "ANTHONY_TIMESHEET_NUMERIC_FIELDS",
-        "TIMESHEET_AUTH_REQUIRED_KEYS", "TIMESHEET_GOOGLE_ISSUERS", "TIMESHEET_EMPLOYEE_EMAILS_SECTION",
+        "TIMESHEET_AUTH_REQUIRED_KEYS", "TIMESHEET_AUTH_SHARED_KEYS", "TIMESHEET_AUTH_PROVIDER_KEYS",
+        "TIMESHEET_GOOGLE_ISSUERS", "TIMESHEET_MICROSOFT_ISSUER_PREFIXES", "TIMESHEET_EMPLOYEE_EMAILS_SECTION",
         "TIMESHEET_MAIL_SHEET_TITLE", "TIMESHEET_MAIL_COLUMNS", "TIMESHEET_MAIL_ACTION_COMPOSER",
         "PARTS", "CORE_FACTORS", "PART_FACTORS", "PART_STOPS", "CONFIG_FIELDS",
         "ALL_FACTOR_KEYS", "ALL_STOP_KEYS", "FRAT_COLUMNS",
@@ -106,6 +107,7 @@ def _exec_equipment_helpers():
         "load_timesheet_records", "load_timesheet_records_readonly",
         "save_timesheet_record", "timesheet_gmail_configured",
         "timesheet_secret_section", "timesheet_section_has_keys", "timesheet_auth_configured",
+        "timesheet_auth_login_providers", "timesheet_trusted_signin_issuer",
         "timesheet_employee_email_map", "timesheet_user_info", "timesheet_verified_signin_email",
         "timesheet_employee_for_identity", "timesheet_access_state", "timesheet_can_view_or_edit",
         "timesheet_email_can_send", "timesheet_email_subject", "timesheet_email_body",
@@ -1082,7 +1084,66 @@ class PlaceholderAndLogicTests(unittest.TestCase):
         self.assertNotIn("tokens", str(audit))
         self.assertEqual(s["timesheet_employee_email_map"]({}), {})
 
+    def test_timesheet_google_and_microsoft_identity_and_anthony_mapping(self):
+        s = self.s
+        named = {
+            "auth": {
+                "redirect_uri": "https://cvhapp-fpzzanc7kwhapubsvkjx67.streamlit.app/oauth2callback",
+                "cookie_secret": "test-only-not-used",
+                "google": {
+                    "client_id": "g-id",
+                    "client_secret": "g-secret",
+                    "server_metadata_url": "https://accounts.google.com/.well-known/openid-configuration",
+                },
+                "microsoft": {
+                    "client_id": "m-id",
+                    "client_secret": "m-secret",
+                    "server_metadata_url": "https://login.microsoftonline.com/common/v2.0/.well-known/openid-configuration",
+                },
+            },
+            "timesheet_employees": {
+                "Anthony Root": "anthony.signin@example.com",
+                "Robert Rackley": "robert.signin@example.com",
+            },
+        }
+        self.assertTrue(s["timesheet_auth_configured"](named))
+        self.assertEqual(s["timesheet_auth_login_providers"](named), ("google", "microsoft"))
+        self.assertFalse(s["timesheet_auth_configured"]({
+            "auth": {"redirect_uri": named["auth"]["redirect_uri"], "cookie_secret": "x"},
+        }))
+        self.assertFalse(s["timesheet_auth_configured"]({"auth": named["auth"]["google"]}))
+        mapping = s["timesheet_employee_email_map"](named)
+        self.assertEqual(mapping["Anthony Root"], "anthony.signin@example.com")
+        self.assertEqual(mapping["Robert Rackley"], "robert.signin@example.com")
+        self.assertNotIn("Carl Mulvaney", mapping)
+        ms_user = {
+            "is_logged_in": True,
+            "email": "Robert.Signin@example.com",
+            "email_verified": True,
+            "iss": "https://login.microsoftonline.com/9188040d-6c67-4c5b-b112-36a304b66dad/v2.0",
+        }
+        self.assertTrue(s["timesheet_trusted_signin_issuer"](ms_user["iss"]))
+        self.assertTrue(s["timesheet_trusted_signin_issuer"]("https://sts.windows.net/common"))
+        self.assertFalse(s["timesheet_trusted_signin_issuer"]("https://evil.example"))
+        self.assertFalse(s["timesheet_trusted_signin_issuer"]("https://login.microsoftonline.com.evil.example/"))
+        self.assertEqual(s["timesheet_verified_signin_email"](ms_user), "robert.signin@example.com")
+        self.assertEqual(s["timesheet_employee_for_identity"](ms_user, secrets=named), "Robert Rackley")
+        anthony = {
+            "is_logged_in": True,
+            "email": "anthony.signin@example.com",
+            "email_verified": True,
+            "iss": "https://accounts.google.com",
+        }
+        self.assertEqual(s["timesheet_employee_for_identity"](anthony, secrets=named), "Anthony Root")
+        self.assertEqual(s["timesheet_access_state"]("Anthony Root", user=anthony, secrets=named), "allowed")
+        self.assertEqual(s["timesheet_access_state"]("Carl Mulvaney", user=anthony, secrets=named), "other_employee")
+        self.assertEqual(
+            s["anthony_timesheet_pdf_filename"]({"Employee": "Anthony Root", "Week Of": "2026-11-08"}),
+            "Anthony_Time_Sheet_Anthony_Root_2026-11-08.pdf",
+        )
+
     def test_timesheet_irs_mileage_rates_dates_and_exports(self):
+
         from datetime import date, datetime
         from zoneinfo import ZoneInfo
         import fitz
