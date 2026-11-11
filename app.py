@@ -385,7 +385,8 @@ EMPLOYEES = [
 ]
 # Weekly time sheet is only for these employees, in Ron's listed order.
 # Official weekly form for these five employees. Ron Cline has no timesheet.
-# Anthony Root uses a separate official form (see ANTHONY_TIMESHEET_*).
+# Anthony Root uses a separate official form (see ANTHONY_TIMESHEET_*) and does
+# not get vacation or sick hours on that form.
 TIMESHEET_EMPLOYEES = [
     "Carl Mulvaney",
     "Barry Markham",
@@ -419,11 +420,17 @@ ANTHONY_TIMESHEET_NUMERIC_FIELDS = {
     "Survery Hrs", "Standby Hrs",
 }
 TIMESHEET_DAYS = ("Sun", "Mon", "Tues", "Wed", "Thur", "Fri", "Sat")
+# Vacation and Sick sit with the worked-hour rows on the five-person form only.
+TIMESHEET_WORKED_HOUR_FIELDS = ("CVH Hours", "Forestry Hours", "BNSF Hours")
+TIMESHEET_LEAVE_FIELDS = ("Vacation Hours", "Sick Hours")
+TIMESHEET_LEAVE_HOURS_MAX = 24
 TIMESHEET_DAY_FIELDS = (
     ("Location", "Location"),
     ("CVH Hours", "CVH # work hours"),
     ("Forestry Hours", "Forestry #  work hours"),
     ("BNSF Hours", "BNSF # work hours"),
+    ("Vacation Hours", "Vacation Hours"),
+    ("Sick Hours", "Sick Hours"),
     ("Perdiem Rate", "Perdiem Rate"),
     ("Other", "Other"),
 )
@@ -2663,7 +2670,68 @@ def timesheet_columns():
     return cols
 
 
+def timesheet_leave_columns():
+    """Day columns for vacation and sick on the five-person weekly sheet."""
+    cols = []
+    for day in TIMESHEET_DAYS:
+        for field in TIMESHEET_LEAVE_FIELDS:
+            cols.append(timesheet_day_column(day, field))
+    return cols
+
+
+def timesheet_leave_hours(value):
+    """Paid-leave hours. Blank or missing older cells load as 0."""
+    number = timesheet_parse_number(value)
+    if number is None:
+        return 0.0
+    return float(number)
+
+
+def timesheet_weekly_hour_totals(record):
+    """Worked hours stay CVH + Forestry + BNSF. Vacation and sick are separate.
+
+    Total hours including paid leave is worked plus vacation plus sick.
+    Reimbursement dollars are not part of these hour totals.
+    """
+    record = record or {}
+    worked = 0.0
+    vacation = 0.0
+    sick = 0.0
+    for day in TIMESHEET_DAYS:
+        for field in TIMESHEET_WORKED_HOUR_FIELDS:
+            number = timesheet_parse_number(record.get(timesheet_day_column(day, field)))
+            if number is not None:
+                worked += number
+        vacation += timesheet_leave_hours(record.get(timesheet_day_column(day, "Vacation Hours")))
+        sick += timesheet_leave_hours(record.get(timesheet_day_column(day, "Sick Hours")))
+    worked = round(worked, 2)
+    vacation = round(vacation, 2)
+    sick = round(sick, 2)
+    return {
+        "Worked Hours": worked,
+        "Vacation Hours": vacation,
+        "Sick Hours": sick,
+        "Total Hours Including Paid Leave": round(worked + vacation + sick, 2),
+    }
+
+
+def timesheet_hour_total_lines(record):
+    """Labeled hour totals. Worked hours do not include paid leave."""
+    totals = timesheet_weekly_hour_totals(record)
+    return [
+        "Worked hours: " + timesheet_format_hours(totals["Worked Hours"]),
+        "Vacation: " + timesheet_format_hours(totals["Vacation Hours"]),
+        "Sick: " + timesheet_format_hours(totals["Sick Hours"]),
+        "Total hours including paid leave: " + timesheet_format_hours(totals["Total Hours Including Paid Leave"]),
+    ]
+
+
 def timesheet_parse_number(value):
+    """Parse a timesheet number. Numeric zero stays zero; blank stays missing."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
     text = _cell(value).replace(",", "").replace("$", "").strip()
     if not text:
         return None
@@ -2930,13 +2998,24 @@ def timesheet_reimb_total(parts, fuel, other):
 
 
 def timesheet_content_payload(record):
-    """Fields that initials lock; initials/signature metadata are excluded."""
+    """Fields that initials lock; initials/signature metadata are excluded.
+
+    Blank or zero vacation and sick are omitted so they hash the same as older
+    rows that had no leave columns. A non-zero leave entry changes the hash.
+    """
     days = {}
     for day in TIMESHEET_DAYS:
-        days[day] = {
-            field: _cell((record or {}).get(timesheet_day_column(day, field)))
-            for field, _label in TIMESHEET_DAY_FIELDS
-        }
+        fields = {}
+        for field, _label in TIMESHEET_DAY_FIELDS:
+            raw = (record or {}).get(timesheet_day_column(day, field))
+            if field in TIMESHEET_LEAVE_FIELDS:
+                number = timesheet_parse_number(raw)
+                if number is None or abs(number) < 1e-9:
+                    continue
+                fields[field] = timesheet_format_hours(number)
+            else:
+                fields[field] = _cell(raw)
+        days[day] = fields
     payload = {
         "Employee": _cell((record or {}).get("Employee")),
         "Week Of": format_equipment_date((record or {}).get("Week Of")),
@@ -3061,7 +3140,25 @@ def build_timesheet_record(
         row = dict(day_values.get(day) or {})
         for field, _label in TIMESHEET_DAY_FIELDS:
             raw = row.get(field, "")
-            if field in {"CVH Hours", "Forestry Hours", "BNSF Hours", "Perdiem Rate"}:
+            if field in TIMESHEET_LEAVE_FIELDS:
+                # Numeric zero is a real entry. _cell(0) is blank, so don't use it here.
+                provided = (
+                    isinstance(raw, (int, float)) and not isinstance(raw, bool)
+                ) or bool(_cell(raw))
+                number = timesheet_parse_number(raw)
+                if provided and number is None:
+                    raise ValueError(day + " " + field + " must be a number")
+                if number is None:
+                    number = 0.0
+                if number < 0:
+                    raise ValueError(day + " " + field + " cannot be negative")
+                if number > TIMESHEET_LEAVE_HOURS_MAX:
+                    raise ValueError(
+                        day + " " + field + " cannot be more than "
+                        + str(TIMESHEET_LEAVE_HOURS_MAX) + " hours"
+                    )
+                row[field] = timesheet_format_hours(number)
+            elif field in {"CVH Hours", "Forestry Hours", "BNSF Hours", "Perdiem Rate"}:
                 if _cell(raw) and timesheet_parse_number(raw) is None:
                     raise ValueError(day + " " + field + " must be a number")
                 number = timesheet_parse_number(raw)
@@ -3145,10 +3242,35 @@ def build_timesheet_record(
     return record
 
 
+def ensure_timesheet_leave_columns(ws):
+    """Append missing Vacation and Sick day columns without reordering the header.
+
+    Older Time Sheets tabs keep every existing header cell. New leave columns
+    are added on the right so saves can persist them. Rows that predate those
+    columns still load as 0.
+    """
+    header = [_cell(c) for c in ws.row_values(1)]
+    if not header:
+        return False
+    missing = [col for col in timesheet_leave_columns() if col not in header]
+    if not missing:
+        return False
+    if hasattr(ws, "add_cols"):
+        try:
+            ws.add_cols(len(missing))
+        except Exception:
+            pass
+    start = len(header) + 1
+    for offset, col in enumerate(missing):
+        ws.update_cell(1, start + offset, col)
+    return True
+
+
 def ensure_timesheets_worksheet(spreadsheet):
     """Create the Time Sheets tab with a header when it is missing.
 
-    Never alters an existing header, and never writes FRAT or other tabs.
+    An existing header is not reordered or rewritten. Missing Vacation and
+    Sick columns are appended. Never writes FRAT or other tabs.
     """
     cols = list(timesheet_columns())
     ws = _worksheet_or_none(spreadsheet, TIMESHEET_SHEET_TITLE)
@@ -3162,6 +3284,8 @@ def ensure_timesheets_worksheet(spreadsheet):
         if not header:
             ws.append_row(cols, value_input_option="RAW")
             created = True
+        else:
+            ensure_timesheet_leave_columns(ws)
     return ws, created
 
 
@@ -3469,6 +3593,8 @@ def timesheet_template_labels(record=None):
         "CVH # work hours",
         "Forestry #  work hours",
         "BNSF # work hours",
+        "Vacation Hours",
+        "Sick Hours",
         "Perdiem Rate",
         "Other",
         "Perdiem Rates -",
@@ -3490,6 +3616,7 @@ def timesheet_template_labels(record=None):
         "Date",
     ]
     if record is not None:
+        labels.extend(timesheet_hour_total_lines(record))
         labels.append(timesheet_mileage_rate_line(record))
         labels.append(timesheet_mileage_source_note(record))
         for trip in timesheet_mileage_trips_for_display(record):
@@ -3530,6 +3657,17 @@ def build_timesheet_xlsx(record):
         ws.cell(11, col, _cell(record.get(timesheet_day_column(day, "BNSF Hours"))))
         ws.cell(12, col, _cell(record.get(timesheet_day_column(day, "Perdiem Rate"))))
         ws.cell(13, col, _cell(record.get(timesheet_day_column(day, "Other"))))
+    # Rows 14-15 are blank on the official template, between Other and Perdiem Rates.
+    ws["B14"] = "Vacation Hours"
+    ws["B15"] = "Sick Hours"
+    ws.row_dimensions[14].height = 22
+    ws.row_dimensions[15].height = 22
+    for i, day in enumerate(days):
+        col = 3 + i  # C=3
+        ws.cell(14, col, _cell(record.get(timesheet_day_column(day, "Vacation Hours"))) or "0")
+        ws.cell(15, col, _cell(record.get(timesheet_day_column(day, "Sick Hours"))) or "0")
+    ws.row_dimensions[20].height = 18
+    ws["B20"] = "    ".join(timesheet_hour_total_lines(record))
     trips = timesheet_mileage_trips_for_display(record)
     ws["B22"] = timesheet_mileage_rate_line(record)
     if len(trips) <= 1:
@@ -3640,14 +3778,17 @@ def build_timesheet_pdf(record, logo_path=None):
     _s(8, False)
     c.drawString(4.5 * inch, y, "(Sunday's Date)")
 
-    # Grid
+    # Grid. Vacation and Sick are extra rows on the same day columns as worked hours.
     y -= 16
     left = 0.55 * inch
     row_labels = [label for _field, label in TIMESHEET_DAY_FIELDS]
     col_labels = [""] + list(TIMESHEET_DAYS)
     col_w = [1.45 * inch] + [0.72 * inch] * 7
-    row_h = [0.28 * inch] + [0.42 * inch] * 6
-    rows = 7
+    field_rows = len(TIMESHEET_DAY_FIELDS)
+    # Header is tall enough for the day name and date. Field rows stay readable
+    # with Vacation and Sick added, and the sheet still fits on one page.
+    row_h = [0.36 * inch] + [0.40 * inch] * field_rows
+    rows = 1 + field_rows
     cols = 8
     grid_top = y
     grid_height = sum(row_h)
@@ -3696,7 +3837,12 @@ def build_timesheet_pdf(record, logo_path=None):
             xx += col_w[i + 1]
         yy -= row_h[r + 1]
 
-    y = grid_top - grid_height - 18
+    y = grid_top - grid_height - 12
+    _s(8, True)
+    for line in timesheet_hour_total_lines(record):
+        c.drawString(left, y, line)
+        y -= 11
+    y -= 6
     _s(9, True)
     c.drawString(left, y, "Perdiem Rates -")
     _s(8, False)
@@ -4314,8 +4460,71 @@ def show_employee_timesheet(employee):
             st.text_input("CVH # work hours", value=_saved(timesheet_day_column(day, "CVH Hours")), key=prefix + day + "_CVH")
             st.text_input("Forestry #  work hours", value=_saved(timesheet_day_column(day, "Forestry Hours")), key=prefix + day + "_Forestry")
             st.text_input("BNSF # work hours", value=_saved(timesheet_day_column(day, "BNSF Hours")), key=prefix + day + "_BNSF")
+            leave_vacation, leave_sick = st.columns(2)
+            with leave_vacation:
+                saved_vacation = timesheet_leave_hours(_saved(timesheet_day_column(day, "Vacation Hours")))
+                if saved_vacation < 0:
+                    saved_vacation = 0.0
+                if saved_vacation > TIMESHEET_LEAVE_HOURS_MAX:
+                    saved_vacation = float(TIMESHEET_LEAVE_HOURS_MAX)
+                st.number_input(
+                    "Vacation Hours",
+                    min_value=0.0,
+                    max_value=float(TIMESHEET_LEAVE_HOURS_MAX),
+                    value=float(saved_vacation),
+                    step=0.25,
+                    format="%.2f",
+                    key=prefix + day + "_Vacation",
+                    help="Paid vacation hours for this day. 0 to 24.",
+                )
+            with leave_sick:
+                saved_sick = timesheet_leave_hours(_saved(timesheet_day_column(day, "Sick Hours")))
+                if saved_sick < 0:
+                    saved_sick = 0.0
+                if saved_sick > TIMESHEET_LEAVE_HOURS_MAX:
+                    saved_sick = float(TIMESHEET_LEAVE_HOURS_MAX)
+                st.number_input(
+                    "Sick Hours",
+                    min_value=0.0,
+                    max_value=float(TIMESHEET_LEAVE_HOURS_MAX),
+                    value=float(saved_sick),
+                    step=0.25,
+                    format="%.2f",
+                    key=prefix + day + "_Sick",
+                    help="Paid sick hours for this day. 0 to 24.",
+                )
             st.text_input("Perdiem Rate", value=_saved(timesheet_day_column(day, "Perdiem Rate")), key=prefix + day + "_Perdiem")
             st.text_input("Other", value=_saved(timesheet_day_column(day, "Other")), key=prefix + day + "_Other")
+
+    def _live_hour_record():
+        live = {}
+        for day_name in TIMESHEET_DAYS:
+            live[timesheet_day_column(day_name, "CVH Hours")] = st.session_state.get(
+                prefix + day_name + "_CVH", _saved(timesheet_day_column(day_name, "CVH Hours")),
+            )
+            live[timesheet_day_column(day_name, "Forestry Hours")] = st.session_state.get(
+                prefix + day_name + "_Forestry", _saved(timesheet_day_column(day_name, "Forestry Hours")),
+            )
+            live[timesheet_day_column(day_name, "BNSF Hours")] = st.session_state.get(
+                prefix + day_name + "_BNSF", _saved(timesheet_day_column(day_name, "BNSF Hours")),
+            )
+            live[timesheet_day_column(day_name, "Vacation Hours")] = st.session_state.get(
+                prefix + day_name + "_Vacation",
+                timesheet_leave_hours(_saved(timesheet_day_column(day_name, "Vacation Hours"))),
+            )
+            live[timesheet_day_column(day_name, "Sick Hours")] = st.session_state.get(
+                prefix + day_name + "_Sick",
+                timesheet_leave_hours(_saved(timesheet_day_column(day_name, "Sick Hours"))),
+            )
+        return live
+
+    for line in timesheet_hour_total_lines(_live_hour_record()):
+        st.markdown("**" + line + "**")
+    st.caption(
+        "Worked hours are CVH, Forestry, and BNSF only. Vacation and sick are paid leave, "
+        "0 to 24 hours a day, and are not included in worked hours. "
+        "Total hours including paid leave adds them on."
+    )
 
     saved_trips = timesheet_structured_mileage_trips(saved) if saved else []
     if saved and not saved_trips and any(_saved(key) for key in (
@@ -4474,6 +4683,8 @@ def show_employee_timesheet(employee):
                 "CVH Hours": st.session_state.get(prefix + day + "_CVH", ""),
                 "Forestry Hours": st.session_state.get(prefix + day + "_Forestry", ""),
                 "BNSF Hours": st.session_state.get(prefix + day + "_BNSF", ""),
+                "Vacation Hours": st.session_state.get(prefix + day + "_Vacation", 0),
+                "Sick Hours": st.session_state.get(prefix + day + "_Sick", 0),
                 "Perdiem Rate": st.session_state.get(prefix + day + "_Perdiem", ""),
                 "Other": st.session_state.get(prefix + day + "_Other", ""),
             }

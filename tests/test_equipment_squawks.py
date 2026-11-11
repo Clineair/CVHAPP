@@ -23,7 +23,7 @@ def _exec_equipment_helpers():
         "OFFICIAL_EQUIPMENT_NAMES", "REGISTRATION_EXPIRE_COL", "ANNUAL_MAINT_COL",
         "TONNAGE_APPLIES_COL", "TONNAGE_EXPIRE_COL", "TONNAGE_DEFAULT_UNITS", "DATE_STATUS_COLORS",
         "IFTA_UNITS", "DRIVERS", "EMPLOYEES", "IFTA_TRIPS_SHEET_TITLE", "IFTA_FUEL_SHEET_TITLE", "IFTA_TRIPS_COLUMNS", "IFTA_FUEL_COLUMNS", "IFTA_RECEIPT_COLUMN", "IFTA_DEFAULT_JURISDICTION", "IFTA_JURISDICTIONS",
-        "DOM_AIRCRAFT", "DOM_ACTION_ANNUAL", "YEARLY_ITEMS_SHEET_TITLE", "YEARLY_ITEMS_COLUMNS", "YEARLY_ITEM_GROUPS", "TIME_OFF_SHEET_TITLE", "TIME_OFF_COLUMNS", "TIME_OFF_TYPES", "TIME_OFF_TYPE_FULL", "TIME_OFF_TYPE_PARTIAL", "TIME_OFF_TYPE_VACATION", "TIME_OFF_STATUS_ACTIVE", "TIME_OFF_STATUS_CANCELLED", "TIME_OFF_ACTION_CREATE", "TIME_OFF_ACTION_CANCEL", "TIME_OFF_MAX_PAST_DAYS", "TIME_OFF_MAX_FUTURE_DAYS", "TIME_OFF_MAX_SPAN_DAYS", "TIMESHEET_EMPLOYEES", "TIMESHEET_SHEET_TITLE", "TIMESHEET_DAYS", "TIMESHEET_DAY_FIELDS", "TIMESHEET_EMAIL_TO", "TIMESHEET_IRS_BUSINESS_MILEAGE_RATES", "TIMESHEET_IRS_MILEAGE_RATES_START", "TIMESHEET_IRS_MILEAGE_RATES_END", "TIMESHEET_IRS_MILEAGE_SOURCE_URL", "TIMESHEET_MILEAGE_SHEET_TITLE", "TIMESHEET_MILEAGE_COLUMNS", "TIMESHEET_MILEAGE_SOURCE_IRS", "TIMESHEET_MILEAGE_SOURCE_COMPANY", "TIMESHEET_MILEAGE_SOURCE_SAVED",
+        "DOM_AIRCRAFT", "DOM_ACTION_ANNUAL", "YEARLY_ITEMS_SHEET_TITLE", "YEARLY_ITEMS_COLUMNS", "YEARLY_ITEM_GROUPS", "TIME_OFF_SHEET_TITLE", "TIME_OFF_COLUMNS", "TIME_OFF_TYPES", "TIME_OFF_TYPE_FULL", "TIME_OFF_TYPE_PARTIAL", "TIME_OFF_TYPE_VACATION", "TIME_OFF_STATUS_ACTIVE", "TIME_OFF_STATUS_CANCELLED", "TIME_OFF_ACTION_CREATE", "TIME_OFF_ACTION_CANCEL", "TIME_OFF_MAX_PAST_DAYS", "TIME_OFF_MAX_FUTURE_DAYS", "TIME_OFF_MAX_SPAN_DAYS", "TIMESHEET_EMPLOYEES", "TIMESHEET_SHEET_TITLE", "TIMESHEET_DAYS", "TIMESHEET_DAY_FIELDS", "TIMESHEET_WORKED_HOUR_FIELDS", "TIMESHEET_LEAVE_FIELDS", "TIMESHEET_LEAVE_HOURS_MAX", "TIMESHEET_EMAIL_TO", "TIMESHEET_IRS_BUSINESS_MILEAGE_RATES", "TIMESHEET_IRS_MILEAGE_RATES_START", "TIMESHEET_IRS_MILEAGE_RATES_END", "TIMESHEET_IRS_MILEAGE_SOURCE_URL", "TIMESHEET_MILEAGE_SHEET_TITLE", "TIMESHEET_MILEAGE_COLUMNS", "TIMESHEET_MILEAGE_SOURCE_IRS", "TIMESHEET_MILEAGE_SOURCE_COMPANY", "TIMESHEET_MILEAGE_SOURCE_SAVED",
         "ANTHONY_TIMESHEET_EMPLOYEE", "ANTHONY_TIMESHEET_SHEET_TITLE", "ANTHONY_TIMESHEET_TEMPLATE", "ANTHONY_TIMESHEET_DAYS", "ANTHONY_TIMESHEET_DAY_FIELDS", "ANTHONY_TIMESHEET_GRID_ROWS", "ANTHONY_TIMESHEET_WEEK_ROWS", "ANTHONY_TIMESHEET_NUMERIC_FIELDS",
         "PARTS", "CORE_FACTORS", "PART_FACTORS", "PART_STOPS", "CONFIG_FIELDS",
         "ALL_FACTOR_KEYS", "ALL_STOP_KEYS", "FRAT_COLUMNS",
@@ -87,7 +87,7 @@ def _exec_equipment_helpers():
         "load_anthony_timesheet_records_readonly", "save_anthony_timesheet_record",
         "anthony_timesheet_pdf_filename", "anthony_timesheet_xlsx_filename",
         "build_anthony_timesheet_xlsx", "build_anthony_timesheet_pdf",
-        "timesheet_day_column", "timesheet_columns", "timesheet_parse_number",
+        "timesheet_day_column", "timesheet_columns", "timesheet_leave_columns", "timesheet_leave_hours", "timesheet_weekly_hour_totals", "timesheet_hour_total_lines", "ensure_timesheet_leave_columns", "timesheet_parse_number",
         "timesheet_format_hours", "timesheet_format_money", "timesheet_format_rate", "timesheet_format_mileage_rate", "timesheet_mileage_amount",
         "timesheet_irs_business_mileage_period", "timesheet_irs_business_mileage_rate",
         "timesheet_irs_mileage_supported_range_text", "timesheet_irs_mileage_unsupported_reason",
@@ -1054,6 +1054,10 @@ class PlaceholderAndLogicTests(unittest.TestCase):
         self.assertNotIn("Survey Hrs", labels)
         self.assertIn("L&I Ground Hours", labels)
         self.assertNotIn("CVH # work hours", labels)
+        self.assertNotIn("Vacation Hours", labels)
+        self.assertNotIn("Sick Hours", labels)
+        self.assertNotIn("Vacation Hours", " ".join(s["anthony_timesheet_columns"]()))
+        self.assertNotIn("Sick Hours", " ".join(s["anthony_timesheet_columns"]()))
         self.assertEqual(s["ANTHONY_TIMESHEET_GRID_ROWS"], 22)
         self.assertEqual(s["ANTHONY_TIMESHEET_WEEK_ROWS"], 7)
 
@@ -1311,6 +1315,220 @@ class PlaceholderAndLogicTests(unittest.TestCase):
         self.assertFalse(any(s["time_off_covers_date"](r, date(2026, 11, 20)) for r in active))
         with self.assertRaisesRegex(ValueError, "already cancelled"):
             s["build_time_off_cancel_record"](cancelled)
+
+    def test_timesheet_vacation_and_sick_on_standard_sheets_only(self):
+        from datetime import date, datetime
+        from io import BytesIO
+        from zoneinfo import ZoneInfo
+        import fitz
+        from openpyxl import load_workbook
+        s = self.s
+        self.assertEqual(s["TIMESHEET_LEAVE_FIELDS"], ("Vacation Hours", "Sick Hours"))
+        self.assertEqual(s["TIMESHEET_LEAVE_HOURS_MAX"], 24)
+        self.assertEqual(s["TIMESHEET_WORKED_HOUR_FIELDS"], ("CVH Hours", "Forestry Hours", "BNSF Hours"))
+        fields = [field for field, _label in s["TIMESHEET_DAY_FIELDS"]]
+        self.assertEqual(fields, [
+            "Location", "CVH Hours", "Forestry Hours", "BNSF Hours",
+            "Vacation Hours", "Sick Hours", "Perdiem Rate", "Other",
+        ])
+        for day in s["TIMESHEET_DAYS"]:
+            self.assertIn(day + " Vacation Hours", s["timesheet_columns"]())
+            self.assertIn(day + " Sick Hours", s["timesheet_columns"]())
+        anthony_cols = " ".join(s["anthony_timesheet_columns"]())
+        self.assertNotIn("Vacation Hours", anthony_cols)
+        self.assertNotIn("Sick Hours", anthony_cols)
+        self.assertNotIn("Vacation Hours", " ".join(s["anthony_timesheet_template_labels"]()))
+        self.assertNotIn("Sick Hours", " ".join(s["anthony_timesheet_template_labels"]()))
+        self.assertNotIn("Ron Cline", s["TIMESHEET_EMPLOYEES"])
+        self.assertNotIn("Anthony Root", s["TIMESHEET_EMPLOYEES"])
+
+        when = datetime(2026, 11, 11, 9, 0, tzinfo=ZoneInfo("America/Los_Angeles"))
+        today = date(2026, 11, 11)
+        base = s["build_timesheet_record"](
+            "Robert Rackley", date(2026, 11, 8),
+            day_values={
+                "Sun": {"CVH Hours": "8", "Forestry Hours": "1", "BNSF Hours": "1"},
+                "Mon": {"CVH Hours": "30"},
+            },
+            initials="RR",
+            when=when, entry_id="TS-LEAVE-0", today=today,
+        )
+        self.assertEqual(base["Sun Vacation Hours"], "0")
+        self.assertEqual(base["Sun Sick Hours"], "0")
+        self.assertEqual(base["Mon CVH Hours"], "30")
+        self.assertEqual(s["timesheet_weekly_hour_totals"](base)["Worked Hours"], 40)
+        self.assertEqual(s["timesheet_weekly_hour_totals"](base)["Vacation Hours"], 0)
+        self.assertEqual(s["timesheet_weekly_hour_totals"](base)["Sick Hours"], 0)
+        self.assertEqual(s["timesheet_weekly_hour_totals"](base)["Total Hours Including Paid Leave"], 40)
+        explicit_zero = s["build_timesheet_record"](
+            "Robert Rackley", date(2026, 11, 8),
+            day_values={
+                "Sun": {
+                    "CVH Hours": "8", "Forestry Hours": "1", "BNSF Hours": "1",
+                    "Vacation Hours": 0, "Sick Hours": "0",
+                },
+                "Mon": {"CVH Hours": "30"},
+            },
+            initials="RR",
+            when=when, entry_id="TS-LEAVE-0", today=today,
+        )
+        self.assertEqual(s["timesheet_content_hash"](base), s["timesheet_content_hash"](explicit_zero))
+        self.assertTrue(s["timesheet_initials_match_current"](base, explicit_zero))
+
+        rec = s["build_timesheet_record"](
+            "Robert Rackley", date(2026, 11, 8),
+            day_values={
+                "Sun": {
+                    "CVH Hours": "8", "Forestry Hours": "1", "BNSF Hours": "1",
+                    "Vacation Hours": "4", "Sick Hours": "2",
+                },
+                "Mon": {"CVH Hours": "30", "Vacation Hours": 0, "Sick Hours": 0},
+                "Tues": {"Vacation Hours": "24", "Sick Hours": "0.5"},
+            },
+            initials="RR",
+            when=when, entry_id="TS-LEAVE-1", today=today,
+        )
+        self.assertEqual(rec["Sun Vacation Hours"], "4")
+        self.assertEqual(rec["Sun Sick Hours"], "2")
+        self.assertEqual(rec["Tues Vacation Hours"], "24")
+        self.assertEqual(rec["Tues Sick Hours"], "0.5")
+        self.assertEqual(rec["Mon Vacation Hours"], "0")
+        totals = s["timesheet_weekly_hour_totals"](rec)
+        self.assertEqual(totals["Worked Hours"], 40)
+        self.assertEqual(totals["Vacation Hours"], 28)
+        self.assertEqual(totals["Sick Hours"], 2.5)
+        self.assertEqual(totals["Total Hours Including Paid Leave"], 70.5)
+        self.assertEqual(s["timesheet_weekly_hour_totals"](base)["Worked Hours"], totals["Worked Hours"])
+        self.assertTrue(s["timesheet_initials_valid"](rec))
+        self.assertFalse(s["timesheet_initials_match_current"](base, rec))
+        edited = dict(rec)
+        edited["Sun Vacation Hours"] = "5"
+        self.assertFalse(s["timesheet_initials_valid"](edited))
+
+        with self.assertRaisesRegex(ValueError, "Vacation Hours must be a number"):
+            s["build_timesheet_record"](
+                "Skylar Fingerle", date(2026, 11, 8),
+                day_values={"Wed": {"Vacation Hours": "nope"}},
+                today=today,
+            )
+        with self.assertRaisesRegex(ValueError, "Sick Hours cannot be negative"):
+            s["build_timesheet_record"](
+                "Skylar Fingerle", date(2026, 11, 8),
+                day_values={"Wed": {"Sick Hours": -1}},
+                today=today,
+            )
+        with self.assertRaisesRegex(ValueError, "cannot be more than 24"):
+            s["build_timesheet_record"](
+                "Gary Grant", date(2026, 11, 8),
+                day_values={"Fri": {"Vacation Hours": "24.5"}},
+                today=today,
+            )
+        capped = s["build_timesheet_record"](
+            "Gary Grant", date(2026, 11, 8),
+            day_values={"Fri": {"Sick Hours": "24"}},
+            today=today,
+        )
+        self.assertEqual(capped["Fri Sick Hours"], "24")
+        money = s["build_timesheet_record"](
+            "Barry Markham", date(2026, 11, 8),
+            day_values={"Sun": {"Vacation Hours": "8"}},
+            parts="10", fuel="5", other_reimb="2.25",
+            today=today,
+        )
+        self.assertEqual(money["Reimb Total"], "17.25")
+        with self.assertRaisesRegex(ValueError, "does not have a time sheet"):
+            s["build_timesheet_record"]("Ron Cline", date(2026, 11, 8), today=today)
+        with self.assertRaisesRegex(ValueError, "does not have a time sheet"):
+            s["build_timesheet_record"]("Anthony Root", date(2026, 11, 8), today=today)
+
+        pdf = s["build_timesheet_pdf"](rec)
+        self.assertTrue(pdf.startswith(b"%PDF"))
+        doc = fitz.open(stream=pdf, filetype="pdf")
+        self.assertEqual(doc.page_count, 1)
+        bottoms = []
+        for block in doc[0].get_text("dict")["blocks"]:
+            for line in block.get("lines", []):
+                bottoms.append(line["bbox"][3])
+        self.assertTrue(bottoms)
+        self.assertLess(max(bottoms), 770)
+        text = "\n".join(page.get_text() for page in doc).replace("\n", " ")
+        doc.close()
+        for label in s["timesheet_hour_total_lines"](rec):
+            self.assertIn(label, text, label)
+        self.assertIn("Vacation Hours", text)
+        self.assertIn("Sick Hours", text)
+
+        xlsx = s["build_timesheet_xlsx"](rec)
+        grid = load_workbook(BytesIO(xlsx)).active
+        self.assertEqual(grid["B14"].value, "Vacation Hours")
+        self.assertEqual(grid["B15"].value, "Sick Hours")
+        self.assertEqual(str(grid["C14"].value), "4")
+        self.assertEqual(str(grid["C15"].value), "2")
+        self.assertEqual(str(grid["E14"].value), "24")
+        self.assertEqual(str(grid["C9"].value), "8")
+        joined = " ".join(str(c.value) for row in grid.iter_rows() for c in row if c.value)
+        self.assertIn("Worked hours: 40", joined)
+        self.assertIn("Vacation: 28", joined)
+        self.assertIn("Sick: 2.5", joined)
+        self.assertIn("Total hours including paid leave: 70.5", joined)
+        self.assertIn("CVH # work hours", joined)
+        self.assertIn("Personal vechicle usage will be reimbursed at", joined)
+
+        old_header = [c for c in s["timesheet_columns"]() if c not in set(s["timesheet_leave_columns"]())]
+        self.assertNotIn("Sun Vacation Hours", old_header)
+        book = FakeSpreadsheet()
+        sheet = book.add_worksheet("Time Sheets", 50, 20)
+        sheet.append_row(old_header)
+        sheet.append_row([
+            "" if isinstance(base.get(col), (list, dict)) else str(base.get(col, ""))
+            for col in old_header
+        ])
+        loaded = s["load_timesheet_records_readonly"](book)
+        self.assertEqual(s["timesheet_leave_hours"](loaded[0].get("Sun Vacation Hours")), 0)
+        self.assertEqual(s["timesheet_leave_hours"](loaded[0].get("Sat Sick Hours")), 0)
+        self.assertEqual(s["timesheet_weekly_hour_totals"](loaded[0])["Worked Hours"], 40)
+        self.assertEqual(s["timesheet_weekly_hour_totals"](loaded[0])["Vacation Hours"], 0)
+        self.assertTrue(s["timesheet_initials_valid"](loaded[0]))
+        header_before = list(sheet.rows[0])
+        self.assertTrue(s["ensure_timesheet_leave_columns"](sheet))
+        self.assertEqual(sheet.rows[0][:len(header_before)], header_before)
+        for col in s["timesheet_leave_columns"]():
+            self.assertEqual(sheet.rows[0].count(col), 1)
+        self.assertEqual(sheet.rows[1][header_before.index("Sun CVH Hours")], "8")
+        self.assertEqual(sheet.rows[1][header_before.index("Mon CVH Hours")], "30")
+        _ws, created = s["ensure_timesheets_worksheet"](book)
+        self.assertFalse(created)
+        self.assertEqual(sheet.rows[0].count("Sun Vacation Hours"), 1)
+        writes_after = len(sheet.writes)
+        self.assertFalse(s["ensure_timesheet_leave_columns"](sheet))
+        self.assertEqual(len(sheet.writes), writes_after)
+
+        saved = s["build_timesheet_record"](
+            "Robert Rackley", date(2026, 11, 15),
+            day_values={"Sun": {"CVH Hours": "6", "Vacation Hours": "3", "Sick Hours": "1"}},
+            initials="RR",
+            when=when, entry_id="TS-LEAVE-NEW", today=date(2026, 11, 16),
+        )
+        s["save_timesheet_record"](saved, book)
+        header = sheet.rows[0]
+        self.assertEqual(header.count("Sun Vacation Hours"), 1)
+        new_row = sheet.rows[-1]
+        self.assertEqual(new_row[header.index("Sun Vacation Hours")], "3")
+        self.assertEqual(new_row[header.index("Sun Sick Hours")], "1")
+        self.assertEqual(new_row[header.index("Sun CVH Hours")], "6")
+        reloaded = s["load_timesheet_records_readonly"](book)
+        old = [row for row in reloaded if row["Entry ID"] == "TS-LEAVE-0"][0]
+        new = [row for row in reloaded if row["Entry ID"] == "TS-LEAVE-NEW"][0]
+        self.assertEqual(s["timesheet_leave_hours"](old.get("Sun Vacation Hours")), 0)
+        self.assertEqual(old["Sun CVH Hours"], "8")
+        self.assertTrue(s["timesheet_initials_valid"](old))
+        self.assertEqual(new["Sun Vacation Hours"], "3")
+        self.assertEqual(new["Sun Sick Hours"], "1")
+        self.assertEqual(s["timesheet_weekly_hour_totals"](new)["Worked Hours"], 6)
+        self.assertEqual(s["timesheet_weekly_hour_totals"](new)["Total Hours Including Paid Leave"], 10)
+        self.assertTrue(s["timesheet_initials_valid"](new))
+        self.assertEqual(book.sheet1.writes, [])
+        self.assertNotIn("Anthony Time Sheets", book.sheets)
 
 
 class FakeSheetBehaviorTests(unittest.TestCase):
@@ -2526,10 +2744,19 @@ class HeaderAndEquipmentPageTests(unittest.TestCase):
         self.assertTrue(any(t.value == "Employees" for t in at.title))
         self.assertFalse(any(t.value == "Ron Cline" for t in at.title))
 
+        def _assert_leave_boxes(at, name):
+            vacation = [n for n in at.number_input if n.label == "Vacation Hours"]
+            sick = [n for n in at.number_input if n.label == "Sick Hours"]
+            self.assertEqual(len(vacation), 7, name)
+            self.assertEqual(len(sick), 7, name)
+            self.assertTrue(all(float(n.value) == 0 for n in vacation), name)
+            self.assertTrue(all(float(n.value) == 0 for n in sick), name)
+
         at.button(key="employee_btn_Skylar_Fingerle").click().run()
         self.assertFalse(list(at.exception))
         self.assertTrue(any(t.value == "Skylar Fingerle" for t in at.title))
         self.assertTrue(any(t.value == "Weekly Time Sheet" for t in at.subheader))
+        _assert_leave_boxes(at, "Skylar Fingerle")
         self.assertEqual(_employee_names(at), expected)
         # Header EMPLOYEES button returns to the list.
         at.button(key="nav_employees").click().run()
@@ -2547,6 +2774,8 @@ class HeaderAndEquipmentPageTests(unittest.TestCase):
         self.assertTrue(any("L&I Ground Hours" in lab for lab in labels))
         self.assertTrue(any("Survery Hrs" in lab for lab in labels))
         self.assertFalse(any("CVH # work hours" in lab for lab in labels))
+        self.assertFalse(any(n.label == "Vacation Hours" for n in at.number_input))
+        self.assertFalse(any(n.label == "Sick Hours" for n in at.number_input))
         self.assertFalse(any("Personal vechicle" in (c.value or "") for c in at.caption))
         self.assertTrue(any((b.label or "").startswith("Email to patti@") and b.disabled for b in at.button))
         book = at.session_state.get("_workbook")
@@ -2563,6 +2792,7 @@ class HeaderAndEquipmentPageTests(unittest.TestCase):
             self.assertFalse(list(at.exception), name)
             self.assertTrue(any(t.value == name for t in at.title), name)
             self.assertTrue(any(t.value == "Weekly Time Sheet" for t in at.subheader), name)
+            _assert_leave_boxes(at, name)
             self.assertEqual(_employee_names(at), expected)
             self.assertTrue(any(b.label == "Back" for b in at.button))
             book = at.session_state.get("_workbook")
@@ -2763,6 +2993,8 @@ class HeaderAndEquipmentPageTests(unittest.TestCase):
         loc.set_value("Shop").run()
         cvh = next(t for t in at.text_input if t.label == "CVH # work hours")
         cvh.set_value("8")
+        next(n for n in at.number_input if n.label == "Vacation Hours").set_value(4)
+        next(n for n in at.number_input if n.label == "Sick Hours").set_value(2)
         next(t for t in at.text_input if t.label == "Initials (required before email)").set_value("CM")
         next(b for b in at.button if b.label == "Save week").click().run()
         self.assertFalse(list(at.exception))
@@ -2776,7 +3008,16 @@ class HeaderAndEquipmentPageTests(unittest.TestCase):
         self.assertEqual(row[header.index("Week Of")], "2026-11-08")
         self.assertEqual(row[header.index("Sun Location")], "Shop")
         self.assertEqual(row[header.index("Sun CVH Hours")], "8")
+        self.assertEqual(row[header.index("Sun Vacation Hours")], "4")
+        self.assertEqual(row[header.index("Sun Sick Hours")], "2")
+        self.assertEqual(row[header.index("Mon Vacation Hours")], "0")
         self.assertEqual(row[header.index("Initials")], "CM")
+        md = " ".join(m.value or "" for m in at.markdown)
+        self.assertIn("Worked hours: 8", md)
+        self.assertIn("Vacation: 4", md)
+        self.assertIn("Sick: 2", md)
+        self.assertIn("Total hours including paid leave: 14", md)
+        self.assertNotIn("Worked hours: 14", md)
         self.assertEqual(set(book.sheets), {"Sheet1", "Time Sheets"})
 
         self.assertTrue(any(b.label == "Download PDF" for b in at.button) or any(getattr(b, "label", "") == "Download PDF" for b in at.download_button))
