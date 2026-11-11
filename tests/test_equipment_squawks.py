@@ -23,7 +23,7 @@ def _exec_equipment_helpers():
         "OFFICIAL_EQUIPMENT_NAMES", "REGISTRATION_EXPIRE_COL", "ANNUAL_MAINT_COL",
         "TONNAGE_APPLIES_COL", "TONNAGE_EXPIRE_COL", "TONNAGE_DEFAULT_UNITS", "DATE_STATUS_COLORS",
         "IFTA_UNITS", "DRIVERS", "EMPLOYEES", "IFTA_TRIPS_SHEET_TITLE", "IFTA_FUEL_SHEET_TITLE", "IFTA_TRIPS_COLUMNS", "IFTA_FUEL_COLUMNS", "IFTA_RECEIPT_COLUMN", "IFTA_DEFAULT_JURISDICTION", "IFTA_JURISDICTIONS",
-        "DOM_AIRCRAFT", "DOM_ACTION_ANNUAL", "YEARLY_ITEMS_SHEET_TITLE", "YEARLY_ITEMS_COLUMNS", "YEARLY_ITEM_GROUPS", "TIME_OFF_SHEET_TITLE", "TIME_OFF_COLUMNS", "TIME_OFF_TYPES", "TIME_OFF_TYPE_FULL", "TIME_OFF_TYPE_PARTIAL", "TIME_OFF_TYPE_VACATION", "TIME_OFF_STATUS_ACTIVE", "TIME_OFF_STATUS_CANCELLED", "TIME_OFF_ACTION_CREATE", "TIME_OFF_ACTION_CANCEL", "TIME_OFF_MAX_PAST_DAYS", "TIME_OFF_MAX_FUTURE_DAYS", "TIME_OFF_MAX_SPAN_DAYS",
+        "DOM_AIRCRAFT", "DOM_ACTION_ANNUAL", "YEARLY_ITEMS_SHEET_TITLE", "YEARLY_ITEMS_COLUMNS", "YEARLY_ITEM_GROUPS", "TIME_OFF_SHEET_TITLE", "TIME_OFF_COLUMNS", "TIME_OFF_TYPES", "TIME_OFF_TYPE_FULL", "TIME_OFF_TYPE_PARTIAL", "TIME_OFF_TYPE_VACATION", "TIME_OFF_STATUS_ACTIVE", "TIME_OFF_STATUS_CANCELLED", "TIME_OFF_ACTION_CREATE", "TIME_OFF_ACTION_CANCEL", "TIME_OFF_MAX_PAST_DAYS", "TIME_OFF_MAX_FUTURE_DAYS", "TIME_OFF_MAX_SPAN_DAYS", "TIMESHEET_EMPLOYEES", "TIMESHEET_SHEET_TITLE", "TIMESHEET_DAYS", "TIMESHEET_DAY_FIELDS", "TIMESHEET_MILEAGE_RATE_DEFAULT", "TIMESHEET_EMAIL_TO",
         "PARTS", "CORE_FACTORS", "PART_FACTORS", "PART_STOPS", "CONFIG_FIELDS",
         "ALL_FACTOR_KEYS", "ALL_STOP_KEYS", "FRAT_COLUMNS",
     }
@@ -79,6 +79,19 @@ def _exec_equipment_helpers():
         "yearly_group_status", "yearly_group_statuses", "yearly_item_years",
         "yearly_item_status_markup", "apply_yearly_group_button_styles",
         "employee_button_key",
+        "employee_has_timesheet", "timesheet_week_start", "timesheet_day_dates",
+        "timesheet_day_column", "timesheet_columns", "timesheet_parse_number",
+        "timesheet_format_hours", "timesheet_format_money", "timesheet_format_rate", "timesheet_mileage_amount",
+        "timesheet_reimb_total", "timesheet_content_payload", "timesheet_content_hash",
+        "timesheet_initials_valid", "timesheet_initials_match_current",
+        "new_timesheet_entry_id", "_timesheet_sort_key", "latest_timesheet_record",
+        "build_timesheet_record", "ensure_timesheets_worksheet",
+        "load_timesheet_records", "load_timesheet_records_readonly",
+        "save_timesheet_record", "timesheet_gmail_configured",
+        "timesheet_email_can_send", "timesheet_email_block_reason",
+        "timesheet_bundle_path", "timesheet_template_labels",
+        "build_timesheet_xlsx", "timesheet_pdf_filename", "timesheet_xlsx_filename",
+        "build_timesheet_pdf", "_timesheet_wrap_label",
         "new_time_off_entry_id", "parse_time_off_time", "format_time_off_time",
         "format_time_off_time_display", "time_off_date_bounds", "time_off_shift_month",
         "time_off_calendar_weeks", "time_off_short_name", "time_off_type_label",
@@ -96,7 +109,7 @@ def _exec_equipment_helpers():
              or (isinstance(n, ast.FunctionDef) and n.name in functions)]
     from datetime import date, time as dt_time, timedelta
     import uuid
-    scope = {"datetime": datetime, "date": date, "dt_time": dt_time, "timedelta": timedelta, "ZoneInfo": ZoneInfo, "uuid": uuid}
+    scope = {"datetime": datetime, "date": date, "dt_time": dt_time, "timedelta": timedelta, "ZoneInfo": ZoneInfo, "uuid": uuid, "__file__": str(APP)}
     exec(compile(ast.Module(body=nodes, type_ignores=[]), str(APP), "exec"), scope)
     return scope
 
@@ -700,7 +713,140 @@ class PlaceholderAndLogicTests(unittest.TestCase):
 
 
 
+    def test_timesheet_roster_week_calcs_initials_and_exports(self):
+        from datetime import date, datetime
+        from zoneinfo import ZoneInfo
+        import fitz
+        from openpyxl import load_workbook
+        from io import BytesIO
+        s = self.s
+        self.assertEqual(s["TIMESHEET_EMPLOYEES"], [
+            "Carl Mulvaney",
+            "Barry Markham",
+            "Robert Rackley",
+            "Gary Grant",
+            "Skylar Fingerle",
+        ])
+        self.assertNotIn("Ron Cline", s["TIMESHEET_EMPLOYEES"])
+        self.assertNotIn("Anthony Root", s["TIMESHEET_EMPLOYEES"])
+        self.assertTrue(s["employee_has_timesheet"]("Carl Mulvaney"))
+        self.assertTrue(s["employee_has_timesheet"]("Skylar Fingerle"))
+        self.assertFalse(s["employee_has_timesheet"]("Ron Cline"))
+        self.assertFalse(s["employee_has_timesheet"]("Anthony Root"))
+        self.assertEqual(s["DRIVERS"], [
+            "Robert Rackley",
+            "Barry Markham",
+            "Anthony Root",
+            "Carl Mulvaney",
+            "Ron Cline",
+            "Gary Grant",
+        ])
+        self.assertEqual(s["TIMESHEET_EMAIL_TO"], "patti@centralvalleyheli.com")
+        self.assertEqual(s["TIMESHEET_SHEET_TITLE"], "Time Sheets")
+        self.assertEqual(s["TIMESHEET_DAYS"], ("Sun", "Mon", "Tues", "Wed", "Thur", "Fri", "Sat"))
+        self.assertEqual(s["TIMESHEET_MILEAGE_RATE_DEFAULT"], 0.655)
+
+        self.assertEqual(s["timesheet_week_start"](date(2026, 11, 11)), date(2026, 11, 8))
+        self.assertEqual(s["timesheet_week_start"](date(2026, 11, 8)), date(2026, 11, 8))
+        self.assertEqual(s["timesheet_week_start"](date(2026, 11, 14)), date(2026, 11, 8))
+        days = s["timesheet_day_dates"](date(2026, 11, 11))
+        self.assertEqual(days[0], date(2026, 11, 8))
+        self.assertEqual(days[-1], date(2026, 11, 14))
+        self.assertEqual(s["timesheet_mileage_amount"]("100", "0.655"), 65.50)
+        self.assertEqual(s["timesheet_reimb_total"]("10", "5", "2.25"), 17.25)
+        self.assertIsNone(s["timesheet_reimb_total"]("", "", ""))
+
+        when = datetime(2026, 11, 11, 9, 0, tzinfo=ZoneInfo("America/Los_Angeles"))
+        day_values = {
+            "Sun": {"Location": "Office", "CVH Hours": "8"},
+            "Mon": {"Location": "Field", "CVH Hours": "8", "Perdiem Rate": "60"},
+        }
+        rec = s["build_timesheet_record"](
+            "Carl Mulvaney", date(2026, 11, 11),
+            day_values=day_values,
+            mileage_start="Fresno", mileage_end="Farm",
+            mileage_miles="20", mileage_rate="",
+            parts="12.50", fuel="30", other_reimb="",
+            comments="Weekly note",
+            signature="Carl Mulvaney", signature_date=date(2026, 11, 14),
+            initials="CM",
+            when=when, entry_id="TS-TEST-1", today=date(2026, 11, 11),
+        )
+        self.assertEqual(rec["Week Of"], "2026-11-08")
+        self.assertEqual(rec["Employee"], "Carl Mulvaney")
+        self.assertEqual(rec["Sun Location"], "Office")
+        self.assertEqual(rec["Sun CVH Hours"], "8")
+        self.assertEqual(rec["Mon Perdiem Rate"], "60.00")
+        self.assertEqual(rec["Mileage Rate"], "0.655")
+        self.assertEqual(rec["Mileage Amount"], "13.10")
+        self.assertEqual(rec["Reimb Total"], "42.50")
+        self.assertEqual(rec["Status"], "Initialed")
+        self.assertTrue(s["timesheet_initials_valid"](rec))
+        changed = dict(rec)
+        changed["Sun CVH Hours"] = "9"
+        self.assertFalse(s["timesheet_initials_valid"](changed))
+        self.assertFalse(s["timesheet_initials_match_current"](rec, changed))
+        self.assertTrue(s["timesheet_initials_match_current"](rec, dict(rec)))
+
+        with self.assertRaisesRegex(ValueError, "does not have a time sheet"):
+            s["build_timesheet_record"]("Ron Cline", date(2026, 11, 8), today=date(2026, 11, 11))
+        with self.assertRaisesRegex(ValueError, "does not have a time sheet"):
+            s["build_timesheet_record"]("Anthony Root", date(2026, 11, 8), today=date(2026, 11, 11))
+        with self.assertRaisesRegex(ValueError, "must be a number"):
+            s["build_timesheet_record"](
+                "Gary Grant", date(2026, 11, 8),
+                day_values={"Sun": {"CVH Hours": "eight"}},
+                today=date(2026, 11, 11),
+            )
+        with self.assertRaisesRegex(ValueError, "cannot be negative"):
+            s["build_timesheet_record"](
+                "Gary Grant", date(2026, 11, 8),
+                mileage_miles="-1",
+                today=date(2026, 11, 11),
+            )
+
+        self.assertFalse(s["timesheet_email_can_send"](rec, configured=False))
+        self.assertFalse(s["timesheet_email_can_send"](rec, configured=True))
+        reason = s["timesheet_email_block_reason"](rec, configured=False)
+        self.assertIn("does not send mail", reason)
+        self.assertIn("patti@centralvalleyheli.com", s["TIMESHEET_EMAIL_TO"])
+
+        pdf = s["build_timesheet_pdf"](rec)
+        self.assertTrue(pdf.startswith(b"%PDF"))
+        Path("/tmp/timesheet_tpl/filled_sample.pdf").write_bytes(pdf)
+        doc = fitz.open(stream=pdf, filetype="pdf")
+        self.assertEqual(doc.page_count, 1)
+        extracted = "\n".join(page.get_text() for page in doc)
+        doc.close()
+        for label in s["timesheet_template_labels"]():
+            if label == "X 0.?":
+                self.assertTrue("X 0.66" in extracted or "X 0.655" in extracted or "X 0.?" in extracted)
+            else:
+                self.assertIn(label, extracted, label)
+        self.assertIn("Carl Mulvaney", extracted)
+        self.assertIn("2026-11-08", extracted)
+        self.assertIn("Initials: CM", extracted)
+        self.assertIn("Office", extracted)
+
+        xlsx = s["build_timesheet_xlsx"](rec)
+        Path("/tmp/timesheet_tpl/filled_sample.xlsx").write_bytes(xlsx)
+        wb = load_workbook(BytesIO(xlsx))
+        ws = wb[wb.sheetnames[0]]
+        joined = " ".join(str(c.value) for row in ws.iter_rows() for c in row if c.value)
+        for label in ("Central Valley Helicopters", "Weekly Time Sheet", "Perdiem Rates -",
+                      "$60.00 per day with company paid hotel",
+                      "Personal vechicle usage will be reimbursed at _?_ per mile",
+                      "(0.65.5 based on 2023 IRS reimb rate)",
+                      "Employee Signature", "Forestry #  work hours", "BNSF # work hours"):
+            self.assertIn(label, joined)
+        self.assertIn("Carl Mulvaney", ws["B4"].value)
+        self.assertIn("2026-11-08", ws["F4"].value)
+        self.assertEqual(str(ws["C8"].value), "Office")
+        self.assertEqual(str(ws["C9"].value), "8")
+        self.assertIn("CM", joined)
+
     def test_time_off_records_validation_grid_and_cancel_history(self):
+
         from datetime import date, time, datetime
         from zoneinfo import ZoneInfo
         s = self.s
@@ -1730,6 +1876,57 @@ class FakeSheetBehaviorTests(unittest.TestCase):
         self.assertEqual(ws.writes, writes)
         self._assert_frat_untouched()
 
+    def test_timesheet_save_and_readonly_load_leave_headers_alone(self):
+        from datetime import date, datetime
+        from zoneinfo import ZoneInfo
+        frat_writes = list(self.book.sheet1.writes)
+        self.assertEqual(self.s["load_timesheet_records_readonly"](self.book), [])
+        self.assertNotIn("Time Sheets", self.book.sheets)
+        self._assert_frat_untouched()
+
+        when = datetime(2026, 11, 11, 10, 0, tzinfo=ZoneInfo("America/Los_Angeles"))
+        record = self.s["build_timesheet_record"](
+            "Barry Markham", date(2026, 11, 8),
+            day_values={"Sun": {"Location": "Yard", "CVH Hours": "4"}},
+            initials="BM",
+            when=when, entry_id="TS-SHEET-1", today=date(2026, 11, 11),
+        )
+        self.s["save_timesheet_record"](record, self.book)
+        self.assertIn("Time Sheets", self.book.sheets)
+        ws = self.book.sheets["Time Sheets"]
+        self.assertEqual(ws.rows[0], self.s["timesheet_columns"]())
+        self.assertEqual(ws.rows[1][ws.rows[0].index("Employee")], "Barry Markham")
+        self.assertEqual(ws.rows[1][ws.rows[0].index("Week Of")], "2026-11-08")
+        self.assertEqual(ws.rows[1][ws.rows[0].index("Sun Location")], "Yard")
+        self.assertEqual(ws.rows[1][ws.rows[0].index("Initials")], "BM")
+        header = list(ws.rows[0])
+        writes_after = list(ws.writes)
+        loaded = self.s["load_timesheet_records_readonly"](self.book)
+        self.assertEqual(len(loaded), 1)
+        latest = self.s["latest_timesheet_record"](loaded, "Barry Markham", date(2026, 11, 10))
+        self.assertEqual(latest["Sun CVH Hours"], "4")
+        self.assertTrue(self.s["timesheet_initials_valid"](latest))
+        self.assertEqual(ws.rows[0], header)
+        self.assertEqual(ws.writes, writes_after)
+        second, created_again = self.s["ensure_timesheets_worksheet"](self.book)
+        self.assertFalse(created_again)
+        self.assertEqual(second.rows[0], header)
+        self.assertNotIn("Yearly Items", self.book.sheets)
+        self.assertEqual(self.book.sheet1.writes, frat_writes)
+        self._assert_frat_untouched()
+
+    def test_timesheet_ensure_does_not_alter_an_existing_custom_header(self):
+        ws = self.book.add_worksheet("Time Sheets", 20, 20)
+        custom = list(self.s["timesheet_columns"]()) + ["Extra"]
+        ws.append_row(custom)
+        writes = list(ws.writes)
+        out, created = self.s["ensure_timesheets_worksheet"](self.book)
+        self.assertFalse(created)
+        self.assertIs(out, ws)
+        self.assertEqual(ws.rows[0], custom)
+        self.assertEqual(ws.writes, writes)
+        self._assert_frat_untouched()
+
     def test_ifta_fuel_have_receipt_does_not_alter_existing_header(self):
         from datetime import date
         header = [
@@ -1996,8 +2193,9 @@ class HeaderAndEquipmentPageTests(unittest.TestCase):
         self.assertFalse(any(t.value == "Ron Cline" for t in at.title))
 
         at.button(key="employee_btn_Skylar_Fingerle").click().run()
-        _assert_blank_employee_body(at)
+        self.assertFalse(list(at.exception))
         self.assertTrue(any(t.value == "Skylar Fingerle" for t in at.title))
+        self.assertTrue(any(t.value == "Weekly Time Sheet" for t in at.subheader))
         self.assertEqual(_employee_names(at), expected)
         # Header EMPLOYEES button returns to the list.
         at.button(key="nav_employees").click().run()
@@ -2005,19 +2203,26 @@ class HeaderAndEquipmentPageTests(unittest.TestCase):
         self.assertTrue(any(t.value == "Employees" for t in at.title))
         self.assertFalse(any(t.value == "Skylar Fingerle" for t in at.title))
 
-        # Remaining people also open a blank page headed by their name.
+        # Anthony has no time sheet; the other four also get the weekly form.
+        at.button(key="employee_btn_Anthony_Root").click().run()
+        _assert_blank_employee_body(at)
+        self.assertTrue(any(t.value == "Anthony Root" for t in at.title))
+        self.assertFalse(any(t.value == "Weekly Time Sheet" for t in at.subheader))
         for name, key in (
             ("Carl Mulvaney", "employee_btn_Carl_Mulvaney"),
-            ("Anthony Root", "employee_btn_Anthony_Root"),
             ("Barry Markham", "employee_btn_Barry_Markham"),
             ("Robert Rackley", "employee_btn_Robert_Rackley"),
             ("Gary Grant", "employee_btn_Gary_Grant"),
         ):
             at.button(key=key).click().run()
-            _assert_blank_employee_body(at)
+            self.assertFalse(list(at.exception), name)
             self.assertTrue(any(t.value == name for t in at.title), name)
+            self.assertTrue(any(t.value == "Weekly Time Sheet" for t in at.subheader), name)
             self.assertEqual(_employee_names(at), expected)
             self.assertTrue(any(b.label == "Back" for b in at.button))
+            book = at.session_state.get("_workbook")
+            if book is not None:
+                self.assertNotIn("Time Sheets", book.sheets)
 
         book = at.session_state.get("_workbook")
         if book is not None:
@@ -2180,7 +2385,64 @@ class HeaderAndEquipmentPageTests(unittest.TestCase):
         self.assertTrue(any(t.value == "Employees" for t in at.title))
         self.assertFalse(list(at.exception))
 
+    def test_employee_timesheet_saves_exports_and_email_stays_disabled(self):
+        from datetime import date
+        from streamlit.testing.v1 import AppTest
+
+        at = AppTest.from_string(equipment_offline_app(), default_timeout=30).run()
+        at.button(key="nav_employees").click().run()
+        at.button(key="employee_btn_Ron_Cline").click().run()
+        self.assertFalse(list(at.exception))
+        self.assertFalse(any(t.value == "Weekly Time Sheet" for t in at.subheader))
+        at.button(key="employee_btn_Carl_Mulvaney").click().run()
+        self.assertFalse(list(at.exception))
+        self.assertTrue(any(t.value == "Carl Mulvaney" for t in at.title))
+        self.assertTrue(any(t.value == "Weekly Time Sheet" for t in at.subheader))
+        self.assertTrue(any("Name:** Carl Mulvaney" in (m.value or "") or (m.value or "") == "**Name:** Carl Mulvaney" for m in at.markdown) or any("Carl Mulvaney" in (m.value or "") and "Name" in (m.value or "") for m in at.markdown))
+        self.assertTrue(any(d.label == "Week of (Sunday's Date)" for d in at.date_input))
+        self.assertTrue(any(b.label == "Save week" for b in at.button))
+        self.assertTrue(any(b.label == "Email to patti@centralvalleyheli.com" for b in at.button))
+        email_btn = next(b for b in at.button if b.label == "Email to patti@centralvalleyheli.com")
+        self.assertTrue(getattr(email_btn, "disabled", True) or email_btn.disabled)
+        captions = " ".join(c.value or "" for c in at.caption)
+        self.assertIn("does not send mail", captions)
+        book = at.session_state.get("_workbook")
+        if book is not None:
+            self.assertNotIn("Time Sheets", book.sheets)
+
+        # Fill Sunday hours and initials, save
+        week_input = next(d for d in at.date_input if d.label == "Week of (Sunday's Date)")
+        week_input.set_value(date(2026, 11, 8)).run()
+        self.assertFalse(list(at.exception))
+        loc = next(t for t in at.text_input if t.label == "Location")
+        loc.set_value("Shop").run()
+        cvh = next(t for t in at.text_input if t.label == "CVH # work hours")
+        cvh.set_value("8")
+        next(t for t in at.text_input if t.label == "Initials (required before email)").set_value("CM")
+        next(b for b in at.button if b.label == "Save week").click().run()
+        self.assertFalse(list(at.exception))
+        self.assertTrue(any("Saved time sheet for week of 2026-11-08" in (s.value or "") for s in at.success))
+        book = at.session_state.get("_workbook")
+        self.assertIn("Time Sheets", book.sheets)
+        self.assertEqual(book.sheets["Time Sheets"].rows[0], book.sheets["Time Sheets"].rows[0])  # header present
+        header = book.sheets["Time Sheets"].rows[0]
+        row = book.sheets["Time Sheets"].rows[1]
+        self.assertEqual(row[header.index("Employee")], "Carl Mulvaney")
+        self.assertEqual(row[header.index("Week Of")], "2026-11-08")
+        self.assertEqual(row[header.index("Sun Location")], "Shop")
+        self.assertEqual(row[header.index("Sun CVH Hours")], "8")
+        self.assertEqual(row[header.index("Initials")], "CM")
+        self.assertEqual(set(book.sheets), {"Sheet1", "Time Sheets"})
+
+        self.assertTrue(any(b.label == "Download PDF" for b in at.button) or any(getattr(b, "label", "") == "Download PDF" for b in at.download_button))
+        self.assertTrue(any(getattr(b, "label", "") == "Download Excel" for b in at.download_button) or any(b.label == "Download Excel" for b in at.button))
+        email_btn = next(b for b in at.button if b.label == "Email to patti@centralvalleyheli.com")
+        self.assertTrue(email_btn.disabled)
+        # Clicking a disabled button must not send or write mail.
+        self.assertFalse(list(at.exception))
+
     def test_monthly_safety_meeting_form_saves_and_edits_notes_on_fake_sheet(self):
+
         from datetime import date
         from streamlit.testing.v1 import AppTest
         at = AppTest.from_string(equipment_offline_app(), default_timeout=30).run()

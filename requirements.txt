@@ -7,3 +7,4 @@ gspread
 pandas
 google-auth
 reportlab
+openpyxl
