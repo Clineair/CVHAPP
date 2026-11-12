@@ -475,11 +475,14 @@ TIME_OFF_SHEET_TITLE = "Time Off"
 TIME_OFF_COLUMNS = [
     "Timestamp", "Entry ID", "Action", "Employee", "Type",
     "Start Date", "End Date", "Start Time", "End Time", "Notes", "Status",
+    "Project",
 ]
-TIME_OFF_TYPES = ("Full day off", "Partial day", "Vacation")
+TIME_OFF_TYPES = ("Full day off", "Partial day", "Vacation", "Project")
 TIME_OFF_TYPE_FULL = "Full day off"
 TIME_OFF_TYPE_PARTIAL = "Partial day"
 TIME_OFF_TYPE_VACATION = "Vacation"
+TIME_OFF_TYPE_PROJECT = "Project"
+TIME_OFF_PROJECTS = ("BNSF", "Forestry", "WSFW", "West", "Basin", "Other")
 TIME_OFF_STATUS_ACTIVE = "Active"
 TIME_OFF_STATUS_CANCELLED = "Cancelled"
 TIME_OFF_ACTION_CREATE = "Create"
@@ -2081,8 +2084,13 @@ def time_off_short_name(name):
     return _cell(name)
 
 
-def time_off_type_label(value):
+def time_off_type_label(value, project=None):
     kind = _cell(value)
+    if kind == TIME_OFF_TYPE_PROJECT:
+        name = _cell(project)
+        if name:
+            return "Project \u2013 " + name
+        return "Project"
     if kind == TIME_OFF_TYPE_FULL:
         return "Full day"
     if kind == TIME_OFF_TYPE_PARTIAL:
@@ -2218,6 +2226,7 @@ def time_off_identity(record):
         format_equipment_date((record or {}).get("End Date")),
         format_time_off_time((record or {}).get("Start Time")),
         format_time_off_time((record or {}).get("End Time")),
+        _cell((record or {}).get("Project")),
     )
 
 
@@ -2254,7 +2263,10 @@ def time_off_summary_text(record, include_employee=True):
         bits.append(kind)
         bits.append(start + " to " + end)
     else:
-        bits.append(kind or "Time off")
+        shown = kind or "Time off"
+        if kind == TIME_OFF_TYPE_PROJECT:
+            shown = time_off_type_label(kind, (record or {}).get("Project"))
+        bits.append(shown)
         bits.append(start or "—")
     notes = _cell((record or {}).get("Notes"))
     text = " — ".join(bits)
@@ -2279,6 +2291,7 @@ def time_off_month_grid_markup(year, month, records, today=None, employee=None):
         ".toff-full{background:#fef3c7;}"
         ".toff-part{background:#e0f2fe;}"
         ".toff-vac{background:#ede9fe;}"
+        ".toff-proj{background:#dcfce7;}"
         "</style>"
     )
     rows = ["<table class='toff-cal'><thead><tr>"]
@@ -2305,7 +2318,11 @@ def time_off_month_grid_markup(year, month, records, today=None, employee=None):
                         ev_class += " toff-part"
                     elif kind == TIME_OFF_TYPE_VACATION:
                         ev_class += " toff-vac"
-                    label = time_off_short_name(record.get("Employee")) + " — " + time_off_type_label(kind)
+                    elif kind == TIME_OFF_TYPE_PROJECT:
+                        ev_class += " toff-proj"
+                    label = time_off_short_name(record.get("Employee")) + " — " + time_off_type_label(
+                        kind, record.get("Project")
+                    )
                     if kind == TIME_OFF_TYPE_PARTIAL:
                         start_t = format_time_off_time_display(record.get("Start Time"))
                         end_t = format_time_off_time_display(record.get("End Time"))
@@ -2324,10 +2341,31 @@ def time_off_month_grid_markup(year, month, records, today=None, employee=None):
     return css + "".join(rows)
 
 
+def ensure_time_off_project_column(ws):
+    """Append a Project column when an older Time Off header does not have one.
+
+    Existing header cells stay in place. Rows saved before the column still
+    load with a blank project.
+    """
+    header = [_cell(c) for c in ws.row_values(1)]
+    if not header or "Project" in header:
+        return False
+    if hasattr(ws, "add_cols"):
+        try:
+            ws.add_cols(1)
+        except Exception:
+            pass
+    ws.update_cell(1, len(header) + 1, "Project")
+    return True
+
+
 def ensure_time_off_worksheet(spreadsheet):
     """Create the Time Off tab with a header when it is missing.
 
-    Never alters an existing header, and never writes FRAT or other tabs.
+    An existing header is not reordered or rewritten. A missing Project
+    column is appended so a chosen project can be stored. Older rows that
+    have no project cell still load with a blank project. Never writes FRAT
+    or other tabs.
     """
     cols = list(TIME_OFF_COLUMNS)
     ws = _worksheet_or_none(spreadsheet, TIME_OFF_SHEET_TITLE)
@@ -2341,6 +2379,8 @@ def ensure_time_off_worksheet(spreadsheet):
         if not header:
             ws.append_row(cols, value_input_option="RAW")
             created = True
+        else:
+            ensure_time_off_project_column(ws)
     return ws, created
 
 
@@ -2368,6 +2408,7 @@ def build_time_off_record(
     start_time=None,
     end_time=None,
     notes="",
+    project=None,
     when=None,
     entry_id=None,
     today=None,
@@ -2379,6 +2420,11 @@ def build_time_off_record(
         raise ValueError("Employee is required")
     if kind not in TIME_OFF_TYPES:
         raise ValueError("Type is required")
+    project_name = ""
+    if kind == TIME_OFF_TYPE_PROJECT:
+        project_name = _cell(project)
+        if project_name not in TIME_OFF_PROJECTS:
+            raise ValueError("Project is required")
     start = parse_equipment_date(start_date)
     end = parse_equipment_date(end_date) if end_date not in (None, "") else None
     if start is None:
@@ -2392,7 +2438,7 @@ def build_time_off_record(
             raise ValueError("Vacation can be at most " + str(TIME_OFF_MAX_SPAN_DAYS) + " days")
     else:
         if end is not None and end != start:
-            raise ValueError("Full day and partial day entries use a single date")
+            raise ValueError("Full day, partial day, and project entries use a single date")
         end = start
     today = today or datetime.now(ZoneInfo("America/Los_Angeles")).date()
     low, high = time_off_date_bounds(today=today)
@@ -2422,6 +2468,7 @@ def build_time_off_record(
         "End Time": end_t,
         "Notes": _cell(notes),
         "Status": TIME_OFF_STATUS_ACTIVE,
+        "Project": project_name,
     }
     if existing is not None and time_off_duplicate_active(existing, record):
         raise ValueError("This time off is already listed")
@@ -2580,6 +2627,8 @@ def show_time_off_calendar_page():
         st.selectbox("Employee", [""] + list(EMPLOYEES), key=prefix + "employee")
         st.selectbox("Type", list(TIME_OFF_TYPES), key=prefix + "type")
         kind = _cell(st.session_state.get(prefix + "type")) or TIME_OFF_TYPE_FULL
+        if kind == TIME_OFF_TYPE_PROJECT:
+            st.selectbox("Project", list(TIME_OFF_PROJECTS), key=prefix + "project")
         default_day = today
         if date(year, month, 1) <= today <= (
             date(year, 12, 31) if month == 12 else date(year, month + 1, 1) - timedelta(days=1)
@@ -2611,6 +2660,7 @@ def show_time_off_calendar_page():
                     start_time=st.session_state.get(prefix + "start_time") if kind == TIME_OFF_TYPE_PARTIAL else None,
                     end_time=st.session_state.get(prefix + "end_time") if kind == TIME_OFF_TYPE_PARTIAL else None,
                     notes=st.session_state.get(prefix + "notes", ""),
+                    project=st.session_state.get(prefix + "project") if kind == TIME_OFF_TYPE_PROJECT else "",
                     existing=latest,
                     today=today,
                 )
