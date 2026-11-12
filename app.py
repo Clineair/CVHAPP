@@ -476,12 +476,15 @@ TIME_OFF_COLUMNS = [
     "Timestamp", "Entry ID", "Action", "Employee", "Type",
     "Start Date", "End Date", "Start Time", "End Time", "Notes", "Status",
     "Project",
+    "Holiday Name",
 ]
-TIME_OFF_TYPES = ("Full day off", "Partial day", "Vacation", "Project")
+TIME_OFF_TYPES = ("Full day off", "Partial day", "Vacation", "Project", "Company Holiday")
 TIME_OFF_TYPE_FULL = "Full day off"
 TIME_OFF_TYPE_PARTIAL = "Partial day"
 TIME_OFF_TYPE_VACATION = "Vacation"
 TIME_OFF_TYPE_PROJECT = "Project"
+TIME_OFF_TYPE_HOLIDAY = "Company Holiday"
+TIME_OFF_ALL_EMPLOYEES = "All employees"
 TIME_OFF_PROJECTS = ("BNSF", "Forestry", "WSFW", "West", "Basin", "Other")
 TIME_OFF_STATUS_ACTIVE = "Active"
 TIME_OFF_STATUS_CANCELLED = "Cancelled"
@@ -2084,13 +2087,18 @@ def time_off_short_name(name):
     return _cell(name)
 
 
-def time_off_type_label(value, project=None):
+def time_off_type_label(value, project=None, holiday_name=None):
     kind = _cell(value)
     if kind == TIME_OFF_TYPE_PROJECT:
         name = _cell(project)
         if name:
             return "Project \u2013 " + name
         return "Project"
+    if kind == TIME_OFF_TYPE_HOLIDAY:
+        name = _cell(holiday_name)
+        if name:
+            return "\U0001f389 CVH Holiday \u2013 " + name
+        return "\U0001f389 CVH Holiday"
     if kind == TIME_OFF_TYPE_FULL:
         return "Full day"
     if kind == TIME_OFF_TYPE_PARTIAL:
@@ -2181,11 +2189,28 @@ def active_time_off_records(records):
     return [r for r in current_time_off_records(records) if time_off_is_active(r)]
 
 
-def time_off_for_date(records, day, employee=None):
+def time_off_applies_to_filter(record, employee=None):
+    """True when this row belongs in the selected employee view.
+
+    A blank filter shows every row. A company holiday stored once as All
+    employees stays on every person's calendar. Other rows match that person.
+    """
     wanted = _cell(employee)
+    if not wanted:
+        return True
+    who = _cell((record or {}).get("Employee"))
+    if who == wanted:
+        return True
+    return (
+        _cell((record or {}).get("Type")) == TIME_OFF_TYPE_HOLIDAY
+        and who == TIME_OFF_ALL_EMPLOYEES
+    )
+
+
+def time_off_for_date(records, day, employee=None):
     rows = []
     for record in active_time_off_records(records):
-        if wanted and _cell(record.get("Employee")) != wanted:
+        if not time_off_applies_to_filter(record, employee):
             continue
         if time_off_covers_date(record, day):
             rows.append(record)
@@ -2198,11 +2223,10 @@ def time_off_for_month(records, year, month, employee=None, include_cancelled=Fa
         last = date(int(year), 12, 31)
     else:
         last = date(int(year), int(month) + 1, 1) - timedelta(days=1)
-    wanted = _cell(employee)
     source = current_time_off_records(records) if include_cancelled else active_time_off_records(records)
     rows = []
     for record in source:
-        if wanted and _cell(record.get("Employee")) != wanted:
+        if not time_off_applies_to_filter(record, employee):
             continue
         start = time_off_start_date(record)
         end = time_off_end_date(record)
@@ -2227,6 +2251,7 @@ def time_off_identity(record):
         format_time_off_time((record or {}).get("Start Time")),
         format_time_off_time((record or {}).get("End Time")),
         _cell((record or {}).get("Project")),
+        _cell((record or {}).get("Holiday Name")),
     )
 
 
@@ -2262,10 +2287,15 @@ def time_off_summary_text(record, include_employee=True):
     elif kind == TIME_OFF_TYPE_VACATION and start and end and start != end:
         bits.append(kind)
         bits.append(start + " to " + end)
+    elif kind == TIME_OFF_TYPE_HOLIDAY and start and end and start != end:
+        bits.append(time_off_type_label(kind, holiday_name=(record or {}).get("Holiday Name")))
+        bits.append(start + " to " + end)
     else:
         shown = kind or "Time off"
         if kind == TIME_OFF_TYPE_PROJECT:
             shown = time_off_type_label(kind, (record or {}).get("Project"))
+        elif kind == TIME_OFF_TYPE_HOLIDAY:
+            shown = time_off_type_label(kind, holiday_name=(record or {}).get("Holiday Name"))
         bits.append(shown)
         bits.append(start or "—")
     notes = _cell((record or {}).get("Notes"))
@@ -2292,6 +2322,7 @@ def time_off_month_grid_markup(year, month, records, today=None, employee=None):
         ".toff-part{background:#e0f2fe;}"
         ".toff-vac{background:#ede9fe;}"
         ".toff-proj{background:#dcfce7;}"
+        ".toff-hol{background:#ffe4e6;font-weight:600;}"
         "</style>"
     )
     rows = ["<table class='toff-cal'><thead><tr>"]
@@ -2320,8 +2351,17 @@ def time_off_month_grid_markup(year, month, records, today=None, employee=None):
                         ev_class += " toff-vac"
                     elif kind == TIME_OFF_TYPE_PROJECT:
                         ev_class += " toff-proj"
-                    label = time_off_short_name(record.get("Employee")) + " — " + time_off_type_label(
-                        kind, record.get("Project")
+                    elif kind == TIME_OFF_TYPE_HOLIDAY:
+                        ev_class += " toff-hol"
+                    if (
+                        kind == TIME_OFF_TYPE_HOLIDAY
+                        and _cell(record.get("Employee")) == TIME_OFF_ALL_EMPLOYEES
+                    ):
+                        who = "All employees"
+                    else:
+                        who = time_off_short_name(record.get("Employee"))
+                    label = who + " — " + time_off_type_label(
+                        kind, record.get("Project"), record.get("Holiday Name")
                     )
                     if kind == TIME_OFF_TYPE_PARTIAL:
                         start_t = format_time_off_time_display(record.get("Start Time"))
@@ -2341,31 +2381,46 @@ def time_off_month_grid_markup(year, month, records, today=None, employee=None):
     return css + "".join(rows)
 
 
-def ensure_time_off_project_column(ws):
-    """Append a Project column when an older Time Off header does not have one.
-
-    Existing header cells stay in place. Rows saved before the column still
-    load with a blank project.
-    """
+def _append_time_off_header_column(ws, column):
+    """Append one header cell without moving columns already on the sheet."""
     header = [_cell(c) for c in ws.row_values(1)]
-    if not header or "Project" in header:
+    if not header or column in header:
         return False
     if hasattr(ws, "add_cols"):
         try:
             ws.add_cols(1)
         except Exception:
             pass
-    ws.update_cell(1, len(header) + 1, "Project")
+    ws.update_cell(1, len(header) + 1, column)
     return True
+
+
+def ensure_time_off_project_column(ws):
+    """Append a Project column when an older Time Off header does not have one.
+
+    Existing header cells stay in place. Rows saved before the column still
+    load with a blank project.
+    """
+    return _append_time_off_header_column(ws, "Project")
+
+
+def ensure_time_off_holiday_name_column(ws):
+    """Append a Holiday Name column when an older Time Off header does not have one.
+
+    Existing header cells stay in place. Rows saved before the column still
+    load with a blank holiday name.
+    """
+    return _append_time_off_header_column(ws, "Holiday Name")
 
 
 def ensure_time_off_worksheet(spreadsheet):
     """Create the Time Off tab with a header when it is missing.
 
-    An existing header is not reordered or rewritten. A missing Project
-    column is appended so a chosen project can be stored. Older rows that
-    have no project cell still load with a blank project. Never writes FRAT
-    or other tabs.
+    An existing header is not reordered or rewritten. Missing Project and
+    Holiday Name columns are appended, in that order, so a chosen project or
+    company holiday can be stored. Older rows that have no project or holiday
+    name cell still load with those fields blank. Never writes FRAT or other
+    tabs.
     """
     cols = list(TIME_OFF_COLUMNS)
     ws = _worksheet_or_none(spreadsheet, TIME_OFF_SHEET_TITLE)
@@ -2381,6 +2436,7 @@ def ensure_time_off_worksheet(spreadsheet):
             created = True
         else:
             ensure_time_off_project_column(ws)
+            ensure_time_off_holiday_name_column(ws)
     return ws, created
 
 
@@ -2409,6 +2465,7 @@ def build_time_off_record(
     end_time=None,
     notes="",
     project=None,
+    holiday_name=None,
     when=None,
     entry_id=None,
     today=None,
@@ -2416,7 +2473,9 @@ def build_time_off_record(
 ):
     employee = _cell(employee)
     kind = _cell(kind)
-    if employee not in list(EMPLOYEES):
+    if employee not in list(EMPLOYEES) and not (
+        kind == TIME_OFF_TYPE_HOLIDAY and employee == TIME_OFF_ALL_EMPLOYEES
+    ):
         raise ValueError("Employee is required")
     if kind not in TIME_OFF_TYPES:
         raise ValueError("Type is required")
@@ -2425,16 +2484,25 @@ def build_time_off_record(
         project_name = _cell(project)
         if project_name not in TIME_OFF_PROJECTS:
             raise ValueError("Project is required")
+    holiday = ""
+    if kind == TIME_OFF_TYPE_HOLIDAY:
+        holiday = _cell(holiday_name)
+        if not holiday:
+            raise ValueError("Holiday name is required")
     start = parse_equipment_date(start_date)
     end = parse_equipment_date(end_date) if end_date not in (None, "") else None
     if start is None:
         raise ValueError("Date is required")
-    if kind == TIME_OFF_TYPE_VACATION:
+    if kind in (TIME_OFF_TYPE_VACATION, TIME_OFF_TYPE_HOLIDAY):
         if end is None:
             raise ValueError("End date is required")
         if end < start:
             raise ValueError("End date must be on or after the start date")
         if time_off_span_days(start, end) > TIME_OFF_MAX_SPAN_DAYS:
+            if kind == TIME_OFF_TYPE_HOLIDAY:
+                raise ValueError(
+                    "Company holiday can be at most " + str(TIME_OFF_MAX_SPAN_DAYS) + " days"
+                )
             raise ValueError("Vacation can be at most " + str(TIME_OFF_MAX_SPAN_DAYS) + " days")
     else:
         if end is not None and end != start:
@@ -2469,6 +2537,7 @@ def build_time_off_record(
         "Notes": _cell(notes),
         "Status": TIME_OFF_STATUS_ACTIVE,
         "Project": project_name,
+        "Holiday Name": holiday,
     }
     if existing is not None and time_off_duplicate_active(existing, record):
         raise ValueError("This time off is already listed")
@@ -2624,11 +2693,31 @@ def show_time_off_calendar_page():
     prefix = "to_form_" + str(gen) + "_"
     with st.expander("List time off", expanded=True):
         st.caption("This lists a request on the shared calendar. It is not an approval.")
-        st.selectbox("Employee", [""] + list(EMPLOYEES), key=prefix + "employee")
+        kind = _cell(st.session_state.get(prefix + "type")) or TIME_OFF_TYPE_FULL
+        applied_key = prefix + "type_applied"
+        applied = st.session_state.get(applied_key)
+        employee_key = prefix + "employee"
+        if kind == TIME_OFF_TYPE_HOLIDAY and applied != TIME_OFF_TYPE_HOLIDAY:
+            st.session_state[employee_key] = TIME_OFF_ALL_EMPLOYEES
+        elif kind != TIME_OFF_TYPE_HOLIDAY and applied == TIME_OFF_TYPE_HOLIDAY:
+            if st.session_state.get(employee_key) == TIME_OFF_ALL_EMPLOYEES:
+                st.session_state[employee_key] = ""
+        st.session_state[applied_key] = kind
+        if kind == TIME_OFF_TYPE_HOLIDAY:
+            employee_options = [TIME_OFF_ALL_EMPLOYEES] + list(EMPLOYEES)
+        else:
+            employee_options = [""] + list(EMPLOYEES)
+        st.selectbox("Employee", employee_options, key=employee_key)
         st.selectbox("Type", list(TIME_OFF_TYPES), key=prefix + "type")
         kind = _cell(st.session_state.get(prefix + "type")) or TIME_OFF_TYPE_FULL
         if kind == TIME_OFF_TYPE_PROJECT:
             st.selectbox("Project", list(TIME_OFF_PROJECTS), key=prefix + "project")
+        if kind == TIME_OFF_TYPE_HOLIDAY:
+            st.text_input("Holiday name", placeholder="Thanksgiving", key=prefix + "holiday_name")
+            st.caption(
+                "Choose All employees to list one company-wide day off. "
+                "A single day uses the same start and end date."
+            )
         default_day = today
         if date(year, month, 1) <= today <= (
             date(year, 12, 31) if month == 12 else date(year, month + 1, 1) - timedelta(days=1)
@@ -2636,7 +2725,7 @@ def show_time_off_calendar_page():
             default_day = today
         else:
             default_day = date(year, month, 1)
-        if kind == TIME_OFF_TYPE_VACATION:
+        if kind in (TIME_OFF_TYPE_VACATION, TIME_OFF_TYPE_HOLIDAY):
             st.date_input("Start Date", value=default_day, format="YYYY-MM-DD", key=prefix + "start")
             st.date_input("End Date", value=default_day, format="YYYY-MM-DD", key=prefix + "end")
         else:
@@ -2656,11 +2745,14 @@ def show_time_off_calendar_page():
                     st.session_state.get(prefix + "employee", ""),
                     st.session_state.get(prefix + "type", ""),
                     st.session_state.get(prefix + "start"),
-                    end_date=st.session_state.get(prefix + "end") if kind == TIME_OFF_TYPE_VACATION else None,
+                    end_date=st.session_state.get(prefix + "end") if kind in (
+                        TIME_OFF_TYPE_VACATION, TIME_OFF_TYPE_HOLIDAY
+                    ) else None,
                     start_time=st.session_state.get(prefix + "start_time") if kind == TIME_OFF_TYPE_PARTIAL else None,
                     end_time=st.session_state.get(prefix + "end_time") if kind == TIME_OFF_TYPE_PARTIAL else None,
                     notes=st.session_state.get(prefix + "notes", ""),
                     project=st.session_state.get(prefix + "project") if kind == TIME_OFF_TYPE_PROJECT else "",
+                    holiday_name=st.session_state.get(prefix + "holiday_name") if kind == TIME_OFF_TYPE_HOLIDAY else "",
                     existing=latest,
                     today=today,
                 )
