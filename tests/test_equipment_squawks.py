@@ -23,7 +23,7 @@ def _exec_equipment_helpers():
         "OFFICIAL_EQUIPMENT_NAMES", "REGISTRATION_EXPIRE_COL", "ANNUAL_MAINT_COL",
         "TONNAGE_APPLIES_COL", "TONNAGE_EXPIRE_COL", "TONNAGE_DEFAULT_UNITS", "DATE_STATUS_COLORS",
         "IFTA_UNITS", "DRIVERS", "EMPLOYEES", "IFTA_TRIPS_SHEET_TITLE", "IFTA_FUEL_SHEET_TITLE", "IFTA_TRIPS_COLUMNS", "IFTA_FUEL_COLUMNS", "IFTA_RECEIPT_COLUMN", "IFTA_DEFAULT_JURISDICTION", "IFTA_JURISDICTIONS",
-        "DOM_AIRCRAFT", "DOM_ACTION_ANNUAL", "YEARLY_ITEMS_SHEET_TITLE", "YEARLY_ITEMS_COLUMNS", "YEARLY_ITEM_GROUPS", "TIME_OFF_SHEET_TITLE", "TIME_OFF_COLUMNS", "TIME_OFF_TYPES", "TIME_OFF_TYPE_FULL", "TIME_OFF_TYPE_PARTIAL", "TIME_OFF_TYPE_VACATION", "TIME_OFF_TYPE_PROJECT", "TIME_OFF_PROJECTS", "TIME_OFF_STATUS_ACTIVE", "TIME_OFF_STATUS_CANCELLED", "TIME_OFF_ACTION_CREATE", "TIME_OFF_ACTION_CANCEL", "TIME_OFF_MAX_PAST_DAYS", "TIME_OFF_MAX_FUTURE_DAYS", "TIME_OFF_MAX_SPAN_DAYS", "TIMESHEET_EMPLOYEES", "TIMESHEET_SHEET_TITLE", "TIMESHEET_DAYS", "TIMESHEET_DAY_FIELDS", "TIMESHEET_WORKED_HOUR_FIELDS", "TIMESHEET_LEAVE_FIELDS", "TIMESHEET_LEAVE_HOURS_MAX", "TIMESHEET_EMAIL_TO", "TIMESHEET_IRS_BUSINESS_MILEAGE_RATES", "TIMESHEET_IRS_MILEAGE_RATES_START", "TIMESHEET_IRS_MILEAGE_RATES_END", "TIMESHEET_IRS_MILEAGE_SOURCE_URL", "TIMESHEET_MILEAGE_SHEET_TITLE", "TIMESHEET_MILEAGE_COLUMNS", "TIMESHEET_MILEAGE_SOURCE_IRS", "TIMESHEET_MILEAGE_SOURCE_COMPANY", "TIMESHEET_MILEAGE_SOURCE_SAVED",
+        "DOM_AIRCRAFT", "DOM_ACTION_ANNUAL", "YEARLY_ITEMS_SHEET_TITLE", "YEARLY_ITEMS_COLUMNS", "YEARLY_ITEM_GROUPS", "TIME_OFF_SHEET_TITLE", "TIME_OFF_COLUMNS", "TIME_OFF_TYPES", "TIME_OFF_TYPE_FULL", "TIME_OFF_TYPE_PARTIAL", "TIME_OFF_TYPE_VACATION", "TIME_OFF_TYPE_PROJECT", "TIME_OFF_TYPE_HOLIDAY", "TIME_OFF_ALL_EMPLOYEES", "TIME_OFF_PROJECTS", "TIME_OFF_STATUS_ACTIVE", "TIME_OFF_STATUS_CANCELLED", "TIME_OFF_ACTION_CREATE", "TIME_OFF_ACTION_CANCEL", "TIME_OFF_MAX_PAST_DAYS", "TIME_OFF_MAX_FUTURE_DAYS", "TIME_OFF_MAX_SPAN_DAYS", "TIMESHEET_EMPLOYEES", "TIMESHEET_SHEET_TITLE", "TIMESHEET_DAYS", "TIMESHEET_DAY_FIELDS", "TIMESHEET_WORKED_HOUR_FIELDS", "TIMESHEET_LEAVE_FIELDS", "TIMESHEET_LEAVE_HOURS_MAX", "TIMESHEET_EMAIL_TO", "TIMESHEET_IRS_BUSINESS_MILEAGE_RATES", "TIMESHEET_IRS_MILEAGE_RATES_START", "TIMESHEET_IRS_MILEAGE_RATES_END", "TIMESHEET_IRS_MILEAGE_SOURCE_URL", "TIMESHEET_MILEAGE_SHEET_TITLE", "TIMESHEET_MILEAGE_COLUMNS", "TIMESHEET_MILEAGE_SOURCE_IRS", "TIMESHEET_MILEAGE_SOURCE_COMPANY", "TIMESHEET_MILEAGE_SOURCE_SAVED",
         "ANTHONY_TIMESHEET_EMPLOYEE", "ANTHONY_TIMESHEET_SHEET_TITLE", "ANTHONY_TIMESHEET_TEMPLATE", "ANTHONY_TIMESHEET_DAYS", "ANTHONY_TIMESHEET_DAY_FIELDS", "ANTHONY_TIMESHEET_GRID_ROWS", "ANTHONY_TIMESHEET_WEEK_ROWS", "ANTHONY_TIMESHEET_NUMERIC_FIELDS",
         "PARTS", "CORE_FACTORS", "PART_FACTORS", "PART_STOPS", "CONFIG_FIELDS",
         "ALL_FACTOR_KEYS", "ALL_STOP_KEYS", "FRAT_COLUMNS",
@@ -115,7 +115,9 @@ def _exec_equipment_helpers():
         "time_off_is_active", "latest_time_off_record", "current_time_off_records",
         "active_time_off_records", "time_off_for_date", "time_off_for_month",
         "time_off_identity", "time_off_duplicate_active", "time_off_summary_text",
-        "time_off_month_grid_markup", "ensure_time_off_project_column", "ensure_time_off_worksheet",
+        "time_off_month_grid_markup", "time_off_applies_to_filter",
+        "_append_time_off_header_column", "ensure_time_off_project_column",
+        "ensure_time_off_holiday_name_column", "ensure_time_off_worksheet",
         "load_time_off_records", "load_time_off_records_readonly",
         "build_time_off_record", "build_time_off_cancel_record", "save_time_off_record",
     }
@@ -1193,8 +1195,14 @@ class PlaceholderAndLogicTests(unittest.TestCase):
             "Timestamp", "Entry ID", "Action", "Employee", "Type",
             "Start Date", "End Date", "Start Time", "End Time", "Notes", "Status",
             "Project",
+            "Holiday Name",
         ])
-        self.assertEqual(s["TIME_OFF_TYPES"], ("Full day off", "Partial day", "Vacation", "Project"))
+        self.assertEqual(
+            s["TIME_OFF_TYPES"],
+            ("Full day off", "Partial day", "Vacation", "Project", "Company Holiday"),
+        )
+        self.assertEqual(s["TIME_OFF_TYPE_HOLIDAY"], "Company Holiday")
+        self.assertEqual(s["TIME_OFF_ALL_EMPLOYEES"], "All employees")
         self.assertEqual(s["TIME_OFF_PROJECTS"], ("BNSF", "Forestry", "WSFW", "West", "Basin", "Other"))
         self.assertEqual(s["TIME_OFF_TYPES"][:3], ("Full day off", "Partial day", "Vacation"))
         self.assertEqual(s["DRIVERS"], [
@@ -1232,6 +1240,7 @@ class PlaceholderAndLogicTests(unittest.TestCase):
         self.assertEqual(full["Start Time"], "")
         self.assertEqual(full["Notes"], "Family event")
         self.assertEqual(full["Project"], "")
+        self.assertEqual(full["Holiday Name"], "")
 
         partial = s["build_time_off_record"](
             "Gary Grant", "Partial day", date(2026, 11, 12),
@@ -2562,7 +2571,247 @@ class FakeSheetBehaviorTests(unittest.TestCase):
         self.assertEqual(new["Project"], "Basin")
         self.assertIn("Project – Basin", self.s["time_off_summary_text"](new))
         self.assertNotIn("Project –", self.s["time_off_summary_text"](old))
+        self.assertEqual(old["Holiday Name"], "")
+        self.assertEqual(new["Holiday Name"], "")
+        self.assertEqual(ws.rows[0][-1], "Holiday Name")
+        self.assertEqual(header[:len(header_before)], header_before)
         self._assert_frat_untouched()
+
+    def test_company_holiday_is_one_entry_for_every_employee(self):
+        from datetime import date, datetime, timedelta
+        from zoneinfo import ZoneInfo
+        s = self.s
+        today = date(2026, 11, 10)
+        when = datetime(2026, 11, 10, 9, 0, tzinfo=ZoneInfo("America/Los_Angeles"))
+        self.assertEqual(s["TIME_OFF_TYPES"][-1], "Company Holiday")
+        self.assertEqual(s["TIME_OFF_COLUMNS"][-1], "Holiday Name")
+        self.assertEqual(s["TIME_OFF_COLUMNS"][-2], "Project")
+
+        with self.assertRaisesRegex(ValueError, "Holiday name is required"):
+            s["build_time_off_record"](
+                "All employees", "Company Holiday", today, end_date=today, today=today,
+            )
+        with self.assertRaisesRegex(ValueError, "Holiday name is required"):
+            s["build_time_off_record"](
+                "All employees", "Company Holiday", today, end_date=today,
+                holiday_name="   ", today=today,
+            )
+        with self.assertRaisesRegex(ValueError, "Employee is required"):
+            s["build_time_off_record"](
+                "All employees", "Full day off", today, today=today,
+            )
+        with self.assertRaisesRegex(ValueError, "End date is required"):
+            s["build_time_off_record"](
+                "All employees", "Company Holiday", today, holiday_name="Thanksgiving", today=today,
+            )
+        with self.assertRaisesRegex(ValueError, "End date must be on or after"):
+            s["build_time_off_record"](
+                "All employees", "Company Holiday", date(2026, 12, 26),
+                end_date=date(2026, 12, 24), holiday_name="Christmas", today=today,
+            )
+        with self.assertRaisesRegex(ValueError, "at most 180 days"):
+            s["build_time_off_record"](
+                "All employees", "Company Holiday", today,
+                end_date=today + timedelta(days=s["TIME_OFF_MAX_SPAN_DAYS"]),
+                holiday_name="Long break", today=today,
+            )
+
+        thanksgiving = s["build_time_off_record"](
+            "All employees", "Company Holiday", date(2026, 11, 26),
+            end_date=date(2026, 11, 26), holiday_name="Thanksgiving",
+            when=when, entry_id="TO-HOLIDAY-1", today=today,
+        )
+        self.assertEqual(thanksgiving["Employee"], "All employees")
+        self.assertEqual(thanksgiving["Type"], "Company Holiday")
+        self.assertEqual(thanksgiving["Holiday Name"], "Thanksgiving")
+        self.assertEqual(thanksgiving["Project"], "")
+        self.assertEqual(thanksgiving["Start Date"], "2026-11-26")
+        self.assertEqual(thanksgiving["End Date"], "2026-11-26")
+        self.assertEqual(thanksgiving["Start Time"], "")
+        self.assertEqual(
+            s["time_off_summary_text"](thanksgiving),
+            "All employees — 🎉 CVH Holiday – Thanksgiving — 2026-11-26",
+        )
+        self.assertEqual(
+            s["time_off_type_label"]("Company Holiday", holiday_name="Thanksgiving"),
+            "🎉 CVH Holiday – Thanksgiving",
+        )
+
+        christmas = s["build_time_off_record"](
+            "All employees", "Company Holiday", date(2026, 12, 24),
+            end_date=date(2026, 12, 26), holiday_name="Christmas",
+            when=when, entry_id="TO-HOLIDAY-WEEK", today=today,
+        )
+        self.assertEqual(
+            s["time_off_summary_text"](christmas),
+            "All employees — 🎉 CVH Holiday – Christmas — 2026-12-24 to 2026-12-26",
+        )
+        for day in (date(2026, 12, 24), date(2026, 12, 25), date(2026, 12, 26)):
+            self.assertTrue(s["time_off_covers_date"](christmas, day))
+        self.assertFalse(s["time_off_covers_date"](christmas, date(2026, 12, 23)))
+        self.assertFalse(s["time_off_covers_date"](christmas, date(2026, 12, 27)))
+
+        new_year = s["build_time_off_record"](
+            "All employees", "Company Holiday", date(2026, 12, 30),
+            end_date=date(2027, 1, 1), holiday_name="New Year",
+            when=when, entry_id="TO-HOLIDAY-NY", today=today,
+        )
+        ron = s["build_time_off_record"](
+            "Ron Cline", "Full day off", date(2026, 12, 24),
+            when=when, entry_id="TO-RON-DAY", today=today,
+        )
+        rows = [thanksgiving, christmas, new_year, ron]
+        with self.assertRaisesRegex(ValueError, "already listed"):
+            s["build_time_off_record"](
+                "All employees", "Company Holiday", date(2026, 11, 26),
+                end_date=date(2026, 11, 26), holiday_name="Thanksgiving",
+                today=today, existing=rows,
+            )
+        other_name = s["build_time_off_record"](
+            "All employees", "Company Holiday", date(2026, 11, 26),
+            end_date=date(2026, 11, 26), holiday_name="Office closed",
+            when=when, entry_id="TO-HOLIDAY-OTHER", today=today, existing=rows,
+        )
+        self.assertEqual(other_name["Holiday Name"], "Office closed")
+
+        dec = s["time_off_month_grid_markup"](2026, 12, rows, today=today)
+        self.assertEqual(dec.count("<div class='ev toff-hol'>"), 5)
+        self.assertIn("All employees — 🎉 CVH Holiday – Christmas", dec)
+        self.assertIn("All employees — 🎉 CVH Holiday – New Year", dec)
+        self.assertIn("Ron C.", dec)
+        self.assertNotIn("Thanksgiving", dec)
+        jan = s["time_off_month_grid_markup"](2027, 1, rows, today=today)
+        self.assertEqual(jan.count("<div class='ev toff-hol'>"), 1)
+        self.assertIn("🎉 CVH Holiday – New Year", jan)
+        self.assertNotIn("Christmas", jan)
+        nov = s["time_off_month_grid_markup"](2026, 11, rows, today=today)
+        self.assertEqual(nov.count("<div class='ev toff-hol'>"), 1)
+        self.assertIn("🎉 CVH Holiday – Thanksgiving", nov)
+
+        for person in s["EMPLOYEES"]:
+            month_rows = s["time_off_for_month"](rows, 2026, 12, employee=person)
+            self.assertIn("TO-HOLIDAY-WEEK", [r["Entry ID"] for r in month_rows])
+            self.assertIn("TO-HOLIDAY-NY", [r["Entry ID"] for r in month_rows])
+            shown = s["time_off_for_date"](rows, date(2026, 12, 25), employee=person)
+            self.assertEqual([r["Entry ID"] for r in shown], ["TO-HOLIDAY-WEEK"])
+            grid = s["time_off_month_grid_markup"](2026, 12, rows, today=today, employee=person)
+            self.assertIn("🎉 CVH Holiday – Christmas", grid)
+            self.assertIn("🎉 CVH Holiday – New Year", grid)
+        ron_only = s["time_off_month_grid_markup"](2026, 12, rows, today=today, employee="Ron Cline")
+        self.assertIn("Ron C.", ron_only)
+        gary_only = s["time_off_month_grid_markup"](2026, 12, rows, today=today, employee="Gary Grant")
+        self.assertNotIn("Ron C.", gary_only)
+        self.assertIn("All employees — 🎉 CVH Holiday – Christmas", gary_only)
+        self.assertTrue(s["time_off_applies_to_filter"](christmas, "Skylar Fingerle"))
+        self.assertFalse(s["time_off_applies_to_filter"](ron, "Gary Grant"))
+
+        escaped = s["build_time_off_record"](
+            "All employees", "Company Holiday", date(2026, 11, 27),
+            end_date=date(2026, 11, 27), holiday_name="Tom & Jerry",
+            when=when, entry_id="TO-HOLIDAY-ESC", today=today,
+        )
+        escaped_grid = s["time_off_month_grid_markup"](2026, 11, [escaped], today=today)
+        self.assertIn("Tom &amp; Jerry", escaped_grid)
+        self.assertNotIn("Tom & Jerry", escaped_grid)
+
+        legacy = {
+            "Employee": "Ron Cline",
+            "Type": "Full day off",
+            "Start Date": "2026-11-20",
+            "End Date": "2026-11-20",
+            "Status": "Active",
+            "Entry ID": "TO-OLD",
+            "Action": "Create",
+        }
+        self.assertNotIn("Holiday Name", legacy)
+        self.assertNotIn("Project", legacy)
+        self.assertEqual(s["time_off_summary_text"](legacy), "Ron Cline — Full day off — 2026-11-20")
+        legacy_grid = s["time_off_month_grid_markup"](2026, 11, [legacy], today=today)
+        self.assertIn("Ron C. — Full day", legacy_grid)
+        self.assertNotIn("CVH Holiday", legacy_grid)
+        self.assertNotIn("🎉", legacy_grid)
+
+        cancelled = s["build_time_off_cancel_record"](thanksgiving, when=datetime(2026, 11, 11, 8, 0))
+        self.assertEqual(cancelled["Holiday Name"], "Thanksgiving")
+        self.assertEqual(cancelled["Employee"], "All employees")
+        self.assertEqual(cancelled["Status"], "Cancelled")
+        active = s["active_time_off_records"]([thanksgiving, cancelled])
+        self.assertEqual(active, [])
+        for person in ("Ron Cline", "Gary Grant"):
+            self.assertEqual(
+                s["time_off_for_date"]([thanksgiving, cancelled], date(2026, 11, 26), employee=person),
+                [],
+            )
+            cancelled_month = s["time_off_for_month"](
+                [thanksgiving, cancelled], 2026, 11, employee=person, include_cancelled=True,
+            )
+            self.assertEqual(cancelled_month[0]["Status"], "Cancelled")
+            self.assertIn("Thanksgiving", s["time_off_summary_text"](cancelled_month[0]))
+
+        # A sheet saved before Holiday Name (and before Project) keeps its header order.
+        legacy_header = [
+            "Timestamp", "Entry ID", "Action", "Employee", "Type",
+            "Start Date", "End Date", "Start Time", "End Time", "Notes", "Status",
+        ]
+        ws = self.book.add_worksheet("Time Off", 20, 12)
+        ws.append_row(legacy_header + ["Extra"])
+        ws.append_row([
+            "2026-11-01 09:00:00", "TO-LEGACY", "Create", "Ron Cline", "Full day off",
+            "2026-11-20", "2026-11-20", "", "", "Family event", "Active", "keep-me",
+        ])
+        loaded = s["load_time_off_records_readonly"](self.book)
+        self.assertEqual(loaded[0]["Holiday Name"], "")
+        self.assertEqual(loaded[0]["Project"], "")
+        self.assertEqual(loaded[0]["Type"], "Full day off")
+        header_before = list(ws.rows[0])
+        _ws, created = s["ensure_time_off_worksheet"](self.book)
+        self.assertFalse(created)
+        self.assertEqual(ws.rows[0][:len(header_before)], header_before)
+        self.assertEqual(ws.rows[0][-2], "Project")
+        self.assertEqual(ws.rows[0][-1], "Holiday Name")
+        self.assertEqual(ws.rows[1][header_before.index("Extra")], "keep-me")
+        s["save_time_off_record"](christmas, self.book)
+        self.assertEqual(len(ws.rows), 3)
+        saved_row = ws.rows[-1]
+        header = ws.rows[0]
+        self.assertEqual(saved_row[header.index("Employee")], "All employees")
+        self.assertEqual(saved_row[header.index("Type")], "Company Holiday")
+        self.assertEqual(saved_row[header.index("Holiday Name")], "Christmas")
+        self.assertEqual(saved_row[header.index("Start Date")], "2026-12-24")
+        self.assertEqual(saved_row[header.index("End Date")], "2026-12-26")
+        self.assertEqual(saved_row[header.index("Project")], "")
+        again = s["load_time_off_records_readonly"](self.book)
+        old = s["latest_time_off_record"](again, "TO-LEGACY")
+        new = s["latest_time_off_record"](again, "TO-HOLIDAY-WEEK")
+        self.assertEqual(old["Holiday Name"], "")
+        self.assertEqual(old["Project"], "")
+        self.assertEqual(old.get("Extra"), "keep-me")
+        self.assertEqual(new["Holiday Name"], "Christmas")
+        self.assertEqual(new["Employee"], "All employees")
+        self.assertEqual(
+            [r["Entry ID"] for r in s["time_off_for_date"](again, date(2026, 12, 25), employee="Anthony Root")],
+            ["TO-HOLIDAY-WEEK"],
+        )
+        self._assert_frat_untouched()
+
+        # A sheet that already has Project appends Holiday Name without moving Project.
+        book = FakeSpreadsheet()
+        project_header = legacy_header + ["Project"]
+        ws2 = book.add_worksheet("Time Off", 20, 14)
+        ws2.append_row(project_header)
+        ws2.append_row([
+            "2026-11-02 09:00:00", "TO-PROJ", "Create", "Barry Markham", "Project",
+            "2026-11-16", "2026-11-16", "", "", "", "Active", "BNSF",
+        ])
+        self.assertFalse(s["ensure_time_off_project_column"](ws2))
+        self.assertTrue(s["ensure_time_off_holiday_name_column"](ws2))
+        self.assertEqual(ws2.rows[0][:len(project_header)], project_header)
+        self.assertEqual(ws2.rows[0][-1], "Holiday Name")
+        self.assertFalse(s["ensure_time_off_holiday_name_column"](ws2))
+        loaded_project = s["load_time_off_records_readonly"](book)
+        self.assertEqual(loaded_project[0]["Project"], "BNSF")
+        self.assertEqual(loaded_project[0]["Holiday Name"], "")
+        self.assertNotIn("CVH Holiday", s["time_off_summary_text"](loaded_project[0]))
 
     def test_timesheet_save_and_readonly_load_leave_headers_alone(self):
         from datetime import date, datetime
@@ -2972,8 +3221,16 @@ class HeaderAndEquipmentPageTests(unittest.TestCase):
         self.assertIn("Sun", md)
         self.assertTrue(any(s.label == "Employee" for s in at.selectbox))
         type_box = next(s for s in at.selectbox if s.label == "Type")
-        self.assertEqual(list(type_box.options), ["Full day off", "Partial day", "Vacation", "Project"])
+        self.assertEqual(
+            list(type_box.options),
+            ["Full day off", "Partial day", "Vacation", "Project", "Company Holiday"],
+        )
         self.assertFalse(any(s.label == "Project" for s in at.selectbox))
+        self.assertFalse(any(t.label == "Holiday name" for t in at.text_input))
+        self.assertNotIn(
+            "All employees",
+            list(next(s for s in at.selectbox if s.label == "Employee").options),
+        )
         self.assertTrue(any(d.label == "Date" for d in at.date_input))
         self.assertTrue(any("do not include medical" in (t.label or "") for t in at.text_input))
         book = at.session_state.get("_workbook")
@@ -2994,9 +3251,14 @@ class HeaderAndEquipmentPageTests(unittest.TestCase):
             "Timestamp", "Entry ID", "Action", "Employee", "Type",
             "Start Date", "End Date", "Start Time", "End Time", "Notes", "Status",
             "Project",
+            "Holiday Name",
         ])
         self.assertEqual(
             book.sheets["Time Off"].rows[1][book.sheets["Time Off"].rows[0].index("Project")],
+            "",
+        )
+        self.assertEqual(
+            book.sheets["Time Off"].rows[1][book.sheets["Time Off"].rows[0].index("Holiday Name")],
             "",
         )
         md = " ".join(m.value or "" for m in at.markdown)
@@ -3108,6 +3370,7 @@ class HeaderAndEquipmentPageTests(unittest.TestCase):
         saved = book.sheets["Time Off"].rows[-1]
         self.assertEqual(saved[header.index("Type")], "Project")
         self.assertEqual(saved[header.index("Project")], "BNSF")
+        self.assertEqual(saved[header.index("Holiday Name")], "")
         self.assertEqual(saved[header.index("Employee")], "Barry Markham")
         self.assertEqual(saved[header.index("Start Date")], "2026-11-16")
         md = " ".join(m.value or "" for m in at.markdown)
@@ -3128,8 +3391,88 @@ class HeaderAndEquipmentPageTests(unittest.TestCase):
 
         next(s for s in at.selectbox if s.label == "Type").select("Vacation").run()
         self.assertFalse(any(s.label == "Project" for s in at.selectbox))
+        self.assertFalse(any(t.label == "Holiday name" for t in at.text_input))
         next(s for s in at.selectbox if s.label == "Type").select("Full day off").run()
         self.assertFalse(any(s.label == "Project" for s in at.selectbox))
+
+        # Company Holiday is one shared entry, shown for every employee filter.
+        next(s for s in at.selectbox if s.label == "Type").select("Company Holiday").run()
+        self.assertFalse(list(at.exception))
+        self.assertFalse(any(s.label == "Project" for s in at.selectbox))
+        employee_box = next(s for s in at.selectbox if s.label == "Employee")
+        self.assertEqual(list(employee_box.options)[0], "All employees")
+        self.assertEqual(employee_box.value, "All employees")
+        self.assertTrue(any(t.label == "Holiday name" for t in at.text_input))
+        self.assertTrue(any(d.label == "Start Date" for d in at.date_input))
+        self.assertTrue(any(d.label == "End Date" for d in at.date_input))
+        self.assertFalse(any(t.label and "Start Time" in t.label for t in at.time_input))
+        rows_before = len(book.sheets["Time Off"].rows)
+        next(d for d in at.date_input if d.label == "Start Date").set_value(date(2026, 11, 26))
+        next(d for d in at.date_input if d.label == "End Date").set_value(date(2026, 11, 26))
+        next(b for b in at.button if b.label == "Save request").click().run()
+        self.assertTrue(any("Holiday name is required" in (e.value or "") for e in at.error))
+        self.assertEqual(len(book.sheets["Time Off"].rows), rows_before)
+
+        next(t for t in at.text_input if t.label == "Holiday name").set_value("Thanksgiving")
+        next(b for b in at.button if b.label == "Save request").click().run()
+        self.assertFalse(list(at.exception))
+        self.assertEqual(len(book.sheets["Time Off"].rows), rows_before + 1)
+        header = book.sheets["Time Off"].rows[0]
+        saved = book.sheets["Time Off"].rows[-1]
+        self.assertEqual(saved[header.index("Type")], "Company Holiday")
+        self.assertEqual(saved[header.index("Employee")], "All employees")
+        self.assertEqual(saved[header.index("Holiday Name")], "Thanksgiving")
+        self.assertEqual(saved[header.index("Start Date")], "2026-11-26")
+        self.assertEqual(saved[header.index("End Date")], "2026-11-26")
+        self.assertEqual(saved[header.index("Project")], "")
+        self.assertEqual(
+            sum(1 for row in book.sheets["Time Off"].rows[1:] if row[header.index("Type")] == "Company Holiday"),
+            1,
+        )
+        md = " ".join(m.value or "" for m in at.markdown)
+        self.assertIn("All employees — 🎉 CVH Holiday – Thanksgiving", md)
+        self.assertIn("toff-hol", md)
+        for person in ("Ron Cline", "Gary Grant", "Skylar Fingerle"):
+            next(s for s in at.selectbox if s.label == "Show").select(person).run()
+            md = " ".join(m.value or "" for m in at.markdown)
+            self.assertIn("🎉 CVH Holiday – Thanksgiving", md, person)
+            self.assertIn("All employees — 🎉 CVH Holiday – Thanksgiving — 2026-11-26", md, person)
+        next(s for s in at.selectbox if s.label == "Show").select("Gary Grant").run()
+        md = " ".join(m.value or "" for m in at.markdown)
+        self.assertNotIn("Ron C.", md)
+        self.assertNotIn("Skylar F.", md)
+        next(s for s in at.selectbox if s.label == "Show").select("All employees").run()
+
+        next(s for s in at.selectbox if s.label == "Type").select("Company Holiday").run()
+        self.assertEqual(next(s for s in at.selectbox if s.label == "Employee").value, "All employees")
+        next(t for t in at.text_input if t.label == "Holiday name").set_value("Christmas")
+        next(d for d in at.date_input if d.label == "Start Date").set_value(date(2026, 12, 24))
+        next(d for d in at.date_input if d.label == "End Date").set_value(date(2026, 12, 26))
+        rows_before = len(book.sheets["Time Off"].rows)
+        next(b for b in at.button if b.label == "Save request").click().run()
+        self.assertFalse(list(at.exception))
+        self.assertEqual(len(book.sheets["Time Off"].rows), rows_before + 1)
+        saved = book.sheets["Time Off"].rows[-1]
+        self.assertEqual(saved[header.index("Employee")], "All employees")
+        self.assertEqual(saved[header.index("Holiday Name")], "Christmas")
+        self.assertEqual(saved[header.index("Start Date")], "2026-12-24")
+        self.assertEqual(saved[header.index("End Date")], "2026-12-26")
+        at.button(key="time_off_next").click().run()
+        self.assertTrue(any(t.value == "December 2026" for t in at.subheader))
+        md = " ".join(m.value or "" for m in at.markdown)
+        self.assertEqual(md.count("<div class='ev toff-hol'>"), 3)
+        self.assertIn("All employees — 🎉 CVH Holiday – Christmas — 2026-12-24 to 2026-12-26", md)
+        self.assertNotIn("Thanksgiving", md)
+        at.button(key="time_off_today").click().run()
+        self.assertTrue(any(t.value == "November 2026" for t in at.subheader))
+
+        next(s for s in at.selectbox if s.label == "Type").select("Full day off").run()
+        self.assertFalse(any(t.label == "Holiday name" for t in at.text_input))
+        self.assertFalse(any(s.label == "Project" for s in at.selectbox))
+        self.assertNotIn(
+            "All employees",
+            list(next(s for s in at.selectbox if s.label == "Employee").options),
+        )
 
         # Employee nav stays available; Back returns to the Employees list
         self.assertTrue(any("Ron Cline" in (b.label or "") for b in at.button))
