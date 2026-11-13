@@ -2896,6 +2896,192 @@ def timesheet_hour_total_lines(record):
     ]
 
 
+def timesheet_day_hour_breakdown(record, day):
+    """Hours for one day on the five-person weekly sheet.
+
+    Worked is CVH + Forestry + BNSF. Total is worked plus vacation plus sick.
+    Missing or blank worked-hour cells count as 0. Reimbursement dollars are
+    not part of these hour totals.
+    """
+    record = record or {}
+    parts = {}
+    worked = 0.0
+    for field, key in (
+        ("CVH Hours", "CVH"),
+        ("Forestry Hours", "Forestry"),
+        ("BNSF Hours", "BNSF"),
+    ):
+        number = timesheet_parse_number(record.get(timesheet_day_column(day, field)))
+        hours = round(number, 2) if number is not None else 0.0
+        parts[key] = hours
+        worked += hours
+    vacation = round(timesheet_leave_hours(record.get(timesheet_day_column(day, "Vacation Hours"))), 2)
+    sick = round(timesheet_leave_hours(record.get(timesheet_day_column(day, "Sick Hours"))), 2)
+    worked = round(worked, 2)
+    parts["Vacation"] = vacation
+    parts["Sick"] = sick
+    parts["Worked"] = worked
+    parts["Total"] = round(worked + vacation + sick, 2)
+    return parts
+
+
+def timesheet_hour_summary_rows(record, dates=None):
+    """Per-day rows plus a Week Total row for the entry-screen summary table.
+
+    dates is an optional 7-item sequence of date values aligned with
+    TIMESHEET_DAYS. Each row has Day, Date, CVH, Forestry, BNSF, Vacation,
+    Sick, Worked, and Total. Week Total sums each hour column.
+    """
+    rows = []
+    week = {key: 0.0 for key in ("CVH", "Forestry", "BNSF", "Vacation", "Sick", "Worked", "Total")}
+    for i, day in enumerate(TIMESHEET_DAYS):
+        parts = timesheet_day_hour_breakdown(record, day)
+        day_date = ""
+        if dates is not None and i < len(dates) and dates[i] is not None:
+            value = dates[i]
+            day_date = value.isoformat() if hasattr(value, "isoformat") else _cell(value)
+        row = {"Day": day, "Date": day_date}
+        row.update(parts)
+        rows.append(row)
+        for key in week:
+            week[key] = round(week[key] + parts[key], 2)
+    total_row = {"Day": "Week Total", "Date": ""}
+    total_row.update(week)
+    rows.append(total_row)
+    return rows
+
+
+def timesheet_hour_summary_display_rows(rows):
+    """Format summary rows for a display-only entry-screen table."""
+    display = []
+    for row in rows or []:
+        day_label = _cell(row.get("Day"))
+        day_date = _cell(row.get("Date"))
+        if day_label != "Week Total" and day_date:
+            day_label = day_label + " " + day_date
+        display.append({
+            "Day": day_label,
+            "CVH": timesheet_format_hours(row.get("CVH")) or "0",
+            "Forestry": timesheet_format_hours(row.get("Forestry")) or "0",
+            "BNSF": timesheet_format_hours(row.get("BNSF")) or "0",
+            "Vacation": timesheet_format_hours(row.get("Vacation")) or "0",
+            "Sick": timesheet_format_hours(row.get("Sick")) or "0",
+            "Worked": timesheet_format_hours(row.get("Worked")) or "0",
+            "Total": timesheet_format_hours(row.get("Total")) or "0",
+        })
+    return display
+
+
+def timesheet_hour_summary_short_date(value):
+    """Turn an ISO date or 'Sun 2026-11-08' label into 'Sun 11/08'."""
+    text = _cell(value)
+    day_part = ""
+    date_part = text
+    if " " in text:
+        day_part, date_part = text.split(" ", 1)
+    parsed = parse_equipment_date(date_part)
+    if parsed is None:
+        parsed = parse_equipment_date(text)
+    if parsed is None:
+        return text
+    stamp = "%02d/%02d" % (parsed.month, parsed.day)
+    if day_part:
+        return day_part + " " + stamp
+    return stamp
+
+
+def timesheet_hour_summary_html(rows):
+    """Compact, display-only hour table that fits a ~380-400px phone width.
+
+    Short headers and MM/DD dates are used on a narrow screen. Wider screens
+    keep the full column names and the same one-line day labels.
+    """
+    headers = (
+        ("Day", "Day"),
+        ("CVH", "CVH"),
+        ("For", "Forestry"),
+        ("BNSF", "BNSF"),
+        ("Vac", "Vacation"),
+        ("Sick", "Sick"),
+        ("Wkd", "Worked"),
+        ("Tot", "Total"),
+    )
+    keys = ("Day", "CVH", "Forestry", "BNSF", "Vacation", "Sick", "Worked", "Total")
+    parts = [
+        "<style>"
+        ".cvh-hour-wrap{overflow-x:hidden;margin:0.15rem 0 0.55rem 0;}"
+        ".cvh-hour-summary{width:100%;max-width:100%;border-collapse:collapse;"
+        "table-layout:fixed;font-size:0.7rem;box-sizing:border-box;}"
+        ".cvh-hour-summary th,.cvh-hour-summary td{padding:0.14rem 0.06rem;"
+        "vertical-align:top;box-sizing:border-box;min-width:0;overflow:hidden;}"
+        ".cvh-hour-summary th{border-bottom:1px solid #bbb;white-space:nowrap;}"
+        ".cvh-hour-summary .num{text-align:right;white-space:nowrap;}"
+        ".cvh-hour-summary .day{text-align:left;white-space:nowrap;}"
+        ".cvh-hour-summary .full{display:none;}"
+        ".cvh-hour-summary col.day{width:22%;}"
+        ".cvh-hour-summary col.num{width:11.14%;}"
+        "@media (min-width:560px){"
+        ".cvh-hour-summary{font-size:0.9rem;}"
+        ".cvh-hour-summary th,.cvh-hour-summary td{padding:0.35rem 0.35rem;}"
+        ".cvh-hour-summary .full{display:inline;}"
+        ".cvh-hour-summary .short{display:none;}"
+        "}"
+        "</style>",
+        "<div class='cvh-hour-wrap'>",
+        "<table class='cvh-hour-summary'><colgroup>",
+        "<col class='day'>",
+        "<col class='num'><col class='num'><col class='num'><col class='num'>",
+        "<col class='num'><col class='num'><col class='num'>",
+        "</colgroup><thead><tr>",
+    ]
+    for i, (short, full) in enumerate(headers):
+        cls = "day" if i == 0 else "num"
+        if short == full:
+            label = short
+        else:
+            label = (
+                "<span class='short'>" + short + "</span>"
+                "<span class='full'>" + full + "</span>"
+            )
+        parts.append("<th class='%s'>%s</th>" % (cls, label))
+    parts.append("</tr></thead><tbody>")
+    for row in timesheet_hour_summary_display_rows(rows):
+        is_total = row.get("Day") == "Week Total"
+        row_style = "font-weight:700;border-top:1px solid #bbb;background:#f6f6f6;" if is_total else ""
+        parts.append("<tr>")
+        for i, key in enumerate(keys):
+            cls = "day" if i == 0 else "num"
+            value = row.get(key, "0")
+            if i == 0:
+                if is_total:
+                    value = (
+                        "<span class='short'>Week</span>"
+                        "<span class='full'>Week Total</span>"
+                    )
+                else:
+                    value = timesheet_hour_summary_short_date(value)
+            parts.append(
+                "<td class='%s' style='%s'>%s</td>" % (cls, row_style, value)
+            )
+        parts.append("</tr>")
+    parts.append("</tbody></table></div>")
+    return "".join(parts)
+
+
+def timesheet_day_expander_title(day, day_date=None, total_hours=None):
+    """Entry-screen expander label. Widget keys stay unchanged."""
+    label = _cell(day)
+    if day_date is not None and _cell(day_date):
+        value = day_date
+        label += "  " + (value.isoformat() if hasattr(value, "isoformat") else _cell(value))
+    hours = timesheet_parse_number(total_hours)
+    if hours:
+        formatted = timesheet_format_hours(hours)
+        if formatted:
+            label += " — " + formatted + " hrs"
+    return label
+
+
 def timesheet_parse_number(value):
     """Parse a timesheet number. Numeric zero stays zero; blank stays missing."""
     if isinstance(value, bool):
@@ -5265,8 +5451,33 @@ def show_employee_timesheet(employee):
     st.markdown("**Name:** " + employee)
     dates = timesheet_day_dates(week, today=today)
     st.caption("Perdiem Rates — $60.00 per day with company paid hotel; $100.00 per day without company paid hotel.")
+
+    def _live_hour_record():
+        live = {}
+        for day_name in TIMESHEET_DAYS:
+            live[timesheet_day_column(day_name, "CVH Hours")] = st.session_state.get(
+                prefix + day_name + "_CVH", _saved(timesheet_day_column(day_name, "CVH Hours")),
+            )
+            live[timesheet_day_column(day_name, "Forestry Hours")] = st.session_state.get(
+                prefix + day_name + "_Forestry", _saved(timesheet_day_column(day_name, "Forestry Hours")),
+            )
+            live[timesheet_day_column(day_name, "BNSF Hours")] = st.session_state.get(
+                prefix + day_name + "_BNSF", _saved(timesheet_day_column(day_name, "BNSF Hours")),
+            )
+            live[timesheet_day_column(day_name, "Vacation Hours")] = st.session_state.get(
+                prefix + day_name + "_Vacation",
+                timesheet_leave_hours(_saved(timesheet_day_column(day_name, "Vacation Hours"))),
+            )
+            live[timesheet_day_column(day_name, "Sick Hours")] = st.session_state.get(
+                prefix + day_name + "_Sick",
+                timesheet_leave_hours(_saved(timesheet_day_column(day_name, "Sick Hours"))),
+            )
+        return live
+
     for i, day in enumerate(TIMESHEET_DAYS):
-        title = day + "  " + dates[i].isoformat()
+        title = timesheet_day_expander_title(
+            day, dates[i], timesheet_day_hour_breakdown(_live_hour_record(), day)["Total"],
+        )
         with st.expander(title, expanded=(dates[i] == today)):
             st.text_input("Location", value=_saved(timesheet_day_column(day, "Location")), key=prefix + day + "_Location")
             st.text_input("CVH # work hours", value=_saved(timesheet_day_column(day, "CVH Hours")), key=prefix + day + "_CVH")
@@ -5308,30 +5519,13 @@ def show_employee_timesheet(employee):
             st.text_input("Perdiem Rate", value=_saved(timesheet_day_column(day, "Perdiem Rate")), key=prefix + day + "_Perdiem")
             st.text_input("Other", value=_saved(timesheet_day_column(day, "Other")), key=prefix + day + "_Other")
 
-    def _live_hour_record():
-        live = {}
-        for day_name in TIMESHEET_DAYS:
-            live[timesheet_day_column(day_name, "CVH Hours")] = st.session_state.get(
-                prefix + day_name + "_CVH", _saved(timesheet_day_column(day_name, "CVH Hours")),
-            )
-            live[timesheet_day_column(day_name, "Forestry Hours")] = st.session_state.get(
-                prefix + day_name + "_Forestry", _saved(timesheet_day_column(day_name, "Forestry Hours")),
-            )
-            live[timesheet_day_column(day_name, "BNSF Hours")] = st.session_state.get(
-                prefix + day_name + "_BNSF", _saved(timesheet_day_column(day_name, "BNSF Hours")),
-            )
-            live[timesheet_day_column(day_name, "Vacation Hours")] = st.session_state.get(
-                prefix + day_name + "_Vacation",
-                timesheet_leave_hours(_saved(timesheet_day_column(day_name, "Vacation Hours"))),
-            )
-            live[timesheet_day_column(day_name, "Sick Hours")] = st.session_state.get(
-                prefix + day_name + "_Sick",
-                timesheet_leave_hours(_saved(timesheet_day_column(day_name, "Sick Hours"))),
-            )
-        return live
-
-    for line in timesheet_hour_total_lines(_live_hour_record()):
-        st.markdown("**" + line + "**")
+    live_hours = _live_hour_record()
+    week_totals = timesheet_weekly_hour_totals(live_hours)
+    st.markdown("**Worked hours: " + timesheet_format_hours(week_totals["Worked Hours"]) + "**")
+    st.markdown(
+        timesheet_hour_summary_html(timesheet_hour_summary_rows(live_hours, dates=dates)),
+        unsafe_allow_html=True,
+    )
     st.caption(
         "Worked hours are CVH, Forestry, and BNSF only. Vacation and sick are paid leave, "
         "0 to 24 hours a day, and are not included in worked hours. "

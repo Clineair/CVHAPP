@@ -90,7 +90,7 @@ def _exec_equipment_helpers():
         "load_anthony_timesheet_records_readonly", "save_anthony_timesheet_record",
         "anthony_timesheet_pdf_filename", "anthony_timesheet_xlsx_filename",
         "build_anthony_timesheet_xlsx", "build_anthony_timesheet_pdf",
-        "timesheet_day_column", "timesheet_columns", "timesheet_leave_columns", "timesheet_leave_hours", "timesheet_weekly_hour_totals", "timesheet_hour_total_lines", "ensure_timesheet_leave_columns", "timesheet_parse_number",
+        "timesheet_day_column", "timesheet_columns", "timesheet_leave_columns", "timesheet_leave_hours", "timesheet_weekly_hour_totals", "timesheet_hour_total_lines", "timesheet_day_hour_breakdown", "timesheet_hour_summary_rows", "timesheet_hour_summary_display_rows", "timesheet_hour_summary_short_date", "timesheet_hour_summary_html", "timesheet_day_expander_title", "ensure_timesheet_leave_columns", "timesheet_parse_number",
         "timesheet_format_hours", "timesheet_format_money", "timesheet_format_rate", "timesheet_format_mileage_rate", "timesheet_mileage_amount",
         "timesheet_irs_business_mileage_period", "timesheet_irs_business_mileage_rate",
         "timesheet_irs_mileage_supported_range_text", "timesheet_irs_mileage_unsupported_reason",
@@ -2012,6 +2012,107 @@ class PlaceholderAndLogicTests(unittest.TestCase):
         self.assertTrue(s["timesheet_initials_valid"](new))
         self.assertEqual(book.sheet1.writes, [])
         self.assertNotIn("Anthony Time Sheets", book.sheets)
+
+    def test_timesheet_entry_hour_summary_rows(self):
+        from datetime import date, datetime
+        from zoneinfo import ZoneInfo
+        s = self.s
+        when = datetime(2026, 11, 11, 9, 0, tzinfo=ZoneInfo("America/Los_Angeles"))
+        today = date(2026, 11, 11)
+        rec = s["build_timesheet_record"](
+            "Robert Rackley", date(2026, 11, 8),
+            day_values={
+                "Sun": {
+                    "CVH Hours": "8", "Forestry Hours": "1", "BNSF Hours": "1",
+                    "Vacation Hours": "4", "Sick Hours": "2",
+                },
+                "Mon": {"CVH Hours": "30", "Vacation Hours": 0, "Sick Hours": 0},
+                "Tues": {"Vacation Hours": "24", "Sick Hours": "0.5"},
+            },
+            initials="RR",
+            when=when, entry_id="TS-LEAVE-1", today=today,
+        )
+        sun = s["timesheet_day_hour_breakdown"](rec, "Sun")
+        self.assertEqual(sun, {
+            "CVH": 8.0, "Forestry": 1.0, "BNSF": 1.0,
+            "Vacation": 4.0, "Sick": 2.0, "Worked": 10.0, "Total": 16.0,
+        })
+        mon = s["timesheet_day_hour_breakdown"](rec, "Mon")
+        self.assertEqual(mon["CVH"], 30.0)
+        self.assertEqual(mon["Worked"], 30.0)
+        self.assertEqual(mon["Total"], 30.0)
+        tues = s["timesheet_day_hour_breakdown"](rec, "Tues")
+        self.assertEqual(tues["Worked"], 0.0)
+        self.assertEqual(tues["Vacation"], 24.0)
+        self.assertEqual(tues["Sick"], 0.5)
+        self.assertEqual(tues["Total"], 24.5)
+        wed = s["timesheet_day_hour_breakdown"](rec, "Wed")
+        self.assertEqual(wed["Total"], 0.0)
+        self.assertEqual(s["timesheet_day_hour_breakdown"]({}, "Fri")["Total"], 0.0)
+
+        dates = s["timesheet_day_dates"](date(2026, 11, 8), today=today)
+        rows = s["timesheet_hour_summary_rows"](rec, dates=dates)
+        self.assertEqual(len(rows), 8)
+        self.assertEqual([row["Day"] for row in rows], list(s["TIMESHEET_DAYS"]) + ["Week Total"])
+        self.assertEqual(rows[0]["Date"], "2026-11-08")
+        self.assertEqual(rows[6]["Date"], "2026-11-14")
+        self.assertEqual(rows[7]["Day"], "Week Total")
+        self.assertEqual(rows[7]["Date"], "")
+        week = rows[7]
+        totals = s["timesheet_weekly_hour_totals"](rec)
+        self.assertEqual(week["CVH"], 38.0)
+        self.assertEqual(week["Forestry"], 1.0)
+        self.assertEqual(week["BNSF"], 1.0)
+        self.assertEqual(week["Vacation"], totals["Vacation Hours"])
+        self.assertEqual(week["Sick"], totals["Sick Hours"])
+        self.assertEqual(week["Worked"], totals["Worked Hours"])
+        self.assertEqual(week["Total"], totals["Total Hours Including Paid Leave"])
+        self.assertEqual(week["Worked"], 40)
+        self.assertEqual(week["Total"], 70.5)
+
+        blank = s["timesheet_hour_summary_rows"](None)
+        self.assertEqual(len(blank), 8)
+        self.assertEqual(blank[0]["Date"], "")
+        self.assertEqual(blank[7]["Total"], 0.0)
+        display = s["timesheet_hour_summary_display_rows"](rows)
+        self.assertEqual(display[0]["Day"], "Sun 2026-11-08")
+        self.assertEqual(display[0]["CVH"], "8")
+        self.assertEqual(display[0]["Worked"], "10")
+        self.assertEqual(display[0]["Total"], "16")
+        self.assertEqual(display[2]["Day"], "Tues 2026-11-10")
+        self.assertEqual(display[2]["Sick"], "0.5")
+        self.assertEqual(display[2]["Total"], "24.5")
+        self.assertEqual(display[3]["Day"], "Wed 2026-11-11")
+        self.assertEqual(display[3]["Total"], "0")
+        self.assertEqual(display[7]["Day"], "Week Total")
+        self.assertEqual(display[7]["Worked"], "40")
+        self.assertEqual(display[7]["Total"], "70.5")
+        html = s["timesheet_hour_summary_html"](rows)
+        self.assertIn("Week Total", html)
+        self.assertIn(">40<", html)
+        self.assertIn(">70.5<", html)
+        self.assertIn("Vacation", html)
+        self.assertIn("Total", html)
+        self.assertIn("Vac", html)
+        self.assertIn("Wkd", html)
+        self.assertIn("Tot", html)
+        self.assertIn("Sun", html)
+        self.assertIn("11/08", html)
+        self.assertEqual(s["timesheet_hour_summary_short_date"]("Sun 2026-11-08"), "Sun 11/08")
+        self.assertEqual(s["timesheet_hour_summary_short_date"]("2026-11-14"), "11/14")
+        self.assertIn("max-width:100%", html)
+        self.assertEqual(
+            s["timesheet_day_expander_title"]("Mon", date(2026, 11, 16), 8),
+            "Mon  2026-11-16 — 8 hrs",
+        )
+        self.assertEqual(
+            s["timesheet_day_expander_title"]("Tues", dates[2], tues["Total"]),
+            "Tues  2026-11-10 — 24.5 hrs",
+        )
+        self.assertEqual(
+            s["timesheet_day_expander_title"]("Wed", dates[3], 0),
+            "Wed  2026-11-11",
+        )
 
 
 class FakeSheetBehaviorTests(unittest.TestCase):
@@ -4028,10 +4129,21 @@ class HeaderAndEquipmentPageTests(unittest.TestCase):
             self.assertEqual(row[header.index("Initials")], "CM")
             md = " ".join(m.value or "" for m in at.markdown)
             self.assertIn("Worked hours: 8", md)
-            self.assertIn("Vacation: 4", md)
-            self.assertIn("Sick: 2", md)
-            self.assertIn("Total hours including paid leave: 14", md)
             self.assertNotIn("Worked hours: 14", md)
+            captions = " ".join(c.value or "" for c in at.caption)
+            self.assertIn("Worked hours are CVH, Forestry, and BNSF only", captions)
+            self.assertIn("Sun", md)
+            self.assertIn("2026-11-08", md)
+            self.assertIn("Week Total", md)
+            self.assertIn("Vacation", md)
+            html = " ".join(m.value or "" for m in at.markdown)
+            self.assertIn(">8<", html)
+            self.assertIn(">4<", html)
+            self.assertIn(">2<", html)
+            self.assertIn(">14<", html)
+            labels = [e.label for e in at.expander]
+            self.assertIn("Sun  2026-11-08 — 14 hrs", labels)
+            self.assertIn("Mon  2026-11-09", labels)
             self.assertEqual(set(book.sheets), {"Sheet1", "Time Sheets"})
 
             self.assertTrue(any(b.label == "Download PDF" for b in at.button) or any(getattr(b, "label", "") == "Download PDF" for b in at.download_button))
