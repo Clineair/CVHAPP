@@ -386,7 +386,8 @@ EMPLOYEES = [
 ]
 # Weekly time sheet is only for these employees, in Ron's listed order.
 # Official weekly form for these five employees. Ron Cline has no timesheet.
-# Anthony Root uses a separate official form (see ANTHONY_TIMESHEET_*).
+# Anthony Root uses a separate official form (see ANTHONY_TIMESHEET_*) and does
+# not get vacation or sick hours on that form.
 TIMESHEET_EMPLOYEES = [
     "Carl Mulvaney",
     "Barry Markham",
@@ -420,11 +421,17 @@ ANTHONY_TIMESHEET_NUMERIC_FIELDS = {
     "Survery Hrs", "Standby Hrs",
 }
 TIMESHEET_DAYS = ("Sun", "Mon", "Tues", "Wed", "Thur", "Fri", "Sat")
+# Vacation and Sick sit with the worked-hour rows on the five-person form only.
+TIMESHEET_WORKED_HOUR_FIELDS = ("CVH Hours", "Forestry Hours", "BNSF Hours")
+TIMESHEET_LEAVE_FIELDS = ("Vacation Hours", "Sick Hours")
+TIMESHEET_LEAVE_HOURS_MAX = 24
 TIMESHEET_DAY_FIELDS = (
     ("Location", "Location"),
     ("CVH Hours", "CVH # work hours"),
     ("Forestry Hours", "Forestry #  work hours"),
     ("BNSF Hours", "BNSF # work hours"),
+    ("Vacation Hours", "Vacation Hours"),
+    ("Sick Hours", "Sick Hours"),
     ("Perdiem Rate", "Perdiem Rate"),
     ("Other", "Other"),
 )
@@ -485,11 +492,17 @@ TIME_OFF_SHEET_TITLE = "Time Off"
 TIME_OFF_COLUMNS = [
     "Timestamp", "Entry ID", "Action", "Employee", "Type",
     "Start Date", "End Date", "Start Time", "End Time", "Notes", "Status",
+    "Project",
+    "Holiday Name",
 ]
-TIME_OFF_TYPES = ("Full day off", "Partial day", "Vacation")
+TIME_OFF_TYPES = ("Full day off", "Partial day", "Vacation", "Project", "Company Holiday")
 TIME_OFF_TYPE_FULL = "Full day off"
 TIME_OFF_TYPE_PARTIAL = "Partial day"
 TIME_OFF_TYPE_VACATION = "Vacation"
+TIME_OFF_TYPE_PROJECT = "Project"
+TIME_OFF_TYPE_HOLIDAY = "Company Holiday"
+TIME_OFF_ALL_EMPLOYEES = "All employees"
+TIME_OFF_PROJECTS = ("BNSF", "Forestry", "WSFW", "West", "Basin", "Other")
 TIME_OFF_STATUS_ACTIVE = "Active"
 TIME_OFF_STATUS_CANCELLED = "Cancelled"
 TIME_OFF_ACTION_CREATE = "Create"
@@ -2091,8 +2104,18 @@ def time_off_short_name(name):
     return _cell(name)
 
 
-def time_off_type_label(value):
+def time_off_type_label(value, project=None, holiday_name=None):
     kind = _cell(value)
+    if kind == TIME_OFF_TYPE_PROJECT:
+        name = _cell(project)
+        if name:
+            return "Project \u2013 " + name
+        return "Project"
+    if kind == TIME_OFF_TYPE_HOLIDAY:
+        name = _cell(holiday_name)
+        if name:
+            return "\U0001f389 CVH Holiday \u2013 " + name
+        return "\U0001f389 CVH Holiday"
     if kind == TIME_OFF_TYPE_FULL:
         return "Full day"
     if kind == TIME_OFF_TYPE_PARTIAL:
@@ -2183,11 +2206,28 @@ def active_time_off_records(records):
     return [r for r in current_time_off_records(records) if time_off_is_active(r)]
 
 
-def time_off_for_date(records, day, employee=None):
+def time_off_applies_to_filter(record, employee=None):
+    """True when this row belongs in the selected employee view.
+
+    A blank filter shows every row. A company holiday stored once as All
+    employees stays on every person's calendar. Other rows match that person.
+    """
     wanted = _cell(employee)
+    if not wanted:
+        return True
+    who = _cell((record or {}).get("Employee"))
+    if who == wanted:
+        return True
+    return (
+        _cell((record or {}).get("Type")) == TIME_OFF_TYPE_HOLIDAY
+        and who == TIME_OFF_ALL_EMPLOYEES
+    )
+
+
+def time_off_for_date(records, day, employee=None):
     rows = []
     for record in active_time_off_records(records):
-        if wanted and _cell(record.get("Employee")) != wanted:
+        if not time_off_applies_to_filter(record, employee):
             continue
         if time_off_covers_date(record, day):
             rows.append(record)
@@ -2200,11 +2240,10 @@ def time_off_for_month(records, year, month, employee=None, include_cancelled=Fa
         last = date(int(year), 12, 31)
     else:
         last = date(int(year), int(month) + 1, 1) - timedelta(days=1)
-    wanted = _cell(employee)
     source = current_time_off_records(records) if include_cancelled else active_time_off_records(records)
     rows = []
     for record in source:
-        if wanted and _cell(record.get("Employee")) != wanted:
+        if not time_off_applies_to_filter(record, employee):
             continue
         start = time_off_start_date(record)
         end = time_off_end_date(record)
@@ -2228,6 +2267,8 @@ def time_off_identity(record):
         format_equipment_date((record or {}).get("End Date")),
         format_time_off_time((record or {}).get("Start Time")),
         format_time_off_time((record or {}).get("End Time")),
+        _cell((record or {}).get("Project")),
+        _cell((record or {}).get("Holiday Name")),
     )
 
 
@@ -2263,8 +2304,16 @@ def time_off_summary_text(record, include_employee=True):
     elif kind == TIME_OFF_TYPE_VACATION and start and end and start != end:
         bits.append(kind)
         bits.append(start + " to " + end)
+    elif kind == TIME_OFF_TYPE_HOLIDAY and start and end and start != end:
+        bits.append(time_off_type_label(kind, holiday_name=(record or {}).get("Holiday Name")))
+        bits.append(start + " to " + end)
     else:
-        bits.append(kind or "Time off")
+        shown = kind or "Time off"
+        if kind == TIME_OFF_TYPE_PROJECT:
+            shown = time_off_type_label(kind, (record or {}).get("Project"))
+        elif kind == TIME_OFF_TYPE_HOLIDAY:
+            shown = time_off_type_label(kind, holiday_name=(record or {}).get("Holiday Name"))
+        bits.append(shown)
         bits.append(start or "—")
     notes = _cell((record or {}).get("Notes"))
     text = " — ".join(bits)
@@ -2289,6 +2338,8 @@ def time_off_month_grid_markup(year, month, records, today=None, employee=None):
         ".toff-full{background:#fef3c7;}"
         ".toff-part{background:#e0f2fe;}"
         ".toff-vac{background:#ede9fe;}"
+        ".toff-proj{background:#dcfce7;}"
+        ".toff-hol{background:#ffe4e6;font-weight:600;}"
         "</style>"
     )
     rows = ["<table class='toff-cal'><thead><tr>"]
@@ -2315,7 +2366,20 @@ def time_off_month_grid_markup(year, month, records, today=None, employee=None):
                         ev_class += " toff-part"
                     elif kind == TIME_OFF_TYPE_VACATION:
                         ev_class += " toff-vac"
-                    label = time_off_short_name(record.get("Employee")) + " — " + time_off_type_label(kind)
+                    elif kind == TIME_OFF_TYPE_PROJECT:
+                        ev_class += " toff-proj"
+                    elif kind == TIME_OFF_TYPE_HOLIDAY:
+                        ev_class += " toff-hol"
+                    if (
+                        kind == TIME_OFF_TYPE_HOLIDAY
+                        and _cell(record.get("Employee")) == TIME_OFF_ALL_EMPLOYEES
+                    ):
+                        who = "All employees"
+                    else:
+                        who = time_off_short_name(record.get("Employee"))
+                    label = who + " — " + time_off_type_label(
+                        kind, record.get("Project"), record.get("Holiday Name")
+                    )
                     if kind == TIME_OFF_TYPE_PARTIAL:
                         start_t = format_time_off_time_display(record.get("Start Time"))
                         end_t = format_time_off_time_display(record.get("End Time"))
@@ -2334,10 +2398,46 @@ def time_off_month_grid_markup(year, month, records, today=None, employee=None):
     return css + "".join(rows)
 
 
+def _append_time_off_header_column(ws, column):
+    """Append one header cell without moving columns already on the sheet."""
+    header = [_cell(c) for c in ws.row_values(1)]
+    if not header or column in header:
+        return False
+    if hasattr(ws, "add_cols"):
+        try:
+            ws.add_cols(1)
+        except Exception:
+            pass
+    ws.update_cell(1, len(header) + 1, column)
+    return True
+
+
+def ensure_time_off_project_column(ws):
+    """Append a Project column when an older Time Off header does not have one.
+
+    Existing header cells stay in place. Rows saved before the column still
+    load with a blank project.
+    """
+    return _append_time_off_header_column(ws, "Project")
+
+
+def ensure_time_off_holiday_name_column(ws):
+    """Append a Holiday Name column when an older Time Off header does not have one.
+
+    Existing header cells stay in place. Rows saved before the column still
+    load with a blank holiday name.
+    """
+    return _append_time_off_header_column(ws, "Holiday Name")
+
+
 def ensure_time_off_worksheet(spreadsheet):
     """Create the Time Off tab with a header when it is missing.
 
-    Never alters an existing header, and never writes FRAT or other tabs.
+    An existing header is not reordered or rewritten. Missing Project and
+    Holiday Name columns are appended, in that order, so a chosen project or
+    company holiday can be stored. Older rows that have no project or holiday
+    name cell still load with those fields blank. Never writes FRAT or other
+    tabs.
     """
     cols = list(TIME_OFF_COLUMNS)
     ws = _worksheet_or_none(spreadsheet, TIME_OFF_SHEET_TITLE)
@@ -2351,6 +2451,9 @@ def ensure_time_off_worksheet(spreadsheet):
         if not header:
             ws.append_row(cols, value_input_option="RAW")
             created = True
+        else:
+            ensure_time_off_project_column(ws)
+            ensure_time_off_holiday_name_column(ws)
     return ws, created
 
 
@@ -2378,6 +2481,8 @@ def build_time_off_record(
     start_time=None,
     end_time=None,
     notes="",
+    project=None,
+    holiday_name=None,
     when=None,
     entry_id=None,
     today=None,
@@ -2385,24 +2490,40 @@ def build_time_off_record(
 ):
     employee = _cell(employee)
     kind = _cell(kind)
-    if employee not in list(EMPLOYEES):
+    if employee not in list(EMPLOYEES) and not (
+        kind == TIME_OFF_TYPE_HOLIDAY and employee == TIME_OFF_ALL_EMPLOYEES
+    ):
         raise ValueError("Employee is required")
     if kind not in TIME_OFF_TYPES:
         raise ValueError("Type is required")
+    project_name = ""
+    if kind == TIME_OFF_TYPE_PROJECT:
+        project_name = _cell(project)
+        if project_name not in TIME_OFF_PROJECTS:
+            raise ValueError("Project is required")
+    holiday = ""
+    if kind == TIME_OFF_TYPE_HOLIDAY:
+        holiday = _cell(holiday_name)
+        if not holiday:
+            raise ValueError("Holiday name is required")
     start = parse_equipment_date(start_date)
     end = parse_equipment_date(end_date) if end_date not in (None, "") else None
     if start is None:
         raise ValueError("Date is required")
-    if kind == TIME_OFF_TYPE_VACATION:
+    if kind in (TIME_OFF_TYPE_VACATION, TIME_OFF_TYPE_HOLIDAY):
         if end is None:
             raise ValueError("End date is required")
         if end < start:
             raise ValueError("End date must be on or after the start date")
         if time_off_span_days(start, end) > TIME_OFF_MAX_SPAN_DAYS:
+            if kind == TIME_OFF_TYPE_HOLIDAY:
+                raise ValueError(
+                    "Company holiday can be at most " + str(TIME_OFF_MAX_SPAN_DAYS) + " days"
+                )
             raise ValueError("Vacation can be at most " + str(TIME_OFF_MAX_SPAN_DAYS) + " days")
     else:
         if end is not None and end != start:
-            raise ValueError("Full day and partial day entries use a single date")
+            raise ValueError("Full day, partial day, and project entries use a single date")
         end = start
     today = today or datetime.now(ZoneInfo("America/Los_Angeles")).date()
     low, high = time_off_date_bounds(today=today)
@@ -2432,6 +2553,8 @@ def build_time_off_record(
         "End Time": end_t,
         "Notes": _cell(notes),
         "Status": TIME_OFF_STATUS_ACTIVE,
+        "Project": project_name,
+        "Holiday Name": holiday,
     }
     if existing is not None and time_off_duplicate_active(existing, record):
         raise ValueError("This time off is already listed")
@@ -2587,9 +2710,31 @@ def show_time_off_calendar_page():
     prefix = "to_form_" + str(gen) + "_"
     with st.expander("List time off", expanded=True):
         st.caption("This lists a request on the shared calendar. It is not an approval.")
-        st.selectbox("Employee", [""] + list(EMPLOYEES), key=prefix + "employee")
+        kind = _cell(st.session_state.get(prefix + "type")) or TIME_OFF_TYPE_FULL
+        applied_key = prefix + "type_applied"
+        applied = st.session_state.get(applied_key)
+        employee_key = prefix + "employee"
+        if kind == TIME_OFF_TYPE_HOLIDAY and applied != TIME_OFF_TYPE_HOLIDAY:
+            st.session_state[employee_key] = TIME_OFF_ALL_EMPLOYEES
+        elif kind != TIME_OFF_TYPE_HOLIDAY and applied == TIME_OFF_TYPE_HOLIDAY:
+            if st.session_state.get(employee_key) == TIME_OFF_ALL_EMPLOYEES:
+                st.session_state[employee_key] = ""
+        st.session_state[applied_key] = kind
+        if kind == TIME_OFF_TYPE_HOLIDAY:
+            employee_options = [TIME_OFF_ALL_EMPLOYEES] + list(EMPLOYEES)
+        else:
+            employee_options = [""] + list(EMPLOYEES)
+        st.selectbox("Employee", employee_options, key=employee_key)
         st.selectbox("Type", list(TIME_OFF_TYPES), key=prefix + "type")
         kind = _cell(st.session_state.get(prefix + "type")) or TIME_OFF_TYPE_FULL
+        if kind == TIME_OFF_TYPE_PROJECT:
+            st.selectbox("Project", list(TIME_OFF_PROJECTS), key=prefix + "project")
+        if kind == TIME_OFF_TYPE_HOLIDAY:
+            st.text_input("Holiday name", placeholder="Thanksgiving", key=prefix + "holiday_name")
+            st.caption(
+                "Choose All employees to list one company-wide day off. "
+                "A single day uses the same start and end date."
+            )
         default_day = today
         if date(year, month, 1) <= today <= (
             date(year, 12, 31) if month == 12 else date(year, month + 1, 1) - timedelta(days=1)
@@ -2597,7 +2742,7 @@ def show_time_off_calendar_page():
             default_day = today
         else:
             default_day = date(year, month, 1)
-        if kind == TIME_OFF_TYPE_VACATION:
+        if kind in (TIME_OFF_TYPE_VACATION, TIME_OFF_TYPE_HOLIDAY):
             st.date_input("Start Date", value=default_day, format="YYYY-MM-DD", key=prefix + "start")
             st.date_input("End Date", value=default_day, format="YYYY-MM-DD", key=prefix + "end")
         else:
@@ -2617,10 +2762,14 @@ def show_time_off_calendar_page():
                     st.session_state.get(prefix + "employee", ""),
                     st.session_state.get(prefix + "type", ""),
                     st.session_state.get(prefix + "start"),
-                    end_date=st.session_state.get(prefix + "end") if kind == TIME_OFF_TYPE_VACATION else None,
+                    end_date=st.session_state.get(prefix + "end") if kind in (
+                        TIME_OFF_TYPE_VACATION, TIME_OFF_TYPE_HOLIDAY
+                    ) else None,
                     start_time=st.session_state.get(prefix + "start_time") if kind == TIME_OFF_TYPE_PARTIAL else None,
                     end_time=st.session_state.get(prefix + "end_time") if kind == TIME_OFF_TYPE_PARTIAL else None,
                     notes=st.session_state.get(prefix + "notes", ""),
+                    project=st.session_state.get(prefix + "project") if kind == TIME_OFF_TYPE_PROJECT else "",
+                    holiday_name=st.session_state.get(prefix + "holiday_name") if kind == TIME_OFF_TYPE_HOLIDAY else "",
                     existing=latest,
                     today=today,
                 )
@@ -2680,7 +2829,68 @@ def timesheet_columns():
     return cols
 
 
+def timesheet_leave_columns():
+    """Day columns for vacation and sick on the five-person weekly sheet."""
+    cols = []
+    for day in TIMESHEET_DAYS:
+        for field in TIMESHEET_LEAVE_FIELDS:
+            cols.append(timesheet_day_column(day, field))
+    return cols
+
+
+def timesheet_leave_hours(value):
+    """Paid-leave hours. Blank or missing older cells load as 0."""
+    number = timesheet_parse_number(value)
+    if number is None:
+        return 0.0
+    return float(number)
+
+
+def timesheet_weekly_hour_totals(record):
+    """Worked hours stay CVH + Forestry + BNSF. Vacation and sick are separate.
+
+    Total hours including paid leave is worked plus vacation plus sick.
+    Reimbursement dollars are not part of these hour totals.
+    """
+    record = record or {}
+    worked = 0.0
+    vacation = 0.0
+    sick = 0.0
+    for day in TIMESHEET_DAYS:
+        for field in TIMESHEET_WORKED_HOUR_FIELDS:
+            number = timesheet_parse_number(record.get(timesheet_day_column(day, field)))
+            if number is not None:
+                worked += number
+        vacation += timesheet_leave_hours(record.get(timesheet_day_column(day, "Vacation Hours")))
+        sick += timesheet_leave_hours(record.get(timesheet_day_column(day, "Sick Hours")))
+    worked = round(worked, 2)
+    vacation = round(vacation, 2)
+    sick = round(sick, 2)
+    return {
+        "Worked Hours": worked,
+        "Vacation Hours": vacation,
+        "Sick Hours": sick,
+        "Total Hours Including Paid Leave": round(worked + vacation + sick, 2),
+    }
+
+
+def timesheet_hour_total_lines(record):
+    """Labeled hour totals. Worked hours do not include paid leave."""
+    totals = timesheet_weekly_hour_totals(record)
+    return [
+        "Worked hours: " + timesheet_format_hours(totals["Worked Hours"]),
+        "Vacation: " + timesheet_format_hours(totals["Vacation Hours"]),
+        "Sick: " + timesheet_format_hours(totals["Sick Hours"]),
+        "Total hours including paid leave: " + timesheet_format_hours(totals["Total Hours Including Paid Leave"]),
+    ]
+
+
 def timesheet_parse_number(value):
+    """Parse a timesheet number. Numeric zero stays zero; blank stays missing."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
     text = _cell(value).replace(",", "").replace("$", "").strip()
     if not text:
         return None
@@ -2947,13 +3157,24 @@ def timesheet_reimb_total(parts, fuel, other):
 
 
 def timesheet_content_payload(record):
-    """Fields that initials lock; initials/signature metadata are excluded."""
+    """Fields that initials lock; initials/signature metadata are excluded.
+
+    Blank or zero vacation and sick are omitted so they hash the same as older
+    rows that had no leave columns. A non-zero leave entry changes the hash.
+    """
     days = {}
     for day in TIMESHEET_DAYS:
-        days[day] = {
-            field: _cell((record or {}).get(timesheet_day_column(day, field)))
-            for field, _label in TIMESHEET_DAY_FIELDS
-        }
+        fields = {}
+        for field, _label in TIMESHEET_DAY_FIELDS:
+            raw = (record or {}).get(timesheet_day_column(day, field))
+            if field in TIMESHEET_LEAVE_FIELDS:
+                number = timesheet_parse_number(raw)
+                if number is None or abs(number) < 1e-9:
+                    continue
+                fields[field] = timesheet_format_hours(number)
+            else:
+                fields[field] = _cell(raw)
+        days[day] = fields
     payload = {
         "Employee": _cell((record or {}).get("Employee")),
         "Week Of": format_equipment_date((record or {}).get("Week Of")),
@@ -3078,7 +3299,25 @@ def build_timesheet_record(
         row = dict(day_values.get(day) or {})
         for field, _label in TIMESHEET_DAY_FIELDS:
             raw = row.get(field, "")
-            if field in {"CVH Hours", "Forestry Hours", "BNSF Hours", "Perdiem Rate"}:
+            if field in TIMESHEET_LEAVE_FIELDS:
+                # Numeric zero is a real entry. _cell(0) is blank, so don't use it here.
+                provided = (
+                    isinstance(raw, (int, float)) and not isinstance(raw, bool)
+                ) or bool(_cell(raw))
+                number = timesheet_parse_number(raw)
+                if provided and number is None:
+                    raise ValueError(day + " " + field + " must be a number")
+                if number is None:
+                    number = 0.0
+                if number < 0:
+                    raise ValueError(day + " " + field + " cannot be negative")
+                if number > TIMESHEET_LEAVE_HOURS_MAX:
+                    raise ValueError(
+                        day + " " + field + " cannot be more than "
+                        + str(TIMESHEET_LEAVE_HOURS_MAX) + " hours"
+                    )
+                row[field] = timesheet_format_hours(number)
+            elif field in {"CVH Hours", "Forestry Hours", "BNSF Hours", "Perdiem Rate"}:
                 if _cell(raw) and timesheet_parse_number(raw) is None:
                     raise ValueError(day + " " + field + " must be a number")
                 number = timesheet_parse_number(raw)
@@ -3162,10 +3401,35 @@ def build_timesheet_record(
     return record
 
 
+def ensure_timesheet_leave_columns(ws):
+    """Append missing Vacation and Sick day columns without reordering the header.
+
+    Older Time Sheets tabs keep every existing header cell. New leave columns
+    are added on the right so saves can persist them. Rows that predate those
+    columns still load as 0.
+    """
+    header = [_cell(c) for c in ws.row_values(1)]
+    if not header:
+        return False
+    missing = [col for col in timesheet_leave_columns() if col not in header]
+    if not missing:
+        return False
+    if hasattr(ws, "add_cols"):
+        try:
+            ws.add_cols(len(missing))
+        except Exception:
+            pass
+    start = len(header) + 1
+    for offset, col in enumerate(missing):
+        ws.update_cell(1, start + offset, col)
+    return True
+
+
 def ensure_timesheets_worksheet(spreadsheet):
     """Create the Time Sheets tab with a header when it is missing.
 
-    Never alters an existing header, and never writes FRAT or other tabs.
+    An existing header is not reordered or rewritten. Missing Vacation and
+    Sick columns are appended. Never writes FRAT or other tabs.
     """
     cols = list(timesheet_columns())
     ws = _worksheet_or_none(spreadsheet, TIMESHEET_SHEET_TITLE)
@@ -3179,6 +3443,8 @@ def ensure_timesheets_worksheet(spreadsheet):
         if not header:
             ws.append_row(cols, value_input_option="RAW")
             created = True
+        else:
+            ensure_timesheet_leave_columns(ws)
     return ws, created
 
 
@@ -3947,6 +4213,8 @@ def timesheet_template_labels(record=None):
         "CVH # work hours",
         "Forestry #  work hours",
         "BNSF # work hours",
+        "Vacation Hours",
+        "Sick Hours",
         "Perdiem Rate",
         "Other",
         "Perdiem Rates -",
@@ -3968,6 +4236,7 @@ def timesheet_template_labels(record=None):
         "Date",
     ]
     if record is not None:
+        labels.extend(timesheet_hour_total_lines(record))
         labels.append(timesheet_mileage_rate_line(record))
         labels.append(timesheet_mileage_source_note(record))
         for trip in timesheet_mileage_trips_for_display(record):
@@ -4008,6 +4277,17 @@ def build_timesheet_xlsx(record):
         ws.cell(11, col, _cell(record.get(timesheet_day_column(day, "BNSF Hours"))))
         ws.cell(12, col, _cell(record.get(timesheet_day_column(day, "Perdiem Rate"))))
         ws.cell(13, col, _cell(record.get(timesheet_day_column(day, "Other"))))
+    # Rows 14-15 are blank on the official template, between Other and Perdiem Rates.
+    ws["B14"] = "Vacation Hours"
+    ws["B15"] = "Sick Hours"
+    ws.row_dimensions[14].height = 22
+    ws.row_dimensions[15].height = 22
+    for i, day in enumerate(days):
+        col = 3 + i  # C=3
+        ws.cell(14, col, _cell(record.get(timesheet_day_column(day, "Vacation Hours"))) or "0")
+        ws.cell(15, col, _cell(record.get(timesheet_day_column(day, "Sick Hours"))) or "0")
+    ws.row_dimensions[20].height = 18
+    ws["B20"] = "    ".join(timesheet_hour_total_lines(record))
     trips = timesheet_mileage_trips_for_display(record)
     ws["B22"] = timesheet_mileage_rate_line(record)
     if len(trips) <= 1:
@@ -4118,14 +4398,17 @@ def build_timesheet_pdf(record, logo_path=None):
     _s(8, False)
     c.drawString(4.5 * inch, y, "(Sunday's Date)")
 
-    # Grid
+    # Grid. Vacation and Sick are extra rows on the same day columns as worked hours.
     y -= 16
     left = 0.55 * inch
     row_labels = [label for _field, label in TIMESHEET_DAY_FIELDS]
     col_labels = [""] + list(TIMESHEET_DAYS)
     col_w = [1.45 * inch] + [0.72 * inch] * 7
-    row_h = [0.28 * inch] + [0.42 * inch] * 6
-    rows = 7
+    field_rows = len(TIMESHEET_DAY_FIELDS)
+    # Header is tall enough for the day name and date. Field rows stay readable
+    # with Vacation and Sick added, and the sheet still fits on one page.
+    row_h = [0.36 * inch] + [0.40 * inch] * field_rows
+    rows = 1 + field_rows
     cols = 8
     grid_top = y
     grid_height = sum(row_h)
@@ -4174,7 +4457,12 @@ def build_timesheet_pdf(record, logo_path=None):
             xx += col_w[i + 1]
         yy -= row_h[r + 1]
 
-    y = grid_top - grid_height - 18
+    y = grid_top - grid_height - 12
+    _s(8, True)
+    for line in timesheet_hour_total_lines(record):
+        c.drawString(left, y, line)
+        y -= 11
+    y -= 6
     _s(9, True)
     c.drawString(left, y, "Perdiem Rates -")
     _s(8, False)
@@ -4810,8 +5098,71 @@ def show_employee_timesheet(employee):
             st.text_input("CVH # work hours", value=_saved(timesheet_day_column(day, "CVH Hours")), key=prefix + day + "_CVH")
             st.text_input("Forestry #  work hours", value=_saved(timesheet_day_column(day, "Forestry Hours")), key=prefix + day + "_Forestry")
             st.text_input("BNSF # work hours", value=_saved(timesheet_day_column(day, "BNSF Hours")), key=prefix + day + "_BNSF")
+            leave_vacation, leave_sick = st.columns(2)
+            with leave_vacation:
+                saved_vacation = timesheet_leave_hours(_saved(timesheet_day_column(day, "Vacation Hours")))
+                if saved_vacation < 0:
+                    saved_vacation = 0.0
+                if saved_vacation > TIMESHEET_LEAVE_HOURS_MAX:
+                    saved_vacation = float(TIMESHEET_LEAVE_HOURS_MAX)
+                st.number_input(
+                    "Vacation Hours",
+                    min_value=0.0,
+                    max_value=float(TIMESHEET_LEAVE_HOURS_MAX),
+                    value=float(saved_vacation),
+                    step=0.25,
+                    format="%.2f",
+                    key=prefix + day + "_Vacation",
+                    help="Paid vacation hours for this day. 0 to 24.",
+                )
+            with leave_sick:
+                saved_sick = timesheet_leave_hours(_saved(timesheet_day_column(day, "Sick Hours")))
+                if saved_sick < 0:
+                    saved_sick = 0.0
+                if saved_sick > TIMESHEET_LEAVE_HOURS_MAX:
+                    saved_sick = float(TIMESHEET_LEAVE_HOURS_MAX)
+                st.number_input(
+                    "Sick Hours",
+                    min_value=0.0,
+                    max_value=float(TIMESHEET_LEAVE_HOURS_MAX),
+                    value=float(saved_sick),
+                    step=0.25,
+                    format="%.2f",
+                    key=prefix + day + "_Sick",
+                    help="Paid sick hours for this day. 0 to 24.",
+                )
             st.text_input("Perdiem Rate", value=_saved(timesheet_day_column(day, "Perdiem Rate")), key=prefix + day + "_Perdiem")
             st.text_input("Other", value=_saved(timesheet_day_column(day, "Other")), key=prefix + day + "_Other")
+
+    def _live_hour_record():
+        live = {}
+        for day_name in TIMESHEET_DAYS:
+            live[timesheet_day_column(day_name, "CVH Hours")] = st.session_state.get(
+                prefix + day_name + "_CVH", _saved(timesheet_day_column(day_name, "CVH Hours")),
+            )
+            live[timesheet_day_column(day_name, "Forestry Hours")] = st.session_state.get(
+                prefix + day_name + "_Forestry", _saved(timesheet_day_column(day_name, "Forestry Hours")),
+            )
+            live[timesheet_day_column(day_name, "BNSF Hours")] = st.session_state.get(
+                prefix + day_name + "_BNSF", _saved(timesheet_day_column(day_name, "BNSF Hours")),
+            )
+            live[timesheet_day_column(day_name, "Vacation Hours")] = st.session_state.get(
+                prefix + day_name + "_Vacation",
+                timesheet_leave_hours(_saved(timesheet_day_column(day_name, "Vacation Hours"))),
+            )
+            live[timesheet_day_column(day_name, "Sick Hours")] = st.session_state.get(
+                prefix + day_name + "_Sick",
+                timesheet_leave_hours(_saved(timesheet_day_column(day_name, "Sick Hours"))),
+            )
+        return live
+
+    for line in timesheet_hour_total_lines(_live_hour_record()):
+        st.markdown("**" + line + "**")
+    st.caption(
+        "Worked hours are CVH, Forestry, and BNSF only. Vacation and sick are paid leave, "
+        "0 to 24 hours a day, and are not included in worked hours. "
+        "Total hours including paid leave adds them on."
+    )
 
     saved_trips = timesheet_structured_mileage_trips(saved) if saved else []
     if saved and not saved_trips and any(_saved(key) for key in (
@@ -4970,6 +5321,8 @@ def show_employee_timesheet(employee):
                 "CVH Hours": st.session_state.get(prefix + day + "_CVH", ""),
                 "Forestry Hours": st.session_state.get(prefix + day + "_Forestry", ""),
                 "BNSF Hours": st.session_state.get(prefix + day + "_BNSF", ""),
+                "Vacation Hours": st.session_state.get(prefix + day + "_Vacation", 0),
+                "Sick Hours": st.session_state.get(prefix + day + "_Sick", 0),
                 "Perdiem Rate": st.session_state.get(prefix + day + "_Perdiem", ""),
                 "Other": st.session_state.get(prefix + day + "_Other", ""),
             }
