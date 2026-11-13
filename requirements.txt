@@ -8,3 +8,4 @@ pandas
 google-auth
 reportlab
 openpyxl
+authlib>=1.3.2

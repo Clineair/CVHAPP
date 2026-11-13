@@ -25,6 +25,9 @@ def _exec_equipment_helpers():
         "IFTA_UNITS", "DRIVERS", "EMPLOYEES", "IFTA_TRIPS_SHEET_TITLE", "IFTA_FUEL_SHEET_TITLE", "IFTA_TRIPS_COLUMNS", "IFTA_FUEL_COLUMNS", "IFTA_RECEIPT_COLUMN", "IFTA_DEFAULT_JURISDICTION", "IFTA_JURISDICTIONS",
         "DOM_AIRCRAFT", "DOM_ACTION_ANNUAL", "YEARLY_ITEMS_SHEET_TITLE", "YEARLY_ITEMS_COLUMNS", "YEARLY_ITEM_GROUPS", "TIME_OFF_SHEET_TITLE", "TIME_OFF_COLUMNS", "TIME_OFF_TYPES", "TIME_OFF_TYPE_FULL", "TIME_OFF_TYPE_PARTIAL", "TIME_OFF_TYPE_VACATION", "TIME_OFF_TYPE_PROJECT", "TIME_OFF_TYPE_HOLIDAY", "TIME_OFF_ALL_EMPLOYEES", "TIME_OFF_PROJECTS", "TIME_OFF_STATUS_ACTIVE", "TIME_OFF_STATUS_CANCELLED", "TIME_OFF_ACTION_CREATE", "TIME_OFF_ACTION_CANCEL", "TIME_OFF_MAX_PAST_DAYS", "TIME_OFF_MAX_FUTURE_DAYS", "TIME_OFF_MAX_SPAN_DAYS", "TIMESHEET_EMPLOYEES", "TIMESHEET_SHEET_TITLE", "TIMESHEET_DAYS", "TIMESHEET_DAY_FIELDS", "TIMESHEET_WORKED_HOUR_FIELDS", "TIMESHEET_LEAVE_FIELDS", "TIMESHEET_LEAVE_HOURS_MAX", "TIMESHEET_EMAIL_TO", "TIMESHEET_IRS_BUSINESS_MILEAGE_RATES", "TIMESHEET_IRS_MILEAGE_RATES_START", "TIMESHEET_IRS_MILEAGE_RATES_END", "TIMESHEET_IRS_MILEAGE_SOURCE_URL", "TIMESHEET_MILEAGE_SHEET_TITLE", "TIMESHEET_MILEAGE_COLUMNS", "TIMESHEET_MILEAGE_SOURCE_IRS", "TIMESHEET_MILEAGE_SOURCE_COMPANY", "TIMESHEET_MILEAGE_SOURCE_SAVED",
         "ANTHONY_TIMESHEET_EMPLOYEE", "ANTHONY_TIMESHEET_SHEET_TITLE", "ANTHONY_TIMESHEET_TEMPLATE", "ANTHONY_TIMESHEET_DAYS", "ANTHONY_TIMESHEET_DAY_FIELDS", "ANTHONY_TIMESHEET_GRID_ROWS", "ANTHONY_TIMESHEET_WEEK_ROWS", "ANTHONY_TIMESHEET_NUMERIC_FIELDS",
+        "TIMESHEET_AUTH_REQUIRED_KEYS", "TIMESHEET_AUTH_SHARED_KEYS", "TIMESHEET_AUTH_PROVIDER_KEYS",
+        "TIMESHEET_GOOGLE_ISSUERS", "TIMESHEET_MICROSOFT_ISSUER_PREFIXES", "TIMESHEET_EMPLOYEE_EMAILS_SECTION",
+        "TIMESHEET_MAIL_SHEET_TITLE", "TIMESHEET_MAIL_COLUMNS", "TIMESHEET_MAIL_ACTION_COMPOSER",
         "PARTS", "CORE_FACTORS", "PART_FACTORS", "PART_STOPS", "CONFIG_FIELDS",
         "ALL_FACTOR_KEYS", "ALL_STOP_KEYS", "FRAT_COLUMNS",
     }
@@ -103,7 +106,15 @@ def _exec_equipment_helpers():
         "build_timesheet_record", "ensure_timesheets_worksheet",
         "load_timesheet_records", "load_timesheet_records_readonly",
         "save_timesheet_record", "timesheet_gmail_configured",
-        "timesheet_email_can_send", "timesheet_email_block_reason",
+        "timesheet_secret_section", "timesheet_section_has_keys", "timesheet_auth_configured",
+        "timesheet_auth_login_providers", "timesheet_trusted_signin_issuer",
+        "timesheet_employee_email_map", "timesheet_user_info", "timesheet_verified_signin_email",
+        "timesheet_employee_for_identity", "timesheet_access_state", "timesheet_can_view_or_edit",
+        "timesheet_email_can_send", "timesheet_email_subject", "timesheet_email_body",
+        "timesheet_email_compose", "timesheet_composer_allowed", "timesheet_email_block_reason",
+        "timesheet_mail_columns", "ensure_timesheet_mail_worksheet",
+        "load_timesheet_mail_records_readonly", "build_timesheet_mail_audit_record",
+        "save_timesheet_mail_audit_record", "timesheet_access_message",
         "timesheet_bundle_path", "timesheet_template_labels",
         "build_timesheet_xlsx", "timesheet_pdf_filename", "timesheet_xlsx_filename",
         "build_timesheet_pdf", "_timesheet_wrap_label",
@@ -125,8 +136,13 @@ def _exec_equipment_helpers():
              (isinstance(n, ast.Assign) and any(isinstance(t, ast.Name) and t.id in names for t in n.targets))
              or (isinstance(n, ast.FunctionDef) and n.name in functions)]
     from datetime import date, time as dt_time, timedelta
+    import sys
     import uuid
-    scope = {"datetime": datetime, "date": date, "dt_time": dt_time, "timedelta": timedelta, "ZoneInfo": ZoneInfo, "uuid": uuid, "__file__": str(APP)}
+    repo_root = str(Path(__file__).resolve().parents[1])
+    if repo_root not in sys.path:
+        sys.path.insert(0, repo_root)
+    import timesheet_mail
+    scope = {"datetime": datetime, "date": date, "dt_time": dt_time, "timedelta": timedelta, "ZoneInfo": ZoneInfo, "uuid": uuid, "timesheet_mail": timesheet_mail, "__file__": str(APP)}
     exec(compile(ast.Module(body=nodes, type_ignores=[]), str(APP), "exec"), scope)
     return scope
 
@@ -881,8 +897,255 @@ class PlaceholderAndLogicTests(unittest.TestCase):
         self.assertIn("CM", joined)
 
 
+    def test_timesheet_auth_mapping_composer_and_security_gates(self):
+        from datetime import date, datetime
+        from zoneinfo import ZoneInfo
+        from urllib.parse import unquote
+        s = self.s
+        when = datetime(2026, 11, 11, 9, 0, tzinfo=ZoneInfo("America/Los_Angeles"))
+        rec = s["build_timesheet_record"](
+            "Carl Mulvaney", date(2026, 11, 8),
+            day_values={"Sun": {"Location": "Office", "CVH Hours": "8"}},
+            initials="CM",
+            when=when, entry_id="TS-AUTH-1", today=date(2026, 11, 11),
+        )
+        stale = dict(rec)
+        stale["Sun CVH Hours"] = "9"
+
+        auth_secrets = {
+            "auth": {
+                "redirect_uri": "https://cvhapp-fpzzanc7kwhapubsvkjx67.streamlit.app/oauth2callback",
+                "cookie_secret": "test-only-not-used",
+                "client_id": "test-client-id",
+                "client_secret": "test-client-secret",
+                "server_metadata_url": "https://accounts.google.com/.well-known/openid-configuration",
+            },
+            "timesheet_employees": {
+                "Carl Mulvaney": "carl.timesheet@example.com",
+                "Barry Markham": "barry.timesheet@example.com",
+            },
+        }
+        empty_map = {
+            "auth": auth_secrets["auth"],
+            "timesheet_employees": {},
+        }
+        duplicate_map = {
+            "auth": auth_secrets["auth"],
+            "timesheet_employees": {
+                "Carl Mulvaney": "shared.timesheet@example.com",
+                "Barry Markham": "shared.timesheet@example.com",
+            },
+        }
+        carl = {
+            "is_logged_in": True,
+            "email": "Carl.Timesheet@example.com",
+            "email_verified": True,
+            "iss": "https://accounts.google.com",
+            "name": "Carl Mulvaney",
+            "tokens": {"access": "should-never-be-copied"},
+        }
+        barry = {
+            "is_logged_in": True,
+            "email": "barry.timesheet@example.com",
+            "email_verified": True,
+            "iss": "https://accounts.google.com",
+            "name": "Carl Mulvaney",
+        }
+        unverified = {
+            "is_logged_in": True,
+            "email": "carl.timesheet@example.com",
+            "email_verified": False,
+            "iss": "https://accounts.google.com",
+        }
+        unmapped = {
+            "is_logged_in": True,
+            "email": "stranger@example.com",
+            "email_verified": True,
+            "iss": "https://accounts.google.com",
+        }
+        bad_issuer = {
+            "is_logged_in": True,
+            "email": "carl.timesheet@example.com",
+            "email_verified": True,
+            "iss": "https://evil.example",
+        }
+        logged_out = {"is_logged_in": False, "email": "carl.timesheet@example.com", "email_verified": True}
+
+        self.assertFalse(s["timesheet_auth_configured"]({}))
+        self.assertFalse(s["timesheet_auth_configured"]({"auth": {"client_id": "only-one"}}))
+        self.assertTrue(s["timesheet_auth_configured"](auth_secrets))
+        self.assertFalse(s["timesheet_gmail_configured"](auth_secrets))
+        self.assertEqual(
+            s["timesheet_employee_email_map"](auth_secrets)["Carl Mulvaney"],
+            "carl.timesheet@example.com",
+        )
+        self.assertNotIn("Robert Rackley", s["timesheet_employee_email_map"](auth_secrets))
+        self.assertEqual(s["timesheet_employee_email_map"](empty_map), {})
+        self.assertEqual(s["timesheet_employee_email_map"](duplicate_map), {})
+        self.assertEqual(s["timesheet_employee_for_identity"](carl, secrets=auth_secrets), "Carl Mulvaney")
+        self.assertIsNone(s["timesheet_employee_for_identity"](barry, secrets=empty_map))
+        self.assertIsNone(s["timesheet_verified_signin_email"](unverified))
+        self.assertIsNone(s["timesheet_verified_signin_email"](bad_issuer))
+        self.assertIsNone(s["timesheet_verified_signin_email"](logged_out))
+        info = s["timesheet_user_info"](carl)
+        self.assertNotIn("tokens", info)
+        self.assertTrue(info["email_verified"])
+
+        # Without auth configured, forms stay available but composer and send stay off.
+        self.assertEqual(s["timesheet_access_state"]("Carl Mulvaney", user=logged_out, secrets={}), "auth_not_configured")
+        self.assertTrue(s["timesheet_can_view_or_edit"]("Carl Mulvaney", user=logged_out, secrets={}))
+        self.assertFalse(s["timesheet_composer_allowed"](rec, user=carl, saved=rec, current=rec, secrets={}))
+        self.assertFalse(s["timesheet_email_can_send"](rec, configured=True, user=carl, secrets=auth_secrets))
+
+        # Auth on: unauthenticated, other employee, unmapped, unverified cannot view or compose.
+        self.assertEqual(
+            s["timesheet_access_state"]("Carl Mulvaney", user=logged_out, secrets=auth_secrets),
+            "login_required",
+        )
+        self.assertFalse(s["timesheet_can_view_or_edit"]("Carl Mulvaney", user=logged_out, secrets=auth_secrets))
+        self.assertFalse(s["timesheet_composer_allowed"](rec, user=logged_out, saved=rec, current=rec, secrets=auth_secrets))
+        self.assertEqual(
+            s["timesheet_access_state"]("Carl Mulvaney", user=barry, secrets=auth_secrets),
+            "other_employee",
+        )
+        self.assertFalse(s["timesheet_can_view_or_edit"]("Carl Mulvaney", user=barry, secrets=auth_secrets))
+        self.assertFalse(s["timesheet_composer_allowed"](rec, user=barry, saved=rec, current=rec, secrets=auth_secrets))
+        self.assertEqual(
+            s["timesheet_access_state"]("Carl Mulvaney", user=unmapped, secrets=auth_secrets),
+            "unmapped",
+        )
+        self.assertFalse(s["timesheet_can_view_or_edit"]("Carl Mulvaney", user=unmapped, secrets=auth_secrets))
+        self.assertEqual(
+            s["timesheet_access_state"]("Carl Mulvaney", user=unverified, secrets=auth_secrets),
+            "unverified",
+        )
+        self.assertFalse(s["timesheet_can_view_or_edit"]("Carl Mulvaney", user=unverified, secrets=auth_secrets))
+        self.assertFalse(s["timesheet_can_view_or_edit"]("Carl Mulvaney", user=carl, secrets=empty_map))
+        # Display name must not override the email mapping.
+        self.assertEqual(s["timesheet_employee_for_identity"](barry, secrets=auth_secrets), "Barry Markham")
+        self.assertTrue(s["timesheet_can_view_or_edit"]("Carl Mulvaney", user=carl, secrets=auth_secrets))
+
+        # Stale initials and wrong recipient cannot compose. Send stays false.
+        self.assertTrue(s["timesheet_composer_allowed"](rec, user=carl, saved=rec, current=rec, secrets=auth_secrets))
+        self.assertFalse(s["timesheet_composer_allowed"](rec, user=carl, saved=rec, current=stale, secrets=auth_secrets))
+        self.assertFalse(
+            s["timesheet_composer_allowed"](
+                rec, user=carl, saved=rec, current=rec, secrets=auth_secrets,
+                to="other@example.com",
+            )
+        )
+        with self.assertRaisesRegex(ValueError, "can only be addressed to"):
+            s["timesheet_email_compose"](rec, to="other@example.com")
+        # Mailto is not the send path. In-app send stays off without the callback service.
+        self.assertFalse(s["timesheet_email_can_send"](rec, user=carl, secrets=auth_secrets))
+        self.assertFalse(s["timesheet_email_can_send"](
+            rec, user=carl, secrets=auth_secrets, access_allowed=True, initials_match=True,
+            pdf_bytes=b"%PDF-1.4 test", filename="sheet.pdf",
+        ))
+        reason = s["timesheet_email_block_reason"](
+            rec, user=carl, saved=rec, current=rec, secrets=auth_secrets,
+        )
+        self.assertIn("does not send mail", reason)
+        self.assertNotIn("attach the PDF yourself", reason)
+        stale_reason = s["timesheet_email_block_reason"](
+            rec, user=carl, saved=rec, current=stale, secrets=auth_secrets,
+        )
+        self.assertIn("Initial and save", stale_reason)
+
+        # Readonly load must not return another employee's payroll rows.
+        book = FakeSpreadsheet(sheet1_header=s["FRAT_COLUMNS"])
+        s["save_timesheet_record"](rec, spreadsheet=book)
+        barry_rec = s["build_timesheet_record"](
+            "Barry Markham", date(2026, 11, 8),
+            day_values={"Sun": {"Location": "Field", "CVH Hours": "7"}},
+            initials="BM",
+            when=when, entry_id="TS-AUTH-2", today=date(2026, 11, 11),
+        )
+        s["save_timesheet_record"](barry_rec, spreadsheet=book)
+        only_carl = s["load_timesheet_records_readonly"](book, employee="Carl Mulvaney")
+        self.assertEqual({row["Employee"] for row in only_carl}, {"Carl Mulvaney"})
+        self.assertFalse(any(row["Employee"] == "Barry Markham" for row in only_carl))
+
+        # Audit tab is created on first write only and leaves a custom header alone.
+        custom = FakeSpreadsheet(sheet1_header=s["FRAT_COLUMNS"])
+        custom.sheets[s["TIMESHEET_MAIL_SHEET_TITLE"]] = FakeWorksheet(
+            s["TIMESHEET_MAIL_SHEET_TITLE"], [["Custom Mail Header", "Keep"]],
+        )
+        ws, created = s["ensure_timesheet_mail_worksheet"](custom)
+        self.assertFalse(created)
+        self.assertEqual(ws.row_values(1), ["Custom Mail Header", "Keep"])
+        audit = s["build_timesheet_mail_audit_record"](rec, user=carl, when=when)
+        self.assertEqual(audit["Recipient"], "patti@centralvalleyheli.com")
+        self.assertEqual(audit["Action"], "Composer opened")
+        self.assertEqual(audit["Status"], "Opened")
+        self.assertEqual(audit["Signed-in Email"], "carl.timesheet@example.com")
+        s["save_timesheet_mail_audit_record"](audit, spreadsheet=book)
+        self.assertIn("Time Sheet Mail", book.sheets)
+        self.assertEqual(book.sheets["Time Sheet Mail"].rows[0], s["TIMESHEET_MAIL_COLUMNS"])
+        self.assertEqual(set(book.sheets), {"Sheet1", "Time Sheets", "Time Sheet Mail"})
+        self.assertNotIn("tokens", str(audit))
+        self.assertEqual(s["timesheet_employee_email_map"]({}), {})
+
+    def test_timesheet_google_and_microsoft_identity_and_anthony_mapping(self):
+        s = self.s
+        named = {
+            "auth": {
+                "redirect_uri": "https://cvhapp-fpzzanc7kwhapubsvkjx67.streamlit.app/oauth2callback",
+                "cookie_secret": "test-only-not-used",
+                "google": {
+                    "client_id": "g-id",
+                    "client_secret": "g-secret",
+                    "server_metadata_url": "https://accounts.google.com/.well-known/openid-configuration",
+                },
+                "microsoft": {
+                    "client_id": "m-id",
+                    "client_secret": "m-secret",
+                    "server_metadata_url": "https://login.microsoftonline.com/common/v2.0/.well-known/openid-configuration",
+                },
+            },
+            "timesheet_employees": {
+                "Anthony Root": "anthony.signin@example.com",
+                "Robert Rackley": "robert.signin@example.com",
+            },
+        }
+        self.assertTrue(s["timesheet_auth_configured"](named))
+        self.assertEqual(s["timesheet_auth_login_providers"](named), ("google", "microsoft"))
+        self.assertFalse(s["timesheet_auth_configured"]({
+            "auth": {"redirect_uri": named["auth"]["redirect_uri"], "cookie_secret": "x"},
+        }))
+        self.assertFalse(s["timesheet_auth_configured"]({"auth": named["auth"]["google"]}))
+        mapping = s["timesheet_employee_email_map"](named)
+        self.assertEqual(mapping["Anthony Root"], "anthony.signin@example.com")
+        self.assertEqual(mapping["Robert Rackley"], "robert.signin@example.com")
+        self.assertNotIn("Carl Mulvaney", mapping)
+        ms_user = {
+            "is_logged_in": True,
+            "email": "Robert.Signin@example.com",
+            "email_verified": True,
+            "iss": "https://login.microsoftonline.com/9188040d-6c67-4c5b-b112-36a304b66dad/v2.0",
+        }
+        self.assertTrue(s["timesheet_trusted_signin_issuer"](ms_user["iss"]))
+        self.assertTrue(s["timesheet_trusted_signin_issuer"]("https://sts.windows.net/common"))
+        self.assertFalse(s["timesheet_trusted_signin_issuer"]("https://evil.example"))
+        self.assertFalse(s["timesheet_trusted_signin_issuer"]("https://login.microsoftonline.com.evil.example/"))
+        self.assertEqual(s["timesheet_verified_signin_email"](ms_user), "robert.signin@example.com")
+        self.assertEqual(s["timesheet_employee_for_identity"](ms_user, secrets=named), "Robert Rackley")
+        anthony = {
+            "is_logged_in": True,
+            "email": "anthony.signin@example.com",
+            "email_verified": True,
+            "iss": "https://accounts.google.com",
+        }
+        self.assertEqual(s["timesheet_employee_for_identity"](anthony, secrets=named), "Anthony Root")
+        self.assertEqual(s["timesheet_access_state"]("Anthony Root", user=anthony, secrets=named), "allowed")
+        self.assertEqual(s["timesheet_access_state"]("Carl Mulvaney", user=anthony, secrets=named), "other_employee")
+        self.assertEqual(
+            s["anthony_timesheet_pdf_filename"]({"Employee": "Anthony Root", "Week Of": "2026-11-08"}),
+            "Anthony_Time_Sheet_Anthony_Root_2026-11-08.pdf",
+        )
 
     def test_timesheet_irs_mileage_rates_dates_and_exports(self):
+
         from datetime import date, datetime
         from zoneinfo import ZoneInfo
         import fitz
@@ -1184,8 +1447,8 @@ class PlaceholderAndLogicTests(unittest.TestCase):
         self.assertEqual(s["anthony_timesheet_pdf_filename"](rec), "Anthony_Time_Sheet_Anthony_Root_2026-11-08.pdf")
         self.assertEqual(s["anthony_timesheet_xlsx_filename"](rec), "Anthony_Time_Sheet_Anthony_Root_2026-11-08.xlsx")
 
-
     def test_time_off_records_validation_grid_and_cancel_history(self):
+
 
         from datetime import date, time, datetime
         from zoneinfo import ZoneInfo
