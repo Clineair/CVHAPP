@@ -6,6 +6,7 @@ import requests
 from datetime import datetime, date, time as dt_time, timedelta
 import uuid
 import timesheet_mail
+import timesheet_pin
 from zoneinfo import ZoneInfo
 
 # ────────────────────────────────────────────────
@@ -3757,51 +3758,65 @@ def timesheet_employee_for_identity(user=None, mapping=None, secrets=None):
     return matches[0]
 
 
-def timesheet_access_state(employee, user=None, auth_configured=None, mapping=None, secrets=None):
+def _timesheet_pin_failures():
+    try:
+        return int(st.session_state.get("timesheet_pin_failures") or 0)
+    except Exception:
+        return 0
+
+
+def timesheet_access_state(employee, user=None, auth_configured=None, mapping=None, secrets=None, pin_employee=None, failures=None):
     """Who may open this employee's time sheet.
 
-    auth_not_configured: existing open form; composer and in-app send stay off.
-    allowed: signed-in mapped employee matching this page.
-    login_required / unverified / unmapped / other_employee: deny data, edit, and compose.
+    A remembered device or a correct PIN is required. Google sign-in is not used.
+    user, auth_configured, and mapping are accepted so older callers do not crash;
+    they do not grant access. When secrets, pin_employee, and failures are all
+    omitted, the current device cookie and session are used.
     """
     employee = _cell(employee)
     if not employee_has_timesheet(employee):
         return "no_timesheet"
-    if auth_configured is None:
-        auth_configured = timesheet_auth_configured(secrets)
-    if not auth_configured:
-        return "auth_not_configured"
-    if mapping is None:
-        mapping = timesheet_employee_email_map(secrets)
-    info = timesheet_user_info(user)
-    if not info.get("is_logged_in"):
-        return "login_required"
-    if timesheet_verified_signin_email(user) is None:
-        return "unverified"
-    identity = timesheet_employee_for_identity(user, mapping=mapping, secrets=secrets)
-    if identity is None:
-        return "unmapped"
-    if identity != employee:
+    if secrets is None and pin_employee is None and failures is None:
+        secrets = _mail_runtime_secrets()
+        pin_employee = timesheet_verified_pin_employee(secrets)
+        failures = _timesheet_pin_failures()
+    else:
+        if secrets is None:
+            secrets = {}
+        if pin_employee is None:
+            pin_employee = ""
+        if failures is None:
+            failures = 0
+    if not timesheet_pin.employee_pin_ready(secrets, employee):
+        return "pins_not_configured"
+    identity = _cell(pin_employee)
+    if identity and timesheet_pin.employee_allowed(identity) and identity == employee:
+        return "allowed"
+    if int(failures or 0) >= timesheet_pin.MAX_ATTEMPTS and not identity:
+        return "pin_locked"
+    if identity and identity != employee:
         return "other_employee"
-    return "allowed"
+    return "pin_required"
 
 
-def timesheet_can_view_or_edit(employee, user=None, auth_configured=None, mapping=None, secrets=None):
+def timesheet_can_view_or_edit(employee, user=None, auth_configured=None, mapping=None, secrets=None, pin_employee=None, failures=None):
     state = timesheet_access_state(
         employee, user=user, auth_configured=auth_configured, mapping=mapping, secrets=secrets,
+        pin_employee=pin_employee, failures=failures,
     )
-    return state in ("allowed", "auth_not_configured")
+    return state == "allowed"
 
 
 def timesheet_email_can_send(record=None, configured=None, user=None, secrets=None, **kwargs):
     """True only when secure per-user mail setup, binding, initials, and PDF are all ready.
 
-    OIDC login alone is not enough. Default configuration keeps this False.
+    The sender is the PIN-verified employee. Google sign-in is not consulted.
+    Default configuration keeps this False.
     """
     import timesheet_mail
     identity = kwargs.get("user_employee")
-    if identity is None and user is not None:
-        identity = timesheet_employee_for_identity(user, secrets=secrets)
+    if identity is None:
+        identity = kwargs.get("pin_employee")
     return timesheet_mail.timesheet_email_can_send(
         record,
         user_employee=identity,
@@ -3867,11 +3882,13 @@ def timesheet_composer_allowed(
     mapping=None,
     secrets=None,
     to=None,
+    pin_employee=None,
+    failures=None,
 ):
-    """True only when the signed-in employee may open a preaddressed composer.
+    """True only when the PIN-verified employee may open a preaddressed composer.
 
     Still not in-app send. Recipient cannot be overridden. Initials must match
-    the current week's content. Auth must be configured; otherwise fail closed.
+    the current week's content. A missing PIN setup fails closed.
     """
     if not record:
         return False
@@ -3880,6 +3897,7 @@ def timesheet_composer_allowed(
     employee = _cell(record.get("Employee"))
     if timesheet_access_state(
         employee, user=user, auth_configured=auth_configured, mapping=mapping, secrets=secrets,
+        pin_employee=pin_employee, failures=failures,
     ) != "allowed":
         return False
     check = current if current is not None else record
@@ -3896,42 +3914,33 @@ def timesheet_email_block_reason(
     auth_configured=None,
     mapping=None,
     secrets=None,
+    pin_employee=None,
+    failures=None,
 ):
-    if timesheet_email_can_send(record, configured=configured, user=user, secrets=secrets):
+    if timesheet_email_can_send(
+        record, configured=configured, user=user, secrets=secrets, pin_employee=pin_employee,
+    ):
         return ""
-    if auth_configured is None:
-        auth_configured = timesheet_auth_configured(secrets)
-    if not auth_configured:
-        return (
-            "This app does not send mail. In-app sending from your own mailbox needs "
-            "Google sign-in, a mailbox map, a Gmail send client plus a separate HTTPS "
-            "callback service for Gmail mailboxes, or a vaulted SMTP app-password "
-            "store for iCloud and Yahoo. The Email button stays off until that "
-            "setup is complete. Passwords are never collected in this app."
-        )
+    employee = _cell((record or {}).get("Employee")) if record else ""
+    if employee and not timesheet_pin.employee_pin_ready(secrets, employee):
+        return "PIN not set up yet - ask the office"
     if record is None:
         return (
-            "This app does not send mail. Sign in with the Google account listed for "
-            "you, initial this week, and authorize your mailbox after the mail "
-            "callback service is configured."
+            "This app does not send mail. Enter your time-sheet PIN, initial this week, "
+            "and authorize your mailbox after the mail callback service is configured."
         )
     if not timesheet_composer_allowed(
         record, user=user, saved=saved, current=current,
         auth_configured=auth_configured, mapping=mapping, secrets=secrets,
+        pin_employee=pin_employee, failures=failures,
     ):
         state = timesheet_access_state(
-            _cell((record or {}).get("Employee")),
+            employee,
             user=user, auth_configured=auth_configured, mapping=mapping, secrets=secrets,
+            pin_employee=pin_employee, failures=failures,
         )
-        if state == "login_required":
-            return (
-                "Sign in with Google to email your own time sheet. This app does not send mail."
-            )
-        if state in ("unmapped", "unverified", "other_employee"):
-            return (
-                "Only the signed-in employee can open email for their own initialed time sheet. "
-                "This app does not send mail."
-            )
+        if state != "allowed":
+            return timesheet_access_message(state)
         if not timesheet_initials_match_current(saved if saved is not None else record, current if current is not None else record):
             return (
                 "Initial and save this week's current time-sheet content before sending email "
@@ -3941,7 +3950,7 @@ def timesheet_email_block_reason(
     return (
         "This app does not send mail until the mail callback service is configured and "
         "you authorize your Gmail mailbox, or a vaulted SMTP store is present for "
-        "iCloud or Yahoo. Signing in does not grant send permission. Mailto is not "
+        "iCloud or Yahoo. A time-sheet PIN does not grant send permission. Mailto is not "
         "used to send this time sheet."
     )
 
@@ -3977,10 +3986,15 @@ def load_timesheet_mail_records_readonly(spreadsheet=None):
     return records_from_worksheet(ws, timesheet_mail_columns())
 
 
-def build_timesheet_mail_audit_record(record, action=None, user=None, when=None, status=None, idempotency_key=None, provider=None, detail=None, recipient=None):
+def build_timesheet_mail_audit_record(record, action=None, user=None, when=None, status=None, idempotency_key=None, provider=None, detail=None, recipient=None, pin_employee=None):
     action = _cell(action) or TIMESHEET_MAIL_ACTION_COMPOSER
     when = when or datetime.now(ZoneInfo("America/Los_Angeles"))
-    email = timesheet_verified_signin_email(user) or ""
+    if pin_employee:
+        email = _cell(pin_employee)
+    elif user is not None:
+        email = timesheet_verified_signin_email(user) or ""
+    else:
+        email = ""
     return {
         "Timestamp": when.strftime("%Y-%m-%d %H:%M:%S %Z"),
         "Entry ID": _cell(record.get("Entry ID")),
@@ -3999,13 +4013,14 @@ def build_timesheet_mail_audit_record(record, action=None, user=None, when=None,
     }
 
 
-def apply_timesheet_send_result(record, result, user=None, spreadsheet=None, when=None):
+def apply_timesheet_send_result(record, result, user=None, spreadsheet=None, when=None, pin_employee=None):
     """Write one send outcome. Does not retry the send if the sheet write fails."""
     result = result or {}
     audit = build_timesheet_mail_audit_record(
         record,
         action=timesheet_mail.TIMESHEET_MAIL_ACTION_SEND,
         user=user,
+        pin_employee=pin_employee,
         when=when,
         status=result.get("status") or timesheet_mail.TIMESHEET_MAIL_STATUS_UNCERTAIN,
         idempotency_key=result.get("idempotency_key"),
@@ -4027,57 +4042,217 @@ def save_timesheet_mail_audit_record(audit, spreadsheet=None):
 
 
 def timesheet_access_message(state):
-    if state == "login_required":
-        return "Sign in with Google to view or edit your weekly time sheet."
-    if state == "unverified":
-        return "The signed-in Google account is not a verified email match, so this time sheet stays closed."
-    if state == "unmapped":
-        return "This Google account is not mapped to a time-sheet employee, so this time sheet stays closed."
+    if state == "pins_not_configured":
+        return "PIN not set up yet - ask the office"
+    if state == "pin_required":
+        return "Enter your time-sheet PIN once. This phone will remember you."
+    if state == "pin_locked":
+        return "Too many wrong PINs. Close this page and open the app again, or ask the office."
     if state == "other_employee":
-        return "You can only open your own weekly time sheet. Another employee's payroll is not shown."
+        return "This phone is remembered for a different employee. You can only open that time sheet."
     return "This weekly time sheet is not available."
 
 
-def show_timesheet_signin_controls(key_prefix="ts_auth"):
-    """Sign-in chrome for timesheet protection only. Does not lock the rest of the app."""
-    if not timesheet_auth_configured():
+def timesheet_request_cookie(name):
+    """Read one cookie from the request. st.context.cookies is read-only."""
+    try:
+        cookies = st.context.cookies
+        if cookies is None:
+            return ""
+        try:
+            value = cookies.get(name, "")
+        except Exception:
+            value = cookies[name] if name in cookies else ""
+    except Exception:
+        return ""
+    if isinstance(value, (list, tuple)):
+        value = value[0] if value else ""
+    return timesheet_pin.normalize_cookie_token(value)
+
+
+def _timesheet_cookie_secure():
+    try:
+        url = _cell(getattr(st.context, "url", "") or "")
+    except Exception:
+        url = ""
+    if url.startswith("http://"):
+        return False
+    return True
+
+
+def _timesheet_cookie_controller():
+    """Browser cookie writer. Seed session state so the component does not read all cookies."""
+    from streamlit_cookies_controller import CookieController
+    key = "cvh_timesheet_cookie_writer"
+    if key not in st.session_state:
+        st.session_state[key] = {}
+    return CookieController(key=key)
+
+
+def timesheet_flush_pending_cookie():
+    """Set the signed device cookie once after a correct PIN. Does not store the PIN."""
+    token = st.session_state.get("timesheet_pin_cookie_token")
+    if not token or st.session_state.get("timesheet_pin_cookie_written"):
         return
-    user = timesheet_user_info()
-    providers = timesheet_auth_login_providers()
-    if user.get("is_logged_in"):
-        identity = timesheet_employee_for_identity(user)
-        if identity:
-            st.caption("Signed in as " + identity + ".")
+    try:
+        expires = datetime.now(ZoneInfo("UTC")) + timedelta(seconds=timesheet_pin.COOKIE_TTL_SEC)
+        _timesheet_cookie_controller().set(
+            timesheet_pin.COOKIE_NAME,
+            token,
+            path="/",
+            expires=expires,
+            max_age=timesheet_pin.COOKIE_TTL_SEC,
+            secure=_timesheet_cookie_secure(),
+            same_site="lax",
+        )
+    except Exception:
+        st.caption("This visit will remember you, but the phone could not save it. Ask the office if it keeps asking for the PIN.")
+        return
+    st.session_state["timesheet_pin_cookie_written"] = True
+
+
+def timesheet_forget_device():
+    """Clear the remembered employee in this session and in the browser cookie."""
+    st.session_state.pop("timesheet_pin_employee", None)
+    st.session_state.pop("timesheet_pin_employee_iat", None)
+    st.session_state.pop("timesheet_pin_cookie_token", None)
+    st.session_state["timesheet_pin_cookie_written"] = True
+    st.session_state["timesheet_pin_failures"] = 0
+    try:
+        _timesheet_cookie_controller().remove(
+            timesheet_pin.COOKIE_NAME,
+            path="/",
+            secure=_timesheet_cookie_secure(),
+            same_site="lax",
+        )
+    except Exception:
+        st.caption("This visit is cleared. If the phone still opens the old time sheet, close the page and ask the office.")
+
+
+def _timesheet_queue_cookie(employee, secret, now=None):
+    st.session_state["timesheet_pin_cookie_token"] = timesheet_pin.sign_device_cookie(
+        employee, secret, now=now,
+    )
+    st.session_state["timesheet_pin_cookie_written"] = False
+    st.session_state["timesheet_pin_employee_iat"] = int(now if now is not None else __import__("time").time())
+
+
+def timesheet_verified_pin_employee(secrets=None):
+    """Employee remembered on this phone, or empty. Never reads st.user."""
+    if secrets is None:
+        secrets = _mail_runtime_secrets()
+    cached = ""
+    try:
+        cached = _cell(st.session_state.get("timesheet_pin_employee"))
+    except Exception:
+        cached = ""
+    secret = timesheet_pin.cookie_secret(secrets)
+    if cached and timesheet_pin.employee_allowed(cached):
+        _timesheet_refresh_cookie_if_stale(cached, secret)
+        return cached
+    if not secret:
+        return ""
+    claims = timesheet_pin.device_cookie_claims(timesheet_request_cookie(timesheet_pin.COOKIE_NAME), secret)
+    if not claims:
+        return ""
+    employee = claims["employee"]
+    try:
+        st.session_state["timesheet_pin_employee"] = employee
+        st.session_state["timesheet_pin_employee_iat"] = int(claims["iat"])
+        st.session_state["timesheet_pin_failures"] = 0
+    except Exception:
+        return employee
+    _timesheet_refresh_cookie_if_stale(employee, secret)
+    return employee
+
+
+def _timesheet_refresh_cookie_if_stale(employee, secret):
+    """Re-issue the cookie on a later visit so a browser lifetime cap does not forget the phone."""
+    if not secret or st.session_state.get("timesheet_pin_cookie_refreshed"):
+        return
+    try:
+        issued = int(st.session_state.get("timesheet_pin_employee_iat") or 0)
+    except Exception:
+        return
+    if issued <= 0:
+        return
+    age = __import__("time").time() - issued
+    if age < timesheet_pin.COOKIE_REFRESH_AFTER_SEC:
+        return
+    try:
+        _timesheet_queue_cookie(employee, secret)
+        st.session_state["timesheet_pin_cookie_refreshed"] = True
+    except Exception:
+        return
+
+
+def show_timesheet_switch_control(key_prefix="ts_pin"):
+    """Offer a way off a remembered phone. Does not require a PIN to see the Employees page."""
+    try:
+        timesheet_flush_pending_cookie()
+        remembered = _cell(st.session_state.get("timesheet_pin_employee"))
+    except Exception:
+        return
+    if not remembered:
+        return
+    st.caption("This phone is remembered as " + remembered + ".")
+    if st.button("Not you? Switch employee", key=key_prefix + "_switch"):
+        timesheet_forget_device()
+        st.rerun()
+
+
+def show_timesheet_pin_gate(employee, key_prefix="ts_pin"):
+    """Return True when this phone may see and send only this employee's time sheet."""
+    access = timesheet_access_state(employee)
+    if access == "allowed":
+        show_timesheet_switch_control(key_prefix)
+        return True
+    if access == "pins_not_configured":
+        st.info("PIN not set up yet - ask the office")
+        show_timesheet_switch_control(key_prefix + "_unset")
+        return False
+    if access == "other_employee":
+        remembered = ""
+        try:
+            remembered = _cell(st.session_state.get("timesheet_pin_employee"))
+        except Exception:
+            remembered = ""
+        if remembered:
+            st.info("This phone is remembered as " + remembered + ". You can only open that time sheet.")
         else:
-            st.caption("Signed in, but this account is not mapped to a time-sheet employee.")
-        if st.button("Sign out", key=key_prefix + "_logout"):
-            st.logout()
+            st.info(timesheet_access_message(access))
+        show_timesheet_switch_control(key_prefix + "_other")
+        return False
+    if access == "pin_locked":
+        st.error(timesheet_access_message(access))
+        return False
+    st.caption("Enter your time-sheet PIN once. This phone will remember you.")
+    pin = st.text_input("PIN", type="password", key=key_prefix + "_pin")
+    if st.button("Continue", key=key_prefix + "_continue", use_container_width=True):
+        secrets = _mail_runtime_secrets()
+        status, failures = timesheet_pin.attempt_pin(
+            employee, pin, secrets, _timesheet_pin_failures(),
+        )
+        st.session_state["timesheet_pin_failures"] = failures
+        if status == "ok":
+            secret = timesheet_pin.cookie_secret(secrets)
+            st.session_state["timesheet_pin_employee"] = _cell(employee)
+            st.session_state.pop(key_prefix + "_pin", None)
+            try:
+                _timesheet_queue_cookie(employee, secret)
+            except Exception:
+                st.session_state["timesheet_pin_cookie_token"] = ""
             st.rerun()
-        return
-    if "google" in providers and "microsoft" in providers:
-        st.caption(
-            "Sign in with the Google or Microsoft account listed for you to open your time sheet. "
-            "That sign-in account can be different from the mailbox that will send the PDF."
-        )
-    elif "microsoft" in providers and "google" not in providers and "default" not in providers:
-        st.caption(
-            "Sign in with the Microsoft account listed for you to open your time sheet. "
-            "That sign-in account can be different from the mailbox that will send the PDF."
-        )
-    else:
-        st.caption(
-            "Sign in with the Google account listed for you to open your time sheet. "
-            "That sign-in account can be different from the mailbox that will send the PDF."
-        )
-    if "google" in providers or "default" in providers:
-        if st.button("Sign in with Google", key=key_prefix + "_login_google"):
-            if "google" in providers:
-                st.login("google")
-            else:
-                st.login()
-    if "microsoft" in providers:
-        if st.button("Sign in with Microsoft", key=key_prefix + "_login_microsoft"):
-            st.login("microsoft")
+        elif status == "locked":
+            st.rerun()
+        elif status == "not_configured":
+            st.info("PIN not set up yet - ask the office")
+        elif status == "empty":
+            st.error("Enter your PIN.")
+        else:
+            left = timesheet_pin.MAX_ATTEMPTS - int(failures or 0)
+            st.error("That PIN is not right. " + str(left) + " tries left on this visit.")
+    return False
 
 
 def timesheet_bundle_path(filename):
@@ -4881,10 +5056,7 @@ def show_anthony_timesheet(employee):
     """Anthony Root's official daily-row weekly time sheet."""
     st.subheader("Time Sheet")
     st.caption("Official time sheet for Anthony Root. Name is filled from this employee page.")
-    access = timesheet_access_state(employee)
-    if access not in ("allowed", "auth_not_configured"):
-        st.info(timesheet_access_message(access))
-        show_timesheet_signin_controls(key_prefix="ts_gate_" + employee_button_key(employee))
+    if not show_timesheet_pin_gate(employee, "ts_gate_" + employee_button_key(employee)):
         return
     today = datetime.now(ZoneInfo("America/Los_Angeles")).date()
     try:
@@ -5032,10 +5204,7 @@ def show_employee_timesheet(employee):
     """Weekly time sheet for one eligible employee, matching the official form."""
     st.subheader("Weekly Time Sheet")
     st.caption("Official Central Valley Helicopters weekly time sheet. Name is filled from this employee page.")
-    access = timesheet_access_state(employee)
-    if access not in ("allowed", "auth_not_configured"):
-        st.info(timesheet_access_message(access))
-        show_timesheet_signin_controls(key_prefix="ts_gate_" + employee_button_key(employee))
+    if not show_timesheet_pin_gate(employee, "ts_gate_" + employee_button_key(employee)):
         return
     today = datetime.now(ZoneInfo("America/Los_Angeles")).date()
     try:
@@ -5490,9 +5659,10 @@ def show_timesheet_email_section(employee, preview, saved=None, form_ok=False, p
         filename = timesheet_pdf_filename(preview)
     else:
         filename = ""
-    identity = timesheet_employee_for_identity(secrets=secrets)
-    signin_email = timesheet_verified_signin_email() or ""
-    access_ok = timesheet_access_state(employee, secrets=secrets) == "allowed"
+    identity = timesheet_verified_pin_employee(secrets)
+    access_ok = timesheet_access_state(
+        employee, secrets=secrets, pin_employee=identity, failures=_timesheet_pin_failures(),
+    ) == "allowed"
     initials_ok = bool(preview and timesheet_initials_match_current(saved, preview))
     setup_ready = timesheet_mail.timesheet_mail_secure_setup_ready(secrets)
     mailbox = timesheet_mail.timesheet_mailbox_for_employee(employee, secrets) if setup_ready else None
@@ -5503,7 +5673,7 @@ def show_timesheet_email_section(employee, preview, saved=None, form_ok=False, p
         ticket = _take_timesheet_mail_ticket()
         if ticket:
             redeemed = timesheet_mail.redeem_ready_ticket_http(
-                ticket, employee, signin_email, secrets,
+                ticket, employee, identity, secrets,
             )
             if redeemed and redeemed.get("employee") == employee and "access_token" not in redeemed and "password" not in redeemed:
                 st.session_state[consent_key] = redeemed
@@ -5519,7 +5689,7 @@ def show_timesheet_email_section(employee, preview, saved=None, form_ok=False, p
         checked_key = "timesheet_mail_smtp_checked_" + employee
         if not st.session_state.get(checked_key):
             st.session_state[checked_key] = True
-            opened = timesheet_mail.open_smtp_session_http(employee, signin_email, secrets)
+            opened = timesheet_mail.open_smtp_session_http(employee, identity, secrets)
             if opened and opened.get("employee") == employee and "password" not in opened and "access_token" not in opened:
                 st.session_state[consent_key] = opened
                 st.rerun()
@@ -5564,6 +5734,8 @@ def show_timesheet_email_section(employee, preview, saved=None, form_ok=False, p
             saved=saved,
             current=preview,
             secrets=secrets,
+            pin_employee=identity,
+            failures=_timesheet_pin_failures(),
         )
     else:
         block = timesheet_mail.timesheet_mail_block_reason(
@@ -5613,7 +5785,12 @@ def show_timesheet_email_section(employee, preview, saved=None, form_ok=False, p
                 if start:
                     label = "Authorize " + mailbox["provider"] + " to send this timesheet"
                     st.link_button(label, start, use_container_width=True)
-                    st.caption("Signing in does not grant send permission. Mail access is session-only and expires in about an hour; you will need to authorize again later.")
+                    st.caption(
+                        "A time-sheet PIN does not grant send permission. "
+                        "Gmail shows its consent screen each time you authorize. "
+                        "That approval is not stored as a refresh token and expires in about an hour, "
+                        "so you approve again after that. You do not approve on every Send while it is still active."
+                    )
         send_clicked = st.button(
             "Send to " + recipient if can_send else "Email to " + recipient,
             disabled=not can_send,
@@ -5626,7 +5803,7 @@ def show_timesheet_email_section(employee, preview, saved=None, form_ok=False, p
                 pdf_bytes,
                 filename,
                 secrets=secrets,
-                signin_email=signin_email,
+                employee_key=identity,
                 user_employee=identity,
                 preview_pdf_bytes=pdf_bytes,
                 initials_match=True,
@@ -5639,7 +5816,7 @@ def show_timesheet_email_section(employee, preview, saved=None, form_ok=False, p
                 "error": timesheet_mail.scrub_audit_detail(result.get("error") or ""),
             }
             try:
-                apply_timesheet_send_result(preview, result)
+                apply_timesheet_send_result(preview, result, pin_employee=identity)
             except Exception as exc:
                 flash["audit_error"] = timesheet_mail.scrub_audit_detail(exc)
             st.session_state["timesheet_mail_flash_" + employee] = flash
@@ -5665,7 +5842,8 @@ def show_timesheet_email_section(employee, preview, saved=None, form_ok=False, p
 
 def show_employees_page():
     """Employee buttons at the top, Calendar below, and per-person pages."""
-    show_timesheet_signin_controls(key_prefix="employees_auth")
+    timesheet_verified_pin_employee()
+    show_timesheet_switch_control(key_prefix="employees_pin")
     selected = _cell(st.session_state.get("employees_selected"))
     show_cal = bool(st.session_state.get("employees_show_calendar"))
     names = list(EMPLOYEES)

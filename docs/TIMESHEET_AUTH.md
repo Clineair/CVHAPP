@@ -9,6 +9,38 @@ Ron or shared mailbox sender. Each employee must send from their own authorized
 mailbox, only to `patti@centralvalleyheli.com`, only after they review and
 explicitly press Send.
 
+## Opening a time sheet (employee PIN)
+
+Employees do not sign in with Google to open a time sheet. They enter a PIN
+once on that phone. The app stores an HMAC-signed cookie (`cvh_timesheet_device`)
+for six years, using `[timesheet_pin].cookie_secret`. The cookie names the
+employee. It does not contain the PIN. A remembered phone can see and send
+only that employee's time sheet. **Not you? Switch employee** clears the cookie.
+
+Chrome caps how long a browser will keep a cookie (about 400 days). Each visit
+at least 30 days after the cookie was issued refreshes it, so a phone that
+opens the app at least once a year stays remembered. Clearing site data, or
+Switch employee, forgets the phone. Changing a PIN hash does not sign out
+phones that are already remembered. Rotating `cookie_secret` does.
+
+The Employees list and the calendar stay open with no PIN. Ron Cline has no
+time sheet and no PIN.
+
+If `[timesheet_pins]` or `[timesheet_pin].cookie_secret` is missing, the time
+sheet shows **PIN not set up yet - ask the office** and does not crash.
+A leftover `[auth]` block is ignored. The app does not call `st.login`.
+
+Generate hashes with `python tools/make_pin_hash.py --employee "Carl Mulvaney"`
+(type the PIN at the prompt). Placeholders are in `secrets.example.toml`.
+Keys, same names as `[timesheet_employees]` and `[timesheet_employee_mail]`:
+
+- `[timesheet_pin]` `cookie_secret`
+- `[timesheet_pins]` `Carl Mulvaney`, `Anthony Root`, `Barry Markham`,
+  `Robert Rackley`, `Gary Grant`, `Skylar Fingerle`
+
+Five wrong PINs in one visit lock that visit. Close the page and open it
+again to try again. The lock is not shared across phones.
+
 ## Implemented vs still a placeholder
 
 **Implemented in this branch, but live sending stays off:**
@@ -29,12 +61,10 @@ explicitly press Send.
   feed the send gate. A duplicate Sent claim is blocked. A timeout or 5xx is
   Uncertain and is not retried unless the employee explicitly confirms they
   checked Sent.
-- Google sign-in for time sheets (`st.login()` / `st.user` / `st.logout()`,
-  reserved callback `/oauth2callback`). Sign-in email may differ from the
-  send-from mailbox. The sign-in client is separate from the `gmail.send`
-  client. Optional Microsoft sign-in remains in the code if a named
-  `[auth.microsoft]` client is added later; it is **not** required for the
-  current six employees.
+- Employee PIN plus a long-lived HMAC device cookie for opening a time sheet.
+  Google sign-in (`st.login` / `[auth]`) is not used for access. A leftover
+  `[auth]` section does not have to be removed. Gmail send is still a separate
+  `gmail.send` consent on the callback host.
 - Official Gmail send path (Gmail API `gmail.send`, authorization-code +
   PKCE, expiring single-use HMAC state, mailbox email from official userinfo
   must match the configured send-from address).
@@ -126,23 +156,18 @@ Do not treat a `mailto:` helper as fulfillment of in-app send.
 ## Identity for iCloud and Yahoo staff
 
 Do not assume every employee has a Google mailbox. They do not need one to
-*send*, because send-from and sign-in are configured separately.
+open a time sheet or to send. Opening the sheet is the PIN cookie. Sending
+still uses the mailbox in `[timesheet_employee_mail]`.
 
-For the current setup, time-sheet sign-in uses Streamlit's documented Google
-OpenID Connect flow. An iCloud or Yahoo employee can sign in with a Google
-account that is listed for them in `[timesheet_employees]`, then later send
-from iCloud or Yahoo once the SMTP vault exists.
+iCloud and Yahoo employees send through the vaulted app-password path. Gmail
+employees (Robert Rackley, Gary Grant, Anthony Root) authorize `gmail.send`
+on the existing callback. The signed request names the PIN-verified employee
+key. It does not embed `st.user`.
 
-There is no official Streamlit iCloud or Yahoo login. Sign in with Apple would
-need an [Apple Developer Program](https://developer.apple.com/programs/)
-membership (currently $99 USD per year) and is not part of this step.
-Optional Microsoft sign-in is already wired if `[auth.microsoft]` is added
-later; it is not a current prerequisite because no current employee sends
-from Hotmail or Outlook, and Google sign-in covers the planned access path.
-
-If someone has neither a Google nor a Microsoft account, they cannot use
-official Streamlit login until a later option (Apple, or a magic link after
-the SMTP vault exists) is approved.
+Gmail uses `access_type=online` and `prompt=consent`. No refresh token is
+stored. The access token lives only in the callback store for about an hour.
+The Google consent screen appears each time they authorize, which is when
+that token is missing or expired, not on every Send while it is still valid.
 
 ## Recommended callback host and verified cost
 
@@ -369,11 +394,12 @@ client exist, without waiting for the iCloud/Yahoo secrets.
   Those stay fail-closed until a vaulted SMTP path exists.
 - `mailto:`, Gmail compose URLs, and Outlook compose URLs cannot attach the
   generated PDF (RFC 6068). They are not used as fulfillment.
-- Unmapped, unverified, or someone else's sign-in account cannot open a
-  time sheet or send once `[auth]` is configured.
-- Stale initials cannot send. Until `[auth]`, `[timesheet_mail].enabled`,
+- A phone remembered for someone else cannot open or send another employee's
+  time sheet. Without `[timesheet_pins]`, the sheet stays closed and shows
+  the office message.
+- Stale initials cannot send. Until `[timesheet_mail].enabled`,
   the Gmail client, and the backend (and, for iCloud/Yahoo, the SMTP vault)
-  are configured, the Email button stays disabled.
+  are configured, the Email button stays disabled. `[auth]` is not required.
 
 ## What remains
 
@@ -422,16 +448,19 @@ until you finish the relevant path and flip it yourself.
    `project` to the GCP project. Gmail employees can be turned on without
    those three secrets.
 7. Put the same non-password configuration on the callback
-   (`TIMESHEET_MAIL_SECRETS_JSON`), including `timesheet_employees`,
-   `timesheet_employee_mail`, the Gmail send client, `state_secret`, and
-   `recipient`. The sign-in email on the HMAC request must map to the
-   employee, and the Gmail userinfo address must match that employee's
-   send-from mailbox.
+   (`TIMESHEET_MAIL_SECRETS_JSON`), including `timesheet_employee_mail`,
+   the Gmail send client, `state_secret`, and `recipient`. The HMAC request
+   carries `employee_key` (the PIN-verified employee name). HMAC validation
+   still uses `state_secret`. The Gmail userinfo address must match that
+   employee's send-from mailbox. A callback image from before the PIN change
+   still requires `signin_email` to map through `[timesheet_employees]` and
+   will deny `employee_key`-only requests until that image is redeployed.
+   Do not deploy that change until it is explicitly approved.
 8. Confirm a timesheet still saves, the Email button stays disabled while
-   `enabled` is false, then set `enabled = true`. Each employee signs in,
-   initials the current week, previews the PDF, authorizes Gmail send or
-   waits for the vaulted SMTP session, and presses Send. The first unclear
-   result must be checked in the sender's Sent folder before anyone sends
-   that same week again.
+   `enabled` is false, then set `enabled = true`. Each employee enters their
+   PIN once, initials the current week, previews the PDF, authorizes Gmail
+   send or waits for the vaulted SMTP session, and presses Send. The first
+   unclear result must be checked in the sender's Sent folder before anyone
+   sends that same week again.
 9. Do not merge this PR, enable production sending, grant live mail consent,
    or send a test timesheet until you explicitly approve that later step.

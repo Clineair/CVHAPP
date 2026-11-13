@@ -258,13 +258,30 @@ def _authenticated_state(secrets, body, store, now=None):
 
 
 def _require_same_employee(secrets, state):
+    """Bind the HMAC payload to one employee.
+
+    New Streamlit requests carry employee_key, the PIN-verified employee name.
+    The HMAC check (state_secret via timesheet_verify_state) is unchanged.
+    A payload that still has only signin_email is accepted so an older client
+    keeps working after this callback is redeployed. The running Cloud Run
+    revision from before this change does not read employee_key.
+    """
     employee = tm._cell(state.get("employee"))
+    employee_key = tm._cell(state.get("employee_key"))
+    if employee_key:
+        if employee and employee_key == employee and tm.timesheet_pin_employee_ok(employee):
+            return employee, None
+        return None, (403, {
+            "ok": False,
+            "status": tm.TIMESHEET_MAIL_STATUS_DENIED,
+            "error": "Only the PIN-verified employee can send their own initialed time sheet. This app does not send mail for others.",
+        })
     mapped = tm.timesheet_employee_for_signin_email(state.get("signin_email"), secrets)
     if not employee or not mapped or mapped != employee:
         return None, (403, {
             "ok": False,
             "status": tm.TIMESHEET_MAIL_STATUS_DENIED,
-            "error": "Only the signed-in employee can send their own initialed time sheet. This app does not send mail for others.",
+            "error": "Only the PIN-verified employee can send their own initialed time sheet. This app does not send mail for others.",
         })
     return employee, None
 

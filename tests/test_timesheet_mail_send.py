@@ -879,6 +879,92 @@ class TimesheetSendHttpTests(unittest.TestCase):
         self.assertNotIn("barry.mail@example.com", detail)
         self.assertNotIn("abcd", detail)
 
+    def test_employee_key_is_the_send_identity_and_legacy_email_still_verifies(self):
+        secrets = _secrets()
+        secrets.pop("timesheet_employees", None)
+        store = tm.MemoryMailTokenStore()
+        store.put_access("Gary Grant", "gmail", "gary.mail@example.com", "gary-access-token")
+        record = _record()
+        pdf = _pdf()
+        calls = []
+
+        def gmail_post(url, headers=None, json=None, timeout=30):
+            calls.append(1)
+            return 200, "{}"
+
+        signed = tm.timesheet_sign_api_request({
+            "kind": "send",
+            "employee": "Gary Grant",
+            "employee_key": "Gary Grant",
+            "week": record["Week Of"],
+            "content_hash": record["Content Hash"],
+            "saved_content_hash": record["Content Hash"],
+            "initials": "GG",
+            "initials_match": True,
+            "filename": "a.pdf",
+            "pdf_sha256": tm.timesheet_pdf_sha256(pdf),
+            "preview_sha256": tm.timesheet_pdf_sha256(pdf),
+            "audit": [],
+        }, tm.timesheet_mail_state_secret(secrets))
+        body = json.dumps({"token": signed, "pdf_base64": base64.b64encode(pdf).decode("ascii")}).encode("utf-8")
+        status, payload, _kind = cb.route_request(
+            "POST", "/timesheet-mail/send", body_bytes=body, secrets=secrets, store=store, http_post=gmail_post,
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["status"], tm.TIMESHEET_MAIL_STATUS_SENT)
+        self.assertEqual(calls, [1])
+        self.assertNotIn("signin_email", tm.timesheet_verify_state(signed, tm.timesheet_mail_state_secret(secrets)))
+
+        mixed = _secrets()
+        store2 = tm.MemoryMailTokenStore()
+        store2.put_access("Gary Grant", "gmail", "gary.mail@example.com", "gary-access-token")
+        bad = tm.timesheet_sign_api_request({
+            "kind": "send",
+            "employee": "Gary Grant",
+            "employee_key": "Carl Mulvaney",
+            "signin_email": "gary.signin@example.com",
+            "week": record["Week Of"],
+            "content_hash": record["Content Hash"],
+            "saved_content_hash": record["Content Hash"],
+            "initials": "GG",
+            "initials_match": True,
+            "filename": "a.pdf",
+            "pdf_sha256": tm.timesheet_pdf_sha256(pdf),
+            "preview_sha256": tm.timesheet_pdf_sha256(pdf),
+            "audit": [],
+        }, tm.timesheet_mail_state_secret(mixed))
+        bad_body = json.dumps({"token": bad, "pdf_base64": base64.b64encode(pdf).decode("ascii")}).encode("utf-8")
+        status, payload, _kind = cb.route_request(
+            "POST", "/timesheet-mail/send", body_bytes=bad_body, secrets=mixed, store=store2, http_post=gmail_post,
+        )
+        self.assertEqual(status, 403)
+        self.assertIn("own initialed", payload["error"])
+        self.assertEqual(calls, [1])
+
+        legacy_store = tm.MemoryMailTokenStore()
+        legacy_store.put_access("Gary Grant", "gmail", "gary.mail@example.com", "gary-access-token")
+        legacy = tm.timesheet_sign_api_request({
+            "kind": "send",
+            "employee": "Gary Grant",
+            "signin_email": "gary.signin@example.com",
+            "week": record["Week Of"],
+            "content_hash": record["Content Hash"],
+            "saved_content_hash": record["Content Hash"],
+            "initials": "GG",
+            "initials_match": True,
+            "filename": "a.pdf",
+            "pdf_sha256": tm.timesheet_pdf_sha256(pdf),
+            "preview_sha256": tm.timesheet_pdf_sha256(pdf),
+            "audit": [],
+        }, tm.timesheet_mail_state_secret(mixed))
+        legacy_body = json.dumps({"token": legacy, "pdf_base64": base64.b64encode(pdf).decode("ascii")}).encode("utf-8")
+        status, payload, _kind = cb.route_request(
+            "POST", "/timesheet-mail/send", body_bytes=legacy_body, secrets=mixed, store=legacy_store, http_post=gmail_post,
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["status"], tm.TIMESHEET_MAIL_STATUS_SENT)
+        self.assertEqual(calls, [1, 1])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -142,7 +142,8 @@ def _exec_equipment_helpers():
     if repo_root not in sys.path:
         sys.path.insert(0, repo_root)
     import timesheet_mail
-    scope = {"datetime": datetime, "date": date, "dt_time": dt_time, "timedelta": timedelta, "ZoneInfo": ZoneInfo, "uuid": uuid, "timesheet_mail": timesheet_mail, "__file__": str(APP)}
+    import timesheet_pin
+    scope = {"datetime": datetime, "date": date, "dt_time": dt_time, "timedelta": timedelta, "ZoneInfo": ZoneInfo, "uuid": uuid, "timesheet_mail": timesheet_mail, "timesheet_pin": timesheet_pin, "__file__": str(APP)}
     exec(compile(ast.Module(body=nodes, type_ignores=[]), str(APP), "exec"), scope)
     return scope
 
@@ -854,7 +855,7 @@ class PlaceholderAndLogicTests(unittest.TestCase):
         self.assertFalse(s["timesheet_email_can_send"](rec, configured=False))
         self.assertFalse(s["timesheet_email_can_send"](rec, configured=True))
         reason = s["timesheet_email_block_reason"](rec, configured=False)
-        self.assertIn("does not send mail", reason)
+        self.assertEqual(reason, "PIN not set up yet - ask the office")
         self.assertIn("patti@centralvalleyheli.com", s["TIMESHEET_EMAIL_TO"])
 
         pdf = s["build_timesheet_pdf"](rec)
@@ -991,64 +992,102 @@ class PlaceholderAndLogicTests(unittest.TestCase):
         self.assertNotIn("tokens", info)
         self.assertTrue(info["email_verified"])
 
-        # Without auth configured, forms stay available but composer and send stay off.
-        self.assertEqual(s["timesheet_access_state"]("Carl Mulvaney", user=logged_out, secrets={}), "auth_not_configured")
-        self.assertTrue(s["timesheet_can_view_or_edit"]("Carl Mulvaney", user=logged_out, secrets={}))
+        import timesheet_pin
+        pin_secrets = {
+            "auth": auth_secrets["auth"],
+            "timesheet_pin": {"cookie_secret": "test-cookie-secret-0123456789"},
+            "timesheet_pins": {
+                "Carl Mulvaney": timesheet_pin.make_pin_hash("2468"),
+                "Barry Markham": timesheet_pin.make_pin_hash("1357"),
+            },
+        }
+        # No PIN secrets: closed with the office message. A Google user does not open it.
+        self.assertEqual(
+            s["timesheet_access_state"]("Carl Mulvaney", user=logged_out, secrets={}, pin_employee="", failures=0),
+            "pins_not_configured",
+        )
+        self.assertEqual(s["timesheet_access_message"]("pins_not_configured"), "PIN not set up yet - ask the office")
+        self.assertFalse(s["timesheet_can_view_or_edit"]("Carl Mulvaney", user=logged_out, secrets={}))
         self.assertFalse(s["timesheet_composer_allowed"](rec, user=carl, saved=rec, current=rec, secrets={}))
         self.assertFalse(s["timesheet_email_can_send"](rec, configured=True, user=carl, secrets=auth_secrets))
-
-        # Auth on: unauthenticated, other employee, unmapped, unverified cannot view or compose.
         self.assertEqual(
-            s["timesheet_access_state"]("Carl Mulvaney", user=logged_out, secrets=auth_secrets),
-            "login_required",
+            s["timesheet_access_state"]("Carl Mulvaney", user=carl, secrets=auth_secrets, pin_employee="", failures=0),
+            "pins_not_configured",
         )
-        self.assertFalse(s["timesheet_can_view_or_edit"]("Carl Mulvaney", user=logged_out, secrets=auth_secrets))
-        self.assertFalse(s["timesheet_composer_allowed"](rec, user=logged_out, saved=rec, current=rec, secrets=auth_secrets))
+        self.assertFalse(s["timesheet_can_view_or_edit"]("Carl Mulvaney", user=carl, secrets=auth_secrets))
+        office = s["timesheet_email_block_reason"](
+            rec, user=carl, saved=rec, current=rec, secrets=auth_secrets, pin_employee="",
+        )
+        self.assertEqual(office, "PIN not set up yet - ask the office")
+
+        # PIN on: no cookie, another employee, and a Google account cannot view or compose.
         self.assertEqual(
-            s["timesheet_access_state"]("Carl Mulvaney", user=barry, secrets=auth_secrets),
+            s["timesheet_access_state"]("Carl Mulvaney", user=logged_out, secrets=pin_secrets, pin_employee="", failures=0),
+            "pin_required",
+        )
+        self.assertFalse(s["timesheet_can_view_or_edit"]("Carl Mulvaney", secrets=pin_secrets, pin_employee="", failures=0))
+        self.assertFalse(s["timesheet_composer_allowed"](
+            rec, user=logged_out, saved=rec, current=rec, secrets=pin_secrets, pin_employee="", failures=0,
+        ))
+        self.assertEqual(
+            s["timesheet_access_state"]("Carl Mulvaney", user=barry, secrets=pin_secrets, pin_employee="Barry Markham", failures=0),
             "other_employee",
         )
-        self.assertFalse(s["timesheet_can_view_or_edit"]("Carl Mulvaney", user=barry, secrets=auth_secrets))
-        self.assertFalse(s["timesheet_composer_allowed"](rec, user=barry, saved=rec, current=rec, secrets=auth_secrets))
+        self.assertFalse(s["timesheet_can_view_or_edit"]("Carl Mulvaney", user=barry, secrets=pin_secrets, pin_employee="Barry Markham"))
+        self.assertFalse(s["timesheet_composer_allowed"](
+            rec, user=barry, saved=rec, current=rec, secrets=pin_secrets, pin_employee="Barry Markham",
+        ))
         self.assertEqual(
-            s["timesheet_access_state"]("Carl Mulvaney", user=unmapped, secrets=auth_secrets),
-            "unmapped",
+            s["timesheet_access_state"]("Carl Mulvaney", user=carl, secrets=pin_secrets, pin_employee="", failures=0),
+            "pin_required",
         )
-        self.assertFalse(s["timesheet_can_view_or_edit"]("Carl Mulvaney", user=unmapped, secrets=auth_secrets))
+        self.assertFalse(s["timesheet_can_view_or_edit"]("Carl Mulvaney", user=carl, secrets=pin_secrets))
         self.assertEqual(
-            s["timesheet_access_state"]("Carl Mulvaney", user=unverified, secrets=auth_secrets),
-            "unverified",
+            s["timesheet_access_state"]("Carl Mulvaney", secrets=pin_secrets, pin_employee="", failures=timesheet_pin.MAX_ATTEMPTS),
+            "pin_locked",
         )
-        self.assertFalse(s["timesheet_can_view_or_edit"]("Carl Mulvaney", user=unverified, secrets=auth_secrets))
-        self.assertFalse(s["timesheet_can_view_or_edit"]("Carl Mulvaney", user=carl, secrets=empty_map))
-        # Display name must not override the email mapping.
+        self.assertEqual(
+            s["timesheet_access_state"]("Carl Mulvaney", secrets=pin_secrets, pin_employee="Carl Mulvaney", failures=timesheet_pin.MAX_ATTEMPTS),
+            "allowed",
+        )
+        # Display name must not override the email mapping. It also does not open a time sheet.
         self.assertEqual(s["timesheet_employee_for_identity"](barry, secrets=auth_secrets), "Barry Markham")
-        self.assertTrue(s["timesheet_can_view_or_edit"]("Carl Mulvaney", user=carl, secrets=auth_secrets))
+        self.assertTrue(s["timesheet_can_view_or_edit"](
+            "Carl Mulvaney", user=carl, secrets=pin_secrets, pin_employee="Carl Mulvaney",
+        ))
+        self.assertFalse(timesheet_pin.verify_employee_pin("Barry Markham", "2468", pin_secrets))
+        self.assertEqual(timesheet_pin.attempt_pin("Carl Mulvaney", "2468", pin_secrets, 0), ("ok", 0))
+        self.assertEqual(timesheet_pin.attempt_pin("Carl Mulvaney", "0000", pin_secrets, 4), ("locked", 5))
 
         # Stale initials and wrong recipient cannot compose. Send stays false.
-        self.assertTrue(s["timesheet_composer_allowed"](rec, user=carl, saved=rec, current=rec, secrets=auth_secrets))
-        self.assertFalse(s["timesheet_composer_allowed"](rec, user=carl, saved=rec, current=stale, secrets=auth_secrets))
+        self.assertTrue(s["timesheet_composer_allowed"](
+            rec, user=carl, saved=rec, current=rec, secrets=pin_secrets, pin_employee="Carl Mulvaney",
+        ))
+        self.assertFalse(s["timesheet_composer_allowed"](
+            rec, user=carl, saved=rec, current=stale, secrets=pin_secrets, pin_employee="Carl Mulvaney",
+        ))
         self.assertFalse(
             s["timesheet_composer_allowed"](
-                rec, user=carl, saved=rec, current=rec, secrets=auth_secrets,
+                rec, user=carl, saved=rec, current=rec, secrets=pin_secrets, pin_employee="Carl Mulvaney",
                 to="other@example.com",
             )
         )
         with self.assertRaisesRegex(ValueError, "can only be addressed to"):
             s["timesheet_email_compose"](rec, to="other@example.com")
         # Mailto is not the send path. In-app send stays off without the callback service.
-        self.assertFalse(s["timesheet_email_can_send"](rec, user=carl, secrets=auth_secrets))
+        self.assertFalse(s["timesheet_email_can_send"](rec, user=carl, secrets=pin_secrets, pin_employee="Carl Mulvaney"))
         self.assertFalse(s["timesheet_email_can_send"](
-            rec, user=carl, secrets=auth_secrets, access_allowed=True, initials_match=True,
+            rec, user=carl, secrets=pin_secrets, pin_employee="Carl Mulvaney",
+            access_allowed=True, initials_match=True,
             pdf_bytes=b"%PDF-1.4 test", filename="sheet.pdf",
         ))
         reason = s["timesheet_email_block_reason"](
-            rec, user=carl, saved=rec, current=rec, secrets=auth_secrets,
+            rec, user=carl, saved=rec, current=rec, secrets=pin_secrets, pin_employee="Carl Mulvaney",
         )
         self.assertIn("does not send mail", reason)
         self.assertNotIn("attach the PDF yourself", reason)
         stale_reason = s["timesheet_email_block_reason"](
-            rec, user=carl, saved=rec, current=stale, secrets=auth_secrets,
+            rec, user=carl, saved=rec, current=stale, secrets=pin_secrets, pin_employee="Carl Mulvaney",
         )
         self.assertIn("Initial and save", stale_reason)
 
@@ -1079,6 +1118,9 @@ class PlaceholderAndLogicTests(unittest.TestCase):
         self.assertEqual(audit["Action"], "Composer opened")
         self.assertEqual(audit["Status"], "Opened")
         self.assertEqual(audit["Signed-in Email"], "carl.timesheet@example.com")
+        pinned = s["build_timesheet_mail_audit_record"](rec, pin_employee="Carl Mulvaney", when=when)
+        self.assertEqual(pinned["Signed-in Email"], "Carl Mulvaney")
+        self.assertNotIn("tokens", str(pinned))
         s["save_timesheet_mail_audit_record"](audit, spreadsheet=book)
         self.assertIn("Time Sheet Mail", book.sheets)
         self.assertEqual(book.sheets["Time Sheet Mail"].rows[0], s["TIMESHEET_MAIL_COLUMNS"])
@@ -1137,8 +1179,14 @@ class PlaceholderAndLogicTests(unittest.TestCase):
             "iss": "https://accounts.google.com",
         }
         self.assertEqual(s["timesheet_employee_for_identity"](anthony, secrets=named), "Anthony Root")
-        self.assertEqual(s["timesheet_access_state"]("Anthony Root", user=anthony, secrets=named), "allowed")
-        self.assertEqual(s["timesheet_access_state"]("Carl Mulvaney", user=anthony, secrets=named), "other_employee")
+        self.assertEqual(
+            s["timesheet_access_state"]("Anthony Root", user=anthony, secrets=named, pin_employee="", failures=0),
+            "pins_not_configured",
+        )
+        self.assertEqual(
+            s["timesheet_access_state"]("Carl Mulvaney", user=anthony, secrets=named, pin_employee="Anthony Root", failures=0),
+            "pins_not_configured",
+        )
         self.assertEqual(
             s["anthony_timesheet_pdf_filename"]({"Employee": "Anthony Root", "Week Of": "2026-11-08"}),
             "Anthony_Time_Sheet_Anthony_Root_2026-11-08.pdf",
@@ -1375,7 +1423,7 @@ class PlaceholderAndLogicTests(unittest.TestCase):
         self.assertFalse(s["timesheet_email_can_send"](rec, configured=False))
         self.assertFalse(s["timesheet_email_can_send"](rec, configured=True))
         reason = s["timesheet_email_block_reason"](rec, configured=False)
-        self.assertIn("does not send mail", reason)
+        self.assertEqual(reason, "PIN not set up yet - ask the office")
 
         book = FakeSpreadsheet()
         self.assertEqual(s["load_anthony_timesheet_records_readonly"](book), [])
@@ -3392,19 +3440,12 @@ class HeaderAndEquipmentPageTests(unittest.TestCase):
         self.assertTrue(any(t.value == "Employees" for t in at.title))
         self.assertFalse(any(t.value == "Ron Cline" for t in at.title))
 
-        def _assert_leave_boxes(at, name):
-            vacation = [n for n in at.number_input if n.label == "Vacation Hours"]
-            sick = [n for n in at.number_input if n.label == "Sick Hours"]
-            self.assertEqual(len(vacation), 7, name)
-            self.assertEqual(len(sick), 7, name)
-            self.assertTrue(all(float(n.value) == 0 for n in vacation), name)
-            self.assertTrue(all(float(n.value) == 0 for n in sick), name)
-
         at.button(key="employee_btn_Skylar_Fingerle").click().run()
         self.assertFalse(list(at.exception))
         self.assertTrue(any(t.value == "Skylar Fingerle" for t in at.title))
         self.assertTrue(any(t.value == "Weekly Time Sheet" for t in at.subheader))
-        _assert_leave_boxes(at, "Skylar Fingerle")
+        self.assertTrue(any("PIN not set up yet - ask the office" in (i.value or "") for i in at.info))
+        self.assertFalse(any(n.label == "Vacation Hours" for n in at.number_input))
         self.assertEqual(_employee_names(at), expected)
         # Header EMPLOYEES button returns to the list.
         at.button(key="nav_employees").click().run()
@@ -3418,14 +3459,12 @@ class HeaderAndEquipmentPageTests(unittest.TestCase):
         self.assertTrue(any(t.value == "Anthony Root" for t in at.title))
         self.assertTrue(any(t.value == "Time Sheet" for t in at.subheader))
         self.assertFalse(any(t.value == "Weekly Time Sheet" for t in at.subheader))
+        self.assertTrue(any("PIN not set up yet - ask the office" in (i.value or "") for i in at.info))
         labels = [i.label or "" for i in list(at.text_input) + list(at.text_area)]
-        self.assertTrue(any("L&I Ground Hours" in lab for lab in labels))
-        self.assertTrue(any("Survery Hrs" in lab for lab in labels))
+        self.assertFalse(any("L&I Ground Hours" in lab for lab in labels))
         self.assertFalse(any("CVH # work hours" in lab for lab in labels))
         self.assertFalse(any(n.label == "Vacation Hours" for n in at.number_input))
         self.assertFalse(any(n.label == "Sick Hours" for n in at.number_input))
-        self.assertFalse(any("Personal vechicle" in (c.value or "") for c in at.caption))
-        self.assertTrue(any((b.label or "").startswith("Email to patti@") and b.disabled for b in at.button))
         book = at.session_state.get("_workbook")
         if book is not None:
             self.assertNotIn("Anthony Time Sheets", book.sheets)
@@ -3440,7 +3479,8 @@ class HeaderAndEquipmentPageTests(unittest.TestCase):
             self.assertFalse(list(at.exception), name)
             self.assertTrue(any(t.value == name for t in at.title), name)
             self.assertTrue(any(t.value == "Weekly Time Sheet" for t in at.subheader), name)
-            _assert_leave_boxes(at, name)
+            self.assertTrue(any("PIN not set up yet - ask the office" in (i.value or "") for i in at.info), name)
+            self.assertFalse(any(n.label == "Vacation Hours" for n in at.number_input), name)
             self.assertEqual(_employee_names(at), expected)
             self.assertTrue(any(b.label == "Back" for b in at.button))
             book = at.session_state.get("_workbook")
@@ -3753,69 +3793,85 @@ class HeaderAndEquipmentPageTests(unittest.TestCase):
     def test_employee_timesheet_saves_exports_and_email_stays_disabled(self):
         from datetime import date
         from streamlit.testing.v1 import AppTest
+        import timesheet_pin
+        from streamlit.runtime.secrets import secrets_singleton
 
-        at = AppTest.from_string(equipment_offline_app(), default_timeout=30).run()
-        at.button(key="nav_employees").click().run()
-        at.button(key="employee_btn_Ron_Cline").click().run()
-        self.assertFalse(list(at.exception))
-        self.assertFalse(any(t.value == "Weekly Time Sheet" for t in at.subheader))
-        at.button(key="employee_btn_Carl_Mulvaney").click().run()
-        self.assertFalse(list(at.exception))
-        self.assertTrue(any(t.value == "Carl Mulvaney" for t in at.title))
-        self.assertTrue(any(t.value == "Weekly Time Sheet" for t in at.subheader))
-        self.assertTrue(any("Name:** Carl Mulvaney" in (m.value or "") or (m.value or "") == "**Name:** Carl Mulvaney" for m in at.markdown) or any("Carl Mulvaney" in (m.value or "") and "Name" in (m.value or "") for m in at.markdown))
-        self.assertTrue(any(d.label == "Week of (Sunday's Date)" for d in at.date_input))
-        self.assertTrue(any(b.label == "Save week" for b in at.button))
-        self.assertTrue(any(b.label == "Email to patti@centralvalleyheli.com" for b in at.button))
-        email_btn = next(b for b in at.button if b.label == "Email to patti@centralvalleyheli.com")
-        self.assertTrue(getattr(email_btn, "disabled", True) or email_btn.disabled)
-        captions = " ".join(c.value or "" for c in at.caption)
-        self.assertIn("does not send mail", captions)
-        book = at.session_state.get("_workbook")
-        if book is not None:
-            self.assertNotIn("Time Sheets", book.sheets)
+        pin_map = {
+            "timesheet_pin": {"cookie_secret": "test-cookie-secret-0123456789"},
+            "timesheet_pins": {
+                name: timesheet_pin.make_pin_hash("2468" + name[-1])
+                for name in timesheet_pin.PIN_EMPLOYEES
+            },
+        }
+        previous = secrets_singleton._programmatic_secrets
+        secrets_singleton.merge_programmatic_secrets(pin_map)
+        try:
+            at = AppTest.from_string(equipment_offline_app(), default_timeout=30).run()
+            at.session_state["timesheet_pin_employee"] = "Carl Mulvaney"
+            at.button(key="nav_employees").click().run()
+            at.button(key="employee_btn_Ron_Cline").click().run()
+            self.assertFalse(list(at.exception))
+            self.assertFalse(any(t.value == "Weekly Time Sheet" for t in at.subheader))
+            at.button(key="employee_btn_Carl_Mulvaney").click().run()
+            self.assertFalse(list(at.exception))
+            self.assertTrue(any(t.value == "Carl Mulvaney" for t in at.title))
+            self.assertTrue(any(t.value == "Weekly Time Sheet" for t in at.subheader))
+            self.assertTrue(any("Name:** Carl Mulvaney" in (m.value or "") or (m.value or "") == "**Name:** Carl Mulvaney" for m in at.markdown) or any("Carl Mulvaney" in (m.value or "") and "Name" in (m.value or "") for m in at.markdown))
+            self.assertTrue(any(d.label == "Week of (Sunday's Date)" for d in at.date_input))
+            self.assertTrue(any(b.label == "Save week" for b in at.button))
+            self.assertTrue(any(b.label == "Email to patti@centralvalleyheli.com" for b in at.button))
+            email_btn = next(b for b in at.button if b.label == "Email to patti@centralvalleyheli.com")
+            self.assertTrue(getattr(email_btn, "disabled", True) or email_btn.disabled)
+            captions = " ".join(c.value or "" for c in at.caption)
+            self.assertIn("does not send mail", captions)
+            book = at.session_state.get("_workbook")
+            if book is not None:
+                self.assertNotIn("Time Sheets", book.sheets)
 
-        # Fill Sunday hours and initials, save
-        week_input = next(d for d in at.date_input if d.label == "Week of (Sunday's Date)")
-        week_input.set_value(date(2026, 11, 8)).run()
-        self.assertFalse(list(at.exception))
-        loc = next(t for t in at.text_input if t.label == "Location")
-        loc.set_value("Shop").run()
-        cvh = next(t for t in at.text_input if t.label == "CVH # work hours")
-        cvh.set_value("8")
-        next(n for n in at.number_input if n.label == "Vacation Hours").set_value(4)
-        next(n for n in at.number_input if n.label == "Sick Hours").set_value(2)
-        next(t for t in at.text_input if t.label == "Initials (required before email)").set_value("CM")
-        next(b for b in at.button if b.label == "Save week").click().run()
-        self.assertFalse(list(at.exception))
-        self.assertTrue(any("Saved time sheet for week of 2026-11-08" in (s.value or "") for s in at.success))
-        book = at.session_state.get("_workbook")
-        self.assertIn("Time Sheets", book.sheets)
-        self.assertEqual(book.sheets["Time Sheets"].rows[0], book.sheets["Time Sheets"].rows[0])  # header present
-        header = book.sheets["Time Sheets"].rows[0]
-        row = book.sheets["Time Sheets"].rows[1]
-        self.assertEqual(row[header.index("Employee")], "Carl Mulvaney")
-        self.assertEqual(row[header.index("Week Of")], "2026-11-08")
-        self.assertEqual(row[header.index("Sun Location")], "Shop")
-        self.assertEqual(row[header.index("Sun CVH Hours")], "8")
-        self.assertEqual(row[header.index("Sun Vacation Hours")], "4")
-        self.assertEqual(row[header.index("Sun Sick Hours")], "2")
-        self.assertEqual(row[header.index("Mon Vacation Hours")], "0")
-        self.assertEqual(row[header.index("Initials")], "CM")
-        md = " ".join(m.value or "" for m in at.markdown)
-        self.assertIn("Worked hours: 8", md)
-        self.assertIn("Vacation: 4", md)
-        self.assertIn("Sick: 2", md)
-        self.assertIn("Total hours including paid leave: 14", md)
-        self.assertNotIn("Worked hours: 14", md)
-        self.assertEqual(set(book.sheets), {"Sheet1", "Time Sheets"})
+            # Fill Sunday hours and initials, save
+            week_input = next(d for d in at.date_input if d.label == "Week of (Sunday's Date)")
+            week_input.set_value(date(2026, 11, 8)).run()
+            self.assertFalse(list(at.exception))
+            loc = next(t for t in at.text_input if t.label == "Location")
+            loc.set_value("Shop").run()
+            cvh = next(t for t in at.text_input if t.label == "CVH # work hours")
+            cvh.set_value("8")
+            next(n for n in at.number_input if n.label == "Vacation Hours").set_value(4)
+            next(n for n in at.number_input if n.label == "Sick Hours").set_value(2)
+            next(t for t in at.text_input if t.label == "Initials (required before email)").set_value("CM")
+            next(b for b in at.button if b.label == "Save week").click().run()
+            self.assertFalse(list(at.exception))
+            self.assertTrue(any("Saved time sheet for week of 2026-11-08" in (s.value or "") for s in at.success))
+            book = at.session_state.get("_workbook")
+            self.assertIn("Time Sheets", book.sheets)
+            self.assertEqual(book.sheets["Time Sheets"].rows[0], book.sheets["Time Sheets"].rows[0])  # header present
+            header = book.sheets["Time Sheets"].rows[0]
+            row = book.sheets["Time Sheets"].rows[1]
+            self.assertEqual(row[header.index("Employee")], "Carl Mulvaney")
+            self.assertEqual(row[header.index("Week Of")], "2026-11-08")
+            self.assertEqual(row[header.index("Sun Location")], "Shop")
+            self.assertEqual(row[header.index("Sun CVH Hours")], "8")
+            self.assertEqual(row[header.index("Sun Vacation Hours")], "4")
+            self.assertEqual(row[header.index("Sun Sick Hours")], "2")
+            self.assertEqual(row[header.index("Mon Vacation Hours")], "0")
+            self.assertEqual(row[header.index("Initials")], "CM")
+            md = " ".join(m.value or "" for m in at.markdown)
+            self.assertIn("Worked hours: 8", md)
+            self.assertIn("Vacation: 4", md)
+            self.assertIn("Sick: 2", md)
+            self.assertIn("Total hours including paid leave: 14", md)
+            self.assertNotIn("Worked hours: 14", md)
+            self.assertEqual(set(book.sheets), {"Sheet1", "Time Sheets"})
 
-        self.assertTrue(any(b.label == "Download PDF" for b in at.button) or any(getattr(b, "label", "") == "Download PDF" for b in at.download_button))
-        self.assertTrue(any(getattr(b, "label", "") == "Download Excel" for b in at.download_button) or any(b.label == "Download Excel" for b in at.button))
-        email_btn = next(b for b in at.button if b.label == "Email to patti@centralvalleyheli.com")
-        self.assertTrue(email_btn.disabled)
-        # Clicking a disabled button must not send or write mail.
-        self.assertFalse(list(at.exception))
+            self.assertTrue(any(b.label == "Download PDF" for b in at.button) or any(getattr(b, "label", "") == "Download PDF" for b in at.download_button))
+            self.assertTrue(any(getattr(b, "label", "") == "Download Excel" for b in at.download_button) or any(b.label == "Download Excel" for b in at.button))
+            email_btn = next(b for b in at.button if b.label == "Email to patti@centralvalleyheli.com")
+            self.assertTrue(email_btn.disabled)
+            # Clicking a disabled button must not send or write mail.
+            self.assertFalse(list(at.exception))
+        finally:
+            secrets_singleton._programmatic_secrets = previous
+            secrets_singleton._secrets = None
 
     def test_monthly_safety_meeting_form_saves_and_edits_notes_on_fake_sheet(self):
 

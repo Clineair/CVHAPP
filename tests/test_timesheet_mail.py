@@ -183,7 +183,7 @@ class TimesheetMailTests(unittest.TestCase):
             initials_match=True, access_allowed=True, pdf_bytes=pdf, filename="a.pdf",
         )
         self.assertFalse(ok)
-        self.assertIn("Signing in does not grant", reason)
+        self.assertIn("A time-sheet PIN does not grant", reason)
         # expired consent
         expired = _consent(exp=time.time() - 10)
         ok, reason = tm.timesheet_mail_send_gates(
