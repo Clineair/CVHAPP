@@ -2,6 +2,7 @@
 import base64
 import json
 import unittest
+from pathlib import Path
 
 import timesheet_company_mail as company
 import timesheet_mail as tm
@@ -25,8 +26,8 @@ def _smtp_secrets(**extra):
     data = {
         "timesheet_company_mail": {
             "enabled": True,
-            "backend": "smtp",
-            "username": company.COMPANY_FROM,
+            "backend": "gmail_smtp",
+            "username": company.DEFAULT_SENDER,
             "password": PASSWORD,
         },
         "timesheet_employee_mail": {
@@ -83,9 +84,14 @@ class CompanyMailSetupTests(unittest.TestCase):
         off["timesheet_company_mail"]["password"] = PASSWORD
         off["timesheet_company_mail"]["username"] = "other@example.com"
         self.assertFalse(company.company_mail_ready(off))
-        off["timesheet_company_mail"]["username"] = company.COMPANY_FROM
-        off["timesheet_company_mail"]["sender"] = "someone-else@example.com"
+        off["timesheet_company_mail"]["username"] = company.DEFAULT_SENDER
+        off["timesheet_company_mail"]["sender"] = "not-an-email"
         self.assertFalse(company.company_mail_ready(off))
+        off["timesheet_company_mail"]["sender"] = "other.timesheets@example.com"
+        self.assertFalse(company.company_mail_ready(off))
+        off["timesheet_company_mail"]["username"] = "other.timesheets@example.com"
+        self.assertTrue(company.company_mail_ready(off))
+        self.assertEqual(company.mailbox_address(off), "other.timesheets@example.com")
         graph = _graph_secrets()
         self.assertTrue(company.company_mail_ready(graph))
         del graph["timesheet_company_mail"]["client_secret"]
@@ -113,16 +119,16 @@ class CompanySmtpSendTests(unittest.TestCase):
         record, kwargs = _send_kwargs()
         result = company.send_company_timesheet(record, PDF, "Carl_Mulvaney.pdf", smtp_send=smtp_send, **kwargs)
         self.assertEqual(result["status"], tm.TIMESHEET_MAIL_STATUS_SENT)
-        self.assertEqual(result["from"], company.COMPANY_FROM)
+        self.assertEqual(result["from"], company.DEFAULT_SENDER)
         self.assertEqual(result["to"], "patti@centralvalleyheli.com")
-        self.assertEqual(result["provider"], "smtp")
+        self.assertEqual(result["provider"], "gmail_smtp")
         self.assertNotIn(PASSWORD, json.dumps(result))
         self.assertEqual(len(sent), 1)
         username, password, message = sent[0]
-        self.assertEqual(username, company.COMPANY_FROM)
+        self.assertEqual(username, company.DEFAULT_SENDER)
         self.assertEqual(password, PASSWORD)
         self.assertEqual(message["To"], "patti@centralvalleyheli.com")
-        self.assertIn(company.COMPANY_FROM, message["From"])
+        self.assertIn(company.DEFAULT_SENDER, message["From"])
         self.assertIn("Carl Mulvaney via CVH Timesheets", message["From"])
         self.assertEqual(message["Reply-To"], "carl.mail@example.com")
         self.assertIn("Carl Mulvaney", message["Subject"])
@@ -200,6 +206,75 @@ class CompanySmtpSendTests(unittest.TestCase):
         self.assertNotIn(PASSWORD, json.dumps(result))
         self.assertIn("rejected the login", result["error"])
 
+    def test_default_transports_do_not_open_a_network_connection(self):
+        import smtplib
+        seen = []
+
+        class FakeSSL:
+            def __init__(self, host, port, timeout=None, context=None):
+                seen.append(("ssl", host, port))
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def login(self, username, password):
+                seen.append(("login", username))
+
+            def send_message(self, message):
+                seen.append(("sent", message["From"]))
+
+        class FakeStartTLS:
+            def __init__(self, host, port, timeout=None):
+                seen.append(("starttls-connect", host, port))
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def ehlo(self):
+                return None
+
+            def starttls(self, context=None):
+                seen.append(("starttls",))
+
+            def login(self, username, password):
+                seen.append(("login", username))
+
+            def send_message(self, message):
+                seen.append(("sent", str(message["From"])))
+
+        original_ssl = smtplib.SMTP_SSL
+        original_smtp = smtplib.SMTP
+        smtplib.SMTP_SSL = FakeSSL
+        smtplib.SMTP = FakeStartTLS
+        try:
+            record, kwargs = _send_kwargs()
+            gmail = company.send_company_timesheet(record, PDF, "a.pdf", **kwargs)
+            self.assertEqual(gmail["status"], tm.TIMESHEET_MAIL_STATUS_SENT)
+            self.assertEqual(gmail["provider"], "gmail_smtp")
+            self.assertIn(("ssl", "smtp.gmail.com", 465), seen)
+            self.assertNotIn("cvh@centralvalleyheli.com", json.dumps(seen))
+            office_secrets = _smtp_secrets()
+            office_secrets["timesheet_company_mail"]["backend"] = "smtp"
+            office_secrets["timesheet_company_mail"]["sender"] = "office.timesheets@example.com"
+            office_secrets["timesheet_company_mail"]["username"] = "office.timesheets@example.com"
+            record, kwargs = _send_kwargs(secrets=office_secrets)
+            office = company.send_company_timesheet(record, PDF, "a.pdf", **kwargs)
+            self.assertEqual(office["status"], tm.TIMESHEET_MAIL_STATUS_SENT)
+            self.assertEqual(office["from"], "office.timesheets@example.com")
+            self.assertIn(("starttls-connect", "smtp.office365.com", 587), seen)
+            self.assertIn(("starttls",), seen)
+        finally:
+            smtplib.SMTP_SSL = original_ssl
+            smtplib.SMTP = original_smtp
+        source = Path(company.__file__).read_text(encoding="utf-8")
+        self.assertNotIn("cvh@centralvalleyheli.com", source)
+
 
 class CompanyGraphSendTests(unittest.TestCase):
     def test_graph_token_and_sendmail_use_the_company_mailbox(self):
@@ -214,17 +289,17 @@ class CompanyGraphSendTests(unittest.TestCase):
         record, kwargs = _send_kwargs(secrets=_graph_secrets())
         result = company.send_company_timesheet(record, PDF, "Carl.pdf", http_post=http_post, **kwargs)
         self.assertEqual(result["status"], tm.TIMESHEET_MAIL_STATUS_SENT)
-        self.assertEqual(result["from"], company.COMPANY_FROM)
+        self.assertEqual(result["from"], company.DEFAULT_SENDER)
         self.assertNotIn(CLIENT_SECRET, json.dumps(result))
         self.assertNotIn("graph-access-token", json.dumps(result))
         self.assertEqual(len(calls), 2)
         self.assertIn("/oauth2/v2.0/token", calls[0]["url"])
         self.assertEqual(calls[0]["form"]["client_secret"], CLIENT_SECRET)
         self.assertEqual(calls[0]["form"]["grant_type"], "client_credentials")
-        self.assertTrue(calls[1]["url"].endswith("/users/" + company.COMPANY_FROM + "/sendMail"))
+        self.assertTrue(calls[1]["url"].endswith("/users/" + company.DEFAULT_SENDER + "/sendMail"))
         self.assertTrue(calls[1]["headers"]["Authorization"].startswith("Bearer "))
         message = calls[1]["json"]["message"]
-        self.assertEqual(message["from"]["emailAddress"]["address"], company.COMPANY_FROM)
+        self.assertEqual(message["from"]["emailAddress"]["address"], company.DEFAULT_SENDER)
         self.assertEqual(message["from"]["emailAddress"]["name"], "Carl Mulvaney via CVH Timesheets")
         self.assertEqual(message["replyTo"][0]["emailAddress"]["address"], "carl.mail@example.com")
         self.assertEqual(message["toRecipients"][0]["emailAddress"]["address"], "patti@centralvalleyheli.com")

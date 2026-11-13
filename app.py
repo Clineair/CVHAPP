@@ -5664,7 +5664,7 @@ def show_timesheet_email_section(employee, preview, saved=None, form_ok=False, p
     setup_ready = timesheet_company_mail.company_mail_ready(secrets)
     recipient = timesheet_mail.timesheet_mail_recipient(secrets)
     reply_to = timesheet_company_mail.employee_reply_to(employee, secrets)
-    from_line = timesheet_company_mail.from_header(employee)
+    from_line = timesheet_company_mail.from_header(employee, secrets)
     audit_records = []
     audit_failed = False
     if setup_ready and access_ok and identity == employee:

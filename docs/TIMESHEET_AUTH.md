@@ -5,11 +5,12 @@ access and direct in-app sending. Do not commit secrets, mailbox addresses, or
 mail credentials. Sending stays off until the items below are all in place.
 
 The app does not send mail until `[timesheet_company_mail].enabled` is true.
-Every timesheet is sent from one company mailbox, `cvh@centralvalleyheli.com`,
-to `patti@centralvalleyheli.com` (or `[timesheet_mail].recipient` when that
-secret is set). Employees only enter a PIN. They do not authorize Google and
-they do not use personal app passwords. The old Cloud Run callback is not on
-this path and can be shut down.
+Every timesheet is sent from one company mailbox. The default is
+`clineair891@gmail.com`. `[timesheet_company_mail].sender` can name a different
+mailbox. To is `patti@centralvalleyheli.com` (or `[timesheet_mail].recipient`
+when that secret is set). Employees only enter a PIN. They do not authorize
+Google and they do not use their own mail passwords. The old Cloud Run
+callback is not on this path and can be shut down.
 
 ## Opening a time sheet (employee PIN)
 
@@ -45,8 +46,8 @@ again to try again. The lock is not shared across phones.
 
 ## Sending from the company mailbox
 
-The Send button runs in the Streamlit app. From is
-`cvh@centralvalleyheli.com`, shown as `<Employee Name> via CVH Timesheets`.
+The Send button runs in the Streamlit app. From is `clineair891@gmail.com`
+unless `sender` is set, shown as `<Employee Name> via CVH Timesheets`.
 Reply-To is the employee's address from `[timesheet_employee_mail]` when that
 email exists, otherwise from `[timesheet_employees]`. Subject and body include
 the employee name and the week. The attachment is the same generated PDF.
@@ -55,16 +56,21 @@ Initials must match the current week, and the employee must press Send.
 If `[timesheet_company_mail]` is missing or `enabled` is not true, the sheet
 shows **email not set up yet - ask the office**.
 
-`backend` is `smtp` or `graph`.
+`backend` defaults to `gmail_smtp`. `smtp` and `graph` still work.
 
-- `smtp`: `smtp.office365.com` port 587 with STARTTLS. `username` is
-  `cvh@centralvalleyheli.com`. `password` is that mailbox password or an app
-  password. Microsoft 365 must have SMTP AUTH enabled for that mailbox.
+- `gmail_smtp`: `smtp.gmail.com` port 465 with SSL. `username` is
+  `clineair891@gmail.com` unless `sender` names another mailbox, in which
+  case `username` must match `sender`. `password` is a Gmail app password
+  from that Google account (2-Step Verification required). It is not an
+  employee's password and it is not stored in the repo.
+- `smtp`: `smtp.office365.com` port 587 with STARTTLS. `username` must match
+  `sender`. `password` is that mailbox password or an app password.
+  Microsoft 365 must have SMTP AUTH enabled for that mailbox.
 - `graph`: client-credentials token, then
-  `POST /users/cvh@centralvalleyheli.com/sendMail`. Keys are `tenant_id`,
-  `client_id`, and `client_secret`. The Entra app needs the application
-  permission `Mail.Send`, admin consent, and an application access policy
-  that limits the app to that mailbox.
+  `POST /users/{sender}/sendMail`. Keys are `tenant_id`, `client_id`, and
+  `client_secret`. The Entra app needs the application permission
+  `Mail.Send`, admin consent, and an application access policy that limits
+  the app to that mailbox.
 
 Placeholders are in `secrets.example.toml`. Do not commit the password or the
 client secret.

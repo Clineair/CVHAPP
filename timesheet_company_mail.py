@@ -2,8 +2,10 @@
 
 Employees never authorize Google and never type a mail password. The
 Streamlit app sends when [timesheet_company_mail] exists and enabled is
-true. backend is "smtp" (Office 365 STARTTLS) or "graph" (Microsoft Graph
-client credentials). The Cloud Run callback is not used.
+true. The documented default backend is "gmail_smtp" (smtp.gmail.com:465 SSL).
+"smtp" is Office 365 STARTTLS and "graph" is Microsoft Graph client
+credentials. The From address defaults to the company Gmail mailbox and can
+be changed with the sender secret. The Cloud Run callback is not used.
 """
 from __future__ import annotations
 
@@ -15,11 +17,13 @@ from urllib.parse import quote
 
 import timesheet_mail as tm
 
-COMPANY_FROM = "cvh@centralvalleyheli.com"
+DEFAULT_SENDER = "clineair891@gmail.com"
 COMPANY_SECTION = "timesheet_company_mail"
 NOT_READY_MESSAGE = "email not set up yet - ask the office"
-SMTP_HOST = "smtp.office365.com"
-SMTP_PORT = 587
+GMAIL_SMTP_HOST = "smtp.gmail.com"
+GMAIL_SMTP_PORT = 465
+OFFICE_SMTP_HOST = "smtp.office365.com"
+OFFICE_SMTP_PORT = 587
 GRAPH_SCOPE = "https://graph.microsoft.com/.default"
 DISPLAY_SUFFIX = "via CVH Timesheets"
 
@@ -59,25 +63,21 @@ def _backend(section):
         name = _cell(section["backend"]).lower()
     except Exception:
         return ""
-    if name in ("smtp", "graph"):
+    if name in ("gmail_smtp", "smtp", "graph"):
         return name
     return ""
 
 
-def _configured_sender(section):
-    """Visible From address. A different sender in secrets means mail is not set up."""
-    if section is None:
-        return ""
-    try:
-        if "sender" in section:
-            configured = _lower_email(section["sender"])
-            if configured and configured != COMPANY_FROM:
-                return ""
-            if configured:
-                return configured
-    except Exception:
-        return ""
-    return COMPANY_FROM
+def mailbox_address(secrets=None):
+    """From address. `sender` overrides the default Gmail mailbox when it is a valid address."""
+    section = _section(secrets)
+    if section is not None:
+        try:
+            if "sender" in section:
+                return _lower_email(section["sender"])
+        except Exception:
+            return ""
+    return DEFAULT_SENDER
 
 
 def _secret_text(section, key):
@@ -91,11 +91,11 @@ def _secret_text(section, key):
         return ""
 
 
-def _smtp_username(section):
+def _login_username(section, address):
     username = _lower_email(_secret_text(section, "username"))
     if not username:
-        return COMPANY_FROM
-    if username != COMPANY_FROM:
+        return address
+    if username != address:
         return ""
     return username
 
@@ -105,11 +105,12 @@ def company_mail_ready(secrets=None):
     section = _section(secrets)
     if not _flag_enabled(section):
         return False
-    if not _configured_sender(section):
+    address = mailbox_address(secrets)
+    if not address:
         return False
     backend = _backend(section)
-    if backend == "smtp":
-        return bool(_smtp_username(section) and _secret_text(section, "password"))
+    if backend in ("gmail_smtp", "smtp"):
+        return bool(_login_username(section, address) and _secret_text(section, "password"))
     if backend == "graph":
         return bool(
             _secret_text(section, "tenant_id")
@@ -130,8 +131,8 @@ def display_name(employee):
     return name + " " + DISPLAY_SUFFIX
 
 
-def from_header(employee):
-    return formataddr((display_name(employee), COMPANY_FROM))
+def from_header(employee, secrets=None):
+    return formataddr((display_name(employee), mailbox_address(secrets)))
 
 
 def employee_reply_to(employee, secrets=None):
@@ -185,7 +186,7 @@ def build_message(record, pdf_bytes, filename, secrets=None):
     employee = _cell((record or {}).get("Employee"))
     message = EmailMessage()
     message["To"] = recipient
-    message["From"] = from_header(employee)
+    message["From"] = from_header(employee, secrets)
     reply = employee_reply_to(employee, secrets)
     if reply:
         message["Reply-To"] = reply
@@ -206,7 +207,7 @@ def graph_payload(record, pdf_bytes, filename, secrets=None):
             "subject": email_subject(record),
             "body": {"contentType": "Text", "content": email_body(record)},
             "toRecipients": [{"emailAddress": {"address": recipient}}],
-            "from": {"emailAddress": {"address": COMPANY_FROM, "name": display_name(employee)}},
+            "from": {"emailAddress": {"address": mailbox_address(secrets), "name": display_name(employee)}},
             "attachments": [{
                 "@odata.type": "#microsoft.graph.fileAttachment",
                 "name": _cell(filename),
@@ -229,7 +230,7 @@ def _deny(message, key=""):
         "idempotency_key": key,
         "provider": "",
         "to": "",
-        "from": COMPANY_FROM,
+        "from": "",
     }
 
 
@@ -281,9 +282,20 @@ def block_reason(*args, **kwargs):
     return reason or "Review the message, then press Send."
 
 
-def _default_smtp_send(username, password, message):
+def _default_gmail_smtp_send(username, password, message):
+    """Gmail SSL on port 465. The password is a Google app password."""
     import smtplib
-    with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=30) as smtp:
+    with smtplib.SMTP_SSL(
+        GMAIL_SMTP_HOST, GMAIL_SMTP_PORT, timeout=30, context=ssl.create_default_context(),
+    ) as smtp:
+        smtp.login(username, password)
+        smtp.send_message(message)
+
+
+def _default_office_smtp_send(username, password, message):
+    """Office 365 STARTTLS on port 587."""
+    import smtplib
+    with smtplib.SMTP(OFFICE_SMTP_HOST, OFFICE_SMTP_PORT, timeout=30) as smtp:
         smtp.ehlo()
         smtp.starttls(context=ssl.create_default_context())
         smtp.ehlo()
@@ -330,7 +342,10 @@ def _graph_send(section, payload, http_post):
         token = ""
     if not token:
         return tm.TIMESHEET_MAIL_STATUS_DENIED, "The company mailbox app was rejected. Ask the office."
-    send_url = "https://graph.microsoft.com/v1.0/users/" + quote(COMPANY_FROM, safe="@") + "/sendMail"
+    sender = mailbox_address({"timesheet_company_mail": section}) if section is not None else ""
+    if not sender:
+        return tm.TIMESHEET_MAIL_STATUS_DENIED, "The company mailbox is not set up. Ask the office."
+    send_url = "https://graph.microsoft.com/v1.0/users/" + quote(sender, safe="@") + "/sendMail"
     send_status, _body = http_post(
         send_url,
         json_body=payload,
@@ -381,17 +396,24 @@ def send_company_timesheet(
     if not ok:
         result = _deny(reason, key)
         result["to"] = tm.timesheet_mail_recipient(secrets)
+        result["from"] = mailbox_address(secrets)
         return result
     section = _section(secrets)
     backend = _backend(section)
+    address = mailbox_address(secrets)
     recipient = tm.timesheet_mail_recipient(secrets)
     try:
-        if backend == "smtp":
+        if backend in ("gmail_smtp", "smtp"):
             message = build_message(record, pdf_bytes, filename, secrets)
-            username = _smtp_username(section)
+            username = _login_username(section, address)
             password = _secret_text(section, "password")
-            sender = smtp_send or _default_smtp_send
-            sender(username, password, message)
+            if smtp_send is not None:
+                transport = smtp_send
+            elif backend == "gmail_smtp":
+                transport = _default_gmail_smtp_send
+            else:
+                transport = _default_office_smtp_send
+            transport(username, password, message)
             status = tm.TIMESHEET_MAIL_STATUS_SENT
             error = ""
         else:
@@ -423,5 +445,5 @@ def send_company_timesheet(
         "idempotency_key": key,
         "provider": backend,
         "to": recipient,
-        "from": COMPANY_FROM,
+        "from": address,
     }
