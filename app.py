@@ -2304,6 +2304,9 @@ def time_off_summary_text(record, include_employee=True):
     elif kind == TIME_OFF_TYPE_VACATION and start and end and start != end:
         bits.append(kind)
         bits.append(start + " to " + end)
+    elif kind == TIME_OFF_TYPE_PROJECT and start and end and start != end:
+        bits.append(time_off_type_label(kind, (record or {}).get("Project")))
+        bits.append(start + " to " + end)
     elif kind == TIME_OFF_TYPE_HOLIDAY and start and end and start != end:
         bits.append(time_off_type_label(kind, holiday_name=(record or {}).get("Holiday Name")))
         bits.append(start + " to " + end)
@@ -2510,7 +2513,10 @@ def build_time_off_record(
     end = parse_equipment_date(end_date) if end_date not in (None, "") else None
     if start is None:
         raise ValueError("Date is required")
-    if kind in (TIME_OFF_TYPE_VACATION, TIME_OFF_TYPE_HOLIDAY):
+    if kind in (TIME_OFF_TYPE_VACATION, TIME_OFF_TYPE_HOLIDAY, TIME_OFF_TYPE_PROJECT):
+        # A one-day project can omit the end date; the form sends the same day for both.
+        if end is None and kind == TIME_OFF_TYPE_PROJECT:
+            end = start
         if end is None:
             raise ValueError("End date is required")
         if end < start:
@@ -2520,10 +2526,14 @@ def build_time_off_record(
                 raise ValueError(
                     "Company holiday can be at most " + str(TIME_OFF_MAX_SPAN_DAYS) + " days"
                 )
+            if kind == TIME_OFF_TYPE_PROJECT:
+                raise ValueError(
+                    "Project can be at most " + str(TIME_OFF_MAX_SPAN_DAYS) + " days"
+                )
             raise ValueError("Vacation can be at most " + str(TIME_OFF_MAX_SPAN_DAYS) + " days")
     else:
         if end is not None and end != start:
-            raise ValueError("Full day, partial day, and project entries use a single date")
+            raise ValueError("Full day and partial day entries use a single date")
         end = start
     today = today or datetime.now(ZoneInfo("America/Los_Angeles")).date()
     low, high = time_off_date_bounds(today=today)
@@ -2742,7 +2752,8 @@ def show_time_off_calendar_page():
             default_day = today
         else:
             default_day = date(year, month, 1)
-        if kind in (TIME_OFF_TYPE_VACATION, TIME_OFF_TYPE_HOLIDAY):
+        ranged = kind in (TIME_OFF_TYPE_VACATION, TIME_OFF_TYPE_HOLIDAY, TIME_OFF_TYPE_PROJECT)
+        if ranged:
             st.date_input("Start Date", value=default_day, format="YYYY-MM-DD", key=prefix + "start")
             st.date_input("End Date", value=default_day, format="YYYY-MM-DD", key=prefix + "end")
         else:
@@ -2762,9 +2773,7 @@ def show_time_off_calendar_page():
                     st.session_state.get(prefix + "employee", ""),
                     st.session_state.get(prefix + "type", ""),
                     st.session_state.get(prefix + "start"),
-                    end_date=st.session_state.get(prefix + "end") if kind in (
-                        TIME_OFF_TYPE_VACATION, TIME_OFF_TYPE_HOLIDAY
-                    ) else None,
+                    end_date=st.session_state.get(prefix + "end") if ranged else None,
                     start_time=st.session_state.get(prefix + "start_time") if kind == TIME_OFF_TYPE_PARTIAL else None,
                     end_time=st.session_state.get(prefix + "end_time") if kind == TIME_OFF_TYPE_PARTIAL else None,
                     notes=st.session_state.get(prefix + "notes", ""),
