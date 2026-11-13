@@ -142,8 +142,9 @@ def _exec_equipment_helpers():
     if repo_root not in sys.path:
         sys.path.insert(0, repo_root)
     import timesheet_mail
+    import timesheet_company_mail
     import timesheet_pin
-    scope = {"datetime": datetime, "date": date, "dt_time": dt_time, "timedelta": timedelta, "ZoneInfo": ZoneInfo, "uuid": uuid, "timesheet_mail": timesheet_mail, "timesheet_pin": timesheet_pin, "__file__": str(APP)}
+    scope = {"datetime": datetime, "date": date, "dt_time": dt_time, "timedelta": timedelta, "ZoneInfo": ZoneInfo, "uuid": uuid, "timesheet_mail": timesheet_mail, "timesheet_company_mail": timesheet_company_mail, "timesheet_pin": timesheet_pin, "__file__": str(APP)}
     exec(compile(ast.Module(body=nodes, type_ignores=[]), str(APP), "exec"), scope)
     return scope
 
@@ -1074,7 +1075,7 @@ class PlaceholderAndLogicTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(ValueError, "can only be addressed to"):
             s["timesheet_email_compose"](rec, to="other@example.com")
-        # Mailto is not the send path. In-app send stays off without the callback service.
+        # Mailto is not the send path. In-app send stays off until company mail is enabled.
         self.assertFalse(s["timesheet_email_can_send"](rec, user=carl, secrets=pin_secrets, pin_employee="Carl Mulvaney"))
         self.assertFalse(s["timesheet_email_can_send"](
             rec, user=carl, secrets=pin_secrets, pin_employee="Carl Mulvaney",
@@ -1084,7 +1085,7 @@ class PlaceholderAndLogicTests(unittest.TestCase):
         reason = s["timesheet_email_block_reason"](
             rec, user=carl, saved=rec, current=rec, secrets=pin_secrets, pin_employee="Carl Mulvaney",
         )
-        self.assertIn("does not send mail", reason)
+        self.assertEqual(reason, "email not set up yet - ask the office")
         self.assertNotIn("attach the PDF yourself", reason)
         stale_reason = s["timesheet_email_block_reason"](
             rec, user=carl, saved=rec, current=stale, secrets=pin_secrets, pin_employee="Carl Mulvaney",

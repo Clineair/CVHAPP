@@ -1,13 +1,13 @@
-"""Per-user timesheet mail send for Gmail, Microsoft 365/Outlook/Hotmail, iCloud, and Yahoo.
+"""UNUSED by the Streamlit Send button.
 
-This module implements official provider routes, consent binding, and send
-gates. It does not start an HTTP server and does not enable sending by
-itself. A separate HTTPS callback (see timesheet_mail_callback.py) must be
-configured before timesheet_email_can_send can be true. Access tokens stay
-in that service's shared store. SMTP app passwords are read from Secret
-Manager at send time and are never written to Sheets, logs, query strings,
-or the repo. Microsoft send stays available for a later roster change and
-is not used by the current employees.
+Live sending is timesheet_company_mail.py: one company mailbox, no per-employee
+OAuth and no per-employee app password. This module and
+timesheet_mail_callback.py remain so the old Cloud Run callback can still be
+read and tested. The app does not call it. The Cloud Run service can be shut
+down.
+
+The helpers below for the fixed recipient, audit duplicate checks, and error
+scrubbing are still used by the company mailbox path.
 """
 from __future__ import annotations
 

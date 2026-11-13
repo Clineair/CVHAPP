@@ -1,5 +1,11 @@
-"""Standalone HTTPS callback service for timesheet mail OAuth and send.
+"""UNUSED Cloud Run callback. The Streamlit app does not call this service.
 
+Timesheets are sent from the company mailbox in timesheet_company_mail.py.
+This process can be shut down. The code stays here so the old OAuth and
+per-employee app-password path can still be read. Do not deploy it for the
+current send flow.
+
+Standalone HTTPS callback service for the retired per-employee mail OAuth path.
 This is not started by the Streamlit app and is not a Streamlit route.
 Deploy it on its own HTTPS host, register its redirect URI on the Gmail
 send client (and a Microsoft client only if a later mailbox needs one),

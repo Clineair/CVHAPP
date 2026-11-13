@@ -1,5 +1,10 @@
 # Timesheet mail callback host
 
+The Streamlit app no longer calls this service. Timesheets send from the
+company mailbox inside the app (`timesheet_company_mail.py`). This Cloud Run
+service can be shut down. The recipe below is kept only so the old image can
+still be read.
+
 This folder is the deploy recipe for the standalone HTTPS callback in
 `timesheet_mail_callback.py`. Streamlit does not start it.
 
