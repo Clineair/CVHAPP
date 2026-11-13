@@ -1,13 +1,13 @@
-"""Per-user timesheet mail send for Gmail, Microsoft 365/Outlook/Hotmail, iCloud, and Yahoo.
+"""UNUSED by the Streamlit Send button.
 
-This module implements official provider routes, consent binding, and send
-gates. It does not start an HTTP server and does not enable sending by
-itself. A separate HTTPS callback (see timesheet_mail_callback.py) must be
-configured before timesheet_email_can_send can be true. Access tokens stay
-in that service's shared store. SMTP app passwords are read from Secret
-Manager at send time and are never written to Sheets, logs, query strings,
-or the repo. Microsoft send stays available for a later roster change and
-is not used by the current employees.
+Live sending is timesheet_company_mail.py: one company mailbox, no per-employee
+OAuth and no per-employee app password. This module and
+timesheet_mail_callback.py remain so the old Cloud Run callback can still be
+read and tested. The app does not call it. The Cloud Run service can be shut
+down.
+
+The helpers below for the fixed recipient, audit duplicate checks, and error
+scrubbing are still used by the company mailbox path.
 """
 from __future__ import annotations
 
@@ -45,6 +45,16 @@ TIMESHEET_MAIL_IDEMPOTENCY_TTL_SEC = 180 * 24 * 60 * 60
 TIMESHEET_SMTP_SECRET_PREFIX = "timesheet-smtp-"
 TIMESHEET_MAIL_STORE_COLLECTION = "timesheet_mail_tokens"
 TIMESHEET_SIGNIN_SECTION = "timesheet_employees"
+# PIN-verified time-sheet employees. Must match timesheet_pin.PIN_EMPLOYEES.
+# Kept here so the callback image does not import the Streamlit app.
+TIMESHEET_PIN_EMPLOYEES = (
+    "Carl Mulvaney",
+    "Anthony Root",
+    "Barry Markham",
+    "Robert Rackley",
+    "Gary Grant",
+    "Skylar Fingerle",
+)
 
 TIMESHEET_MAIL_GMAIL_SCOPES = (
     "https://www.googleapis.com/auth/gmail.send",
@@ -168,6 +178,11 @@ def timesheet_mail_recipient(secrets=None):
     if configured:
         return configured
     return TIMESHEET_EMAIL_TO
+
+
+def timesheet_pin_employee_ok(name):
+    """True for an employee who can have a time-sheet PIN. Ron Cline is not included."""
+    return _cell(name) in TIMESHEET_PIN_EMPLOYEES
 
 
 def timesheet_employee_for_signin_email(email, secrets=None):
@@ -1356,7 +1371,7 @@ def timesheet_mail_send_gates(
     """Return (ok, reason). Never enables send when setup or binding is incomplete."""
     if not timesheet_mail_secure_setup_ready(secrets):
         return False, (
-            "In-app sending is disabled until Google sign-in, the employee mailbox "
+            "In-app sending is disabled until the employee mailbox "
             "map, a Gmail mail OAuth client, a separate HTTPS mail callback service, "
             "and (for iCloud or Yahoo) a vaulted SMTP app-password store are configured. "
             "This app does not send mail yet."
@@ -1365,9 +1380,9 @@ def timesheet_mail_send_gates(
         return False, "A time sheet is required."
     employee = _cell(record.get("Employee"))
     if access_allowed is not True:
-        return False, "Only the signed-in employee can send their own initialed time sheet. This app does not send mail for others."
+        return False, "Only the PIN-verified employee can send their own initialed time sheet. This app does not send mail for others."
     if user_employee and _cell(user_employee) != employee:
-        return False, "Only the signed-in employee can send their own initialed time sheet. This app does not send mail for others."
+        return False, "Only the PIN-verified employee can send their own initialed time sheet. This app does not send mail for others."
     mailbox = timesheet_mailbox_for_employee(employee, secrets)
     if not mailbox:
         return False, "No mailbox provider is configured for this employee, so sending stays off."
@@ -1388,8 +1403,9 @@ def timesheet_mail_send_gates(
                 "This app does not ask for a mail password."
             )
         return False, (
-            "Authorize " + mailbox["provider"] + " mail send for this session. Signing in "
-            "does not grant permission to send mail. Access lasts only for this short session."
+            "Authorize " + mailbox["provider"] + " mail send for this session. A time-sheet PIN "
+            "does not grant permission to send mail. Gmail approval is not stored as a refresh "
+            "token and lasts only for this short session."
         )
     if _cell(consent.get("employee")) != employee:
         return False, "Mail authorization is bound to a different employee."
@@ -1792,8 +1808,11 @@ def post_mail_api(path, signed_token, secrets, extra=None, http_post=None, timeo
     return data
 
 
-def redeem_ready_ticket_http(ticket, employee, signin_email, secrets, http_post=None, now=None):
-    """Redeem a one-time ready ticket. The response is consent metadata, never an access token."""
+def redeem_ready_ticket_http(ticket, employee, employee_key, secrets, http_post=None, now=None):
+    """Redeem a one-time ready ticket. The response is consent metadata, never an access token.
+
+    employee_key is the PIN-verified employee. It is not a Google sign-in email.
+    """
     secret = timesheet_mail_state_secret(secrets)
     if not secret or not _cell(ticket):
         return None
@@ -1801,7 +1820,7 @@ def redeem_ready_ticket_http(ticket, employee, signin_email, secrets, http_post=
         "kind": "redeem",
         "ticket": _cell(ticket),
         "employee": _cell(employee),
-        "signin_email": _lower_email(signin_email),
+        "employee_key": _cell(employee_key),
     }, secret, now=now)
     result = post_mail_api("/timesheet-mail/redeem", signed, secrets, http_post=http_post)
     consent = result.get("consent") if isinstance(result, dict) else None
@@ -1814,15 +1833,18 @@ def redeem_ready_ticket_http(ticket, employee, signin_email, secrets, http_post=
     return consent
 
 
-def open_smtp_session_http(employee, signin_email, secrets, http_post=None, now=None):
-    """Ask the backend to confirm a vaulted SMTP secret exists. The password is not returned."""
+def open_smtp_session_http(employee, employee_key, secrets, http_post=None, now=None):
+    """Ask the backend to confirm a vaulted SMTP secret exists. The password is not returned.
+
+    employee_key is the PIN-verified employee. It is not a Google sign-in email.
+    """
     secret = timesheet_mail_state_secret(secrets)
     if not secret:
         return None
     signed = timesheet_sign_api_request({
         "kind": "smtp-session",
         "employee": _cell(employee),
-        "signin_email": _lower_email(signin_email),
+        "employee_key": _cell(employee_key),
     }, secret, now=now)
     result = post_mail_api("/timesheet-mail/smtp-session", signed, secrets, http_post=http_post)
     consent = result.get("consent") if isinstance(result, dict) else None
@@ -1839,8 +1861,9 @@ def submit_signed_timesheet_send(
     filename,
     *,
     secrets,
-    signin_email,
     user_employee,
+    employee_key=None,
+    signin_email=None,
     preview_pdf_bytes=None,
     initials_match=None,
     saved_content_hash=None,
@@ -1853,14 +1876,16 @@ def submit_signed_timesheet_send(
 
     The signed preview hash and the PDF bytes must match. Saved initials must
     still match the current content hash. Another employee's identity is rejected
-    before the request is signed.
+    before the request is signed. The signed identity is the PIN-verified
+    employee key, not a Google sign-in email. signin_email is ignored.
     """
     employee = _cell((record or {}).get("Employee"))
+    identity = _cell(employee_key) or _cell(user_employee)
     key = timesheet_send_idempotency_key(record) if record else ""
-    if not employee or _cell(user_employee) != employee:
+    if not employee or _cell(user_employee) != employee or identity != employee:
         return {
             "status": TIMESHEET_MAIL_STATUS_DENIED,
-            "error": "Only the signed-in employee can send their own initialed time sheet. This app does not send mail for others.",
+            "error": "Only the PIN-verified employee can send their own initialed time sheet. This app does not send mail for others.",
             "idempotency_key": key,
         }
     if initials_match is not True:
@@ -1902,7 +1927,7 @@ def submit_signed_timesheet_send(
     signed = timesheet_sign_api_request({
         "kind": "send",
         "employee": employee,
-        "signin_email": _lower_email(signin_email),
+        "employee_key": identity,
         "week": _cell((record or {}).get("Week Of")),
         "content_hash": current_hash,
         "saved_content_hash": saved_hash,
