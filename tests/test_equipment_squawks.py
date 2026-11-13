@@ -90,7 +90,7 @@ def _exec_equipment_helpers():
         "load_anthony_timesheet_records_readonly", "save_anthony_timesheet_record",
         "anthony_timesheet_pdf_filename", "anthony_timesheet_xlsx_filename",
         "build_anthony_timesheet_xlsx", "build_anthony_timesheet_pdf",
-        "timesheet_day_column", "timesheet_columns", "timesheet_leave_columns", "timesheet_leave_hours", "timesheet_weekly_hour_totals", "timesheet_hour_total_lines", "timesheet_day_hour_breakdown", "timesheet_hour_summary_rows", "timesheet_hour_summary_display_rows", "timesheet_hour_summary_html", "timesheet_day_expander_title", "ensure_timesheet_leave_columns", "timesheet_parse_number",
+        "timesheet_day_column", "timesheet_columns", "timesheet_leave_columns", "timesheet_leave_hours", "timesheet_weekly_hour_totals", "timesheet_hour_total_lines", "timesheet_day_hour_breakdown", "timesheet_hour_summary_rows", "timesheet_hour_summary_display_rows", "timesheet_hour_summary_short_date", "timesheet_hour_summary_html", "timesheet_day_expander_title", "ensure_timesheet_leave_columns", "timesheet_parse_number",
         "timesheet_format_hours", "timesheet_format_money", "timesheet_format_rate", "timesheet_format_mileage_rate", "timesheet_mileage_amount",
         "timesheet_irs_business_mileage_period", "timesheet_irs_business_mileage_rate",
         "timesheet_irs_mileage_supported_range_text", "timesheet_irs_mileage_unsupported_reason",
@@ -2091,10 +2091,16 @@ class PlaceholderAndLogicTests(unittest.TestCase):
         self.assertIn("Week Total", html)
         self.assertIn(">40<", html)
         self.assertIn(">70.5<", html)
-        self.assertIn(">Vacation<", html)
-        self.assertIn(">Total<", html)
+        self.assertIn("Vacation", html)
+        self.assertIn("Total", html)
+        self.assertIn("Vac", html)
+        self.assertIn("Wkd", html)
+        self.assertIn("Tot", html)
         self.assertIn("Sun", html)
-        self.assertIn("2026-11-08", html)
+        self.assertIn("11/08", html)
+        self.assertEqual(s["timesheet_hour_summary_short_date"]("Sun 2026-11-08"), "Sun 11/08")
+        self.assertEqual(s["timesheet_hour_summary_short_date"]("2026-11-14"), "11/14")
+        self.assertIn("max-width:100%", html)
         self.assertEqual(
             s["timesheet_day_expander_title"]("Mon", date(2026, 11, 16), 8),
             "Mon  2026-11-16 — 8 hrs",

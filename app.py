@@ -2972,40 +2972,96 @@ def timesheet_hour_summary_display_rows(rows):
     return display
 
 
+def timesheet_hour_summary_short_date(value):
+    """Turn an ISO date or 'Sun 2026-11-08' label into 'Sun 11/08'."""
+    text = _cell(value)
+    day_part = ""
+    date_part = text
+    if " " in text:
+        day_part, date_part = text.split(" ", 1)
+    parsed = parse_equipment_date(date_part)
+    if parsed is None:
+        parsed = parse_equipment_date(text)
+    if parsed is None:
+        return text
+    stamp = "%02d/%02d" % (parsed.month, parsed.day)
+    if day_part:
+        return day_part + " " + stamp
+    return stamp
+
+
 def timesheet_hour_summary_html(rows):
-    """Compact, display-only hour table that stays readable on a phone."""
-    headers = ("Day", "CVH", "Forestry", "BNSF", "Vacation", "Sick", "Worked", "Total")
+    """Compact, display-only hour table that fits a ~380-400px phone width.
+
+    Short headers and MM/DD dates are used on a narrow screen. Wider screens
+    keep the full column names and the same one-line day labels.
+    """
+    headers = (
+        ("Day", "Day"),
+        ("CVH", "CVH"),
+        ("For", "Forestry"),
+        ("BNSF", "BNSF"),
+        ("Vac", "Vacation"),
+        ("Sick", "Sick"),
+        ("Wkd", "Worked"),
+        ("Tot", "Total"),
+    )
+    keys = ("Day", "CVH", "Forestry", "BNSF", "Vacation", "Sick", "Worked", "Total")
     parts = [
-        "<div style='overflow-x:auto;-webkit-overflow-scrolling:touch;margin:0.2rem 0 0.6rem 0'>",
-        "<table style='width:100%;border-collapse:collapse;font-size:0.8rem;table-layout:auto'>",
-        "<thead><tr>",
+        "<style>"
+        ".cvh-hour-wrap{overflow-x:hidden;margin:0.15rem 0 0.55rem 0;}"
+        ".cvh-hour-summary{width:100%;max-width:100%;border-collapse:collapse;"
+        "table-layout:fixed;font-size:0.7rem;box-sizing:border-box;}"
+        ".cvh-hour-summary th,.cvh-hour-summary td{padding:0.14rem 0.06rem;"
+        "vertical-align:top;box-sizing:border-box;min-width:0;overflow:hidden;}"
+        ".cvh-hour-summary th{border-bottom:1px solid #bbb;white-space:nowrap;}"
+        ".cvh-hour-summary .num{text-align:right;white-space:nowrap;}"
+        ".cvh-hour-summary .day{text-align:left;white-space:nowrap;}"
+        ".cvh-hour-summary .full{display:none;}"
+        ".cvh-hour-summary col.day{width:22%;}"
+        ".cvh-hour-summary col.num{width:11.14%;}"
+        "@media (min-width:560px){"
+        ".cvh-hour-summary{font-size:0.9rem;}"
+        ".cvh-hour-summary th,.cvh-hour-summary td{padding:0.35rem 0.35rem;}"
+        ".cvh-hour-summary .full{display:inline;}"
+        ".cvh-hour-summary .short{display:none;}"
+        "}"
+        "</style>",
+        "<div class='cvh-hour-wrap'>",
+        "<table class='cvh-hour-summary'><colgroup>",
+        "<col class='day'>",
+        "<col class='num'><col class='num'><col class='num'><col class='num'>",
+        "<col class='num'><col class='num'><col class='num'>",
+        "</colgroup><thead><tr>",
     ]
-    for i, header in enumerate(headers):
-        align = "left" if i == 0 else "right"
-        parts.append(
-            "<th style='text-align:%s;padding:0.28rem 0.22rem;border-bottom:1px solid #bbb;"
-            "white-space:nowrap'>%s</th>" % (align, header)
-        )
+    for i, (short, full) in enumerate(headers):
+        cls = "day" if i == 0 else "num"
+        if short == full:
+            label = short
+        else:
+            label = (
+                "<span class='short'>" + short + "</span>"
+                "<span class='full'>" + full + "</span>"
+            )
+        parts.append("<th class='%s'>%s</th>" % (cls, label))
     parts.append("</tr></thead><tbody>")
     for row in timesheet_hour_summary_display_rows(rows):
         is_total = row.get("Day") == "Week Total"
-        style = "font-weight:700;border-top:1px solid #bbb;background:#f6f6f6;" if is_total else ""
+        row_style = "font-weight:700;border-top:1px solid #bbb;background:#f6f6f6;" if is_total else ""
         parts.append("<tr>")
-        for i, key in enumerate(headers):
-            align = "left" if i == 0 else "right"
+        for i, key in enumerate(keys):
+            cls = "day" if i == 0 else "num"
             value = row.get(key, "0")
-            nowrap = "" if (i == 0 and not is_total) else "white-space:nowrap;"
-            if i == 0 and (not is_total) and " " in _cell(value):
-                day_part, date_part = _cell(value).split(" ", 1)
-                value = (
-                    day_part
-                    + "<br><span style='font-weight:400;font-size:0.85em;color:#555'>"
-                    + date_part
-                    + "</span>"
-                )
+            if i == 0:
+                if is_total:
+                    value = (
+                        "<span class='short'>Week</span>"
+                        "<span class='full'>Week Total</span>"
+                    )
+                else:
+                    value = timesheet_hour_summary_short_date(value)
             parts.append(
-                "<td style='text-align:%s;padding:0.28rem 0.22rem;vertical-align:top;%s%s'>%s</td>"
-                % (align, nowrap, style, value)
+                "<td class='%s' style='%s'>%s</td>" % (cls, row_style, value)
             )
         parts.append("</tr>")
     parts.append("</tbody></table></div>")
