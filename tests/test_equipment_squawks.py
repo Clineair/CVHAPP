@@ -1499,7 +1499,7 @@ class PlaceholderAndLogicTests(unittest.TestCase):
     def test_time_off_records_validation_grid_and_cancel_history(self):
 
 
-        from datetime import date, time, datetime
+        from datetime import date, time, datetime, timedelta
         from zoneinfo import ZoneInfo
         s = self.s
         self.assertEqual(s["TIME_OFF_SHEET_TITLE"], "Time Off")
@@ -1608,10 +1608,97 @@ class PlaceholderAndLogicTests(unittest.TestCase):
             "Robert Rackley", "Project", date(2026, 11, 17),
             project="Other", when=when, entry_id="TO-TEST-OTHER", today=today,
         )
-        with self.assertRaisesRegex(ValueError, "single date"):
+        one_day = s["build_time_off_record"](
+            "Barry Markham", "Project", date(2026, 11, 16),
+            end_date=date(2026, 11, 16), project="BNSF", today=today,
+        )
+        self.assertEqual(one_day["Start Date"], "2026-11-16")
+        self.assertEqual(one_day["End Date"], "2026-11-16")
+        multi = s["build_time_off_record"](
+            "Barry Markham", "Project", date(2026, 11, 16),
+            end_date=date(2026, 11, 18), project="West", notes="On site",
+            when=when, entry_id="TO-TEST-WEST-SPAN", today=today,
+        )
+        self.assertEqual(multi["Type"], "Project")
+        self.assertEqual(multi["Project"], "West")
+        self.assertEqual(multi["Start Date"], "2026-11-16")
+        self.assertEqual(multi["End Date"], "2026-11-18")
+        self.assertEqual(multi["Start Time"], "")
+        self.assertEqual(multi["End Time"], "")
+        self.assertEqual(multi["Holiday Name"], "")
+        for day in (date(2026, 11, 16), date(2026, 11, 17), date(2026, 11, 18)):
+            self.assertTrue(s["time_off_covers_date"](multi, day))
+            self.assertEqual(
+                [r["Entry ID"] for r in s["time_off_for_date"]([multi], day)],
+                ["TO-TEST-WEST-SPAN"],
+            )
+        self.assertFalse(s["time_off_covers_date"](multi, date(2026, 11, 15)))
+        self.assertFalse(s["time_off_covers_date"](multi, date(2026, 11, 19)))
+        self.assertEqual(
+            s["time_off_summary_text"](multi),
+            "Barry Markham — Project – West — 2026-11-16 to 2026-11-18 — On site",
+        )
+        multi_grid = s["time_off_month_grid_markup"](2026, 11, [multi], today=today)
+        for day_num in (16, 17, 18):
+            self.assertIn(
+                "<span class='daynum'>" + str(day_num) + "</span>"
+                "<div class='ev toff-proj'>Barry M. — Project – West</div>",
+                multi_grid,
+            )
+        self.assertNotIn("<span class='daynum'>15</span><div class='ev toff-proj'>", multi_grid)
+        self.assertNotIn("<span class='daynum'>19</span><div class='ev toff-proj'>", multi_grid)
+        cross = s["build_time_off_record"](
+            "Robert Rackley", "Project", date(2026, 11, 30),
+            end_date=date(2026, 12, 2), project="Forestry",
+            when=when, entry_id="TO-TEST-CROSS", today=today,
+        )
+        nov_cross = s["time_off_month_grid_markup"](2026, 11, [cross], today=today)
+        dec_cross = s["time_off_month_grid_markup"](2026, 12, [cross], today=today)
+        self.assertEqual(nov_cross.count("Project – Forestry"), 1)
+        self.assertIn(
+            "<span class='daynum'>30</span><div class='ev toff-proj'>Robert R. — Project – Forestry</div>",
+            nov_cross,
+        )
+        self.assertEqual(dec_cross.count("Project – Forestry"), 2)
+        self.assertIn(
+            "<span class='daynum'>1</span><div class='ev toff-proj'>Robert R. — Project – Forestry</div>",
+            dec_cross,
+        )
+        self.assertIn(
+            "<span class='daynum'>2</span><div class='ev toff-proj'>Robert R. — Project – Forestry</div>",
+            dec_cross,
+        )
+        self.assertNotIn("<span class='daynum'>3</span><div class='ev toff-proj'>", dec_cross)
+        with self.assertRaisesRegex(ValueError, "End date must be on or after"):
             s["build_time_off_record"](
-                "Barry Markham", "Project", date(2026, 11, 16),
-                end_date=date(2026, 11, 18), project="West", today=today,
+                "Barry Markham", "Project", date(2026, 11, 18),
+                end_date=date(2026, 11, 16), project="West", today=today,
+            )
+        with self.assertRaisesRegex(ValueError, "Project can be at most 180 days"):
+            s["build_time_off_record"](
+                "Barry Markham", "Project", today,
+                end_date=today + timedelta(days=s["TIME_OFF_MAX_SPAN_DAYS"]),
+                project="BNSF", today=today,
+            )
+        max_project = s["build_time_off_record"](
+            "Barry Markham", "Project", today,
+            end_date=today + timedelta(days=s["TIME_OFF_MAX_SPAN_DAYS"] - 1),
+            project="Basin", today=today,
+        )
+        self.assertEqual(
+            s["time_off_span_days"](s["time_off_start_date"](max_project), s["time_off_end_date"](max_project)),
+            s["TIME_OFF_MAX_SPAN_DAYS"],
+        )
+        with self.assertRaisesRegex(ValueError, "Full day and partial day entries use a single date"):
+            s["build_time_off_record"](
+                "Ron Cline", "Full day off", date(2026, 11, 16),
+                end_date=date(2026, 11, 18), today=today,
+            )
+        with self.assertRaisesRegex(ValueError, "Full day and partial day entries use a single date"):
+            s["build_time_off_record"](
+                "Ron Cline", "Partial day", date(2026, 11, 16),
+                end_date=date(2026, 11, 18),
+                start_time=time(9, 0), end_time=time(13, 0), today=today,
             )
         with self.assertRaisesRegex(ValueError, "End date must be on or after"):
             s["build_time_off_record"](
@@ -2881,12 +2968,38 @@ class FakeSheetBehaviorTests(unittest.TestCase):
         self.assertEqual(old["Type"], "Full day off")
         self.assertEqual(old.get("Extra"), "keep-me")
         self.assertEqual(new["Project"], "Basin")
+        self.assertEqual(new["Start Date"], "2026-11-16")
+        self.assertEqual(new["End Date"], "2026-11-16")
         self.assertIn("Project – Basin", self.s["time_off_summary_text"](new))
         self.assertNotIn("Project –", self.s["time_off_summary_text"](old))
         self.assertEqual(old["Holiday Name"], "")
         self.assertEqual(new["Holiday Name"], "")
         self.assertEqual(ws.rows[0][-1], "Holiday Name")
         self.assertEqual(header[:len(header_before)], header_before)
+        span = self.s["build_time_off_record"](
+            "Barry Markham", "Project", date(2026, 11, 18),
+            end_date=date(2026, 11, 20), project="BNSF", notes="Line",
+            when=when, entry_id="TO-SPAN-PROJECT", today=date(2026, 11, 10),
+        )
+        self.s["save_time_off_record"](span, self.book)
+        header = ws.rows[0]
+        span_row = ws.rows[-1]
+        self.assertEqual(span_row[header.index("Type")], "Project")
+        self.assertEqual(span_row[header.index("Project")], "BNSF")
+        self.assertEqual(span_row[header.index("Holiday Name")], "")
+        self.assertEqual(span_row[header.index("Start Date")], "2026-11-18")
+        self.assertEqual(span_row[header.index("End Date")], "2026-11-20")
+        self.assertEqual(span_row[header.index("Start Time")], "")
+        self.assertEqual(span_row[header.index("End Time")], "")
+        loaded_span = self.s["latest_time_off_record"](
+            self.s["load_time_off_records_readonly"](self.book), "TO-SPAN-PROJECT",
+        )
+        self.assertEqual(loaded_span["Start Date"], "2026-11-18")
+        self.assertEqual(loaded_span["End Date"], "2026-11-20")
+        for day in (date(2026, 11, 18), date(2026, 11, 19), date(2026, 11, 20)):
+            self.assertTrue(self.s["time_off_covers_date"](loaded_span, day))
+        self.assertFalse(self.s["time_off_covers_date"](loaded_span, date(2026, 11, 17)))
+        self.assertFalse(self.s["time_off_covers_date"](loaded_span, date(2026, 11, 21)))
         self._assert_frat_untouched()
 
     def test_company_holiday_is_one_entry_for_every_employee(self):
@@ -3496,6 +3609,7 @@ class HeaderAndEquipmentPageTests(unittest.TestCase):
         self.assertTrue(any("Pilot Performance" in (t.value or "") for t in at.title))
 
     def test_employees_calendar_saves_filters_and_cancels_on_fake_sheet(self):
+        import re
         from datetime import date, time
         from streamlit.testing.v1 import AppTest
 
@@ -3583,6 +3697,8 @@ class HeaderAndEquipmentPageTests(unittest.TestCase):
         next(s for s in at.selectbox if s.label == "Employee").select("Gary Grant")
         next(s for s in at.selectbox if s.label == "Type").select("Partial day").run()
         self.assertTrue(any(d.label == "Date" for d in at.date_input))
+        self.assertFalse(any(d.label == "Start Date" for d in at.date_input))
+        self.assertFalse(any(d.label == "End Date" for d in at.date_input))
         self.assertTrue(any("Start Time" in (t.label or "") for t in at.time_input))
         next(d for d in at.date_input if d.label == "Date").set_value(date(2026, 11, 12))
         next(t for t in at.time_input if "Start Time" in (t.label or "")).set_value(time(9, 0))
@@ -3596,6 +3712,7 @@ class HeaderAndEquipmentPageTests(unittest.TestCase):
         # Vacation spanning multiple days
         next(s for s in at.selectbox if s.label == "Employee").select("Skylar Fingerle")
         next(s for s in at.selectbox if s.label == "Type").select("Vacation").run()
+        self.assertFalse(any(d.label == "Date" for d in at.date_input))
         next(d for d in at.date_input if d.label == "Start Date").set_value(date(2026, 11, 24))
         next(d for d in at.date_input if d.label == "End Date").set_value(date(2026, 11, 26))
         next(b for b in at.button if b.label == "Save request").click().run()
@@ -3656,17 +3773,20 @@ class HeaderAndEquipmentPageTests(unittest.TestCase):
         next(b for b in at.button if b.label == "Save request").click().run()
         self.assertTrue(any("End time must be after start time" in (e.value or "") for e in at.error))
 
-        # Project adds a second menu and stores the choice on the shared list.
+        # Project adds a second menu and start/end dates, stored on the shared list.
         self.assertFalse(any(s.label == "Project" for s in at.selectbox))
         next(s for s in at.selectbox if s.label == "Type").select("Project").run()
         self.assertFalse(list(at.exception))
         project_box = next(s for s in at.selectbox if s.label == "Project")
         self.assertEqual(list(project_box.options), ["BNSF", "Forestry", "WSFW", "West", "Basin", "Other"])
-        self.assertTrue(any(d.label == "Date" for d in at.date_input))
+        self.assertTrue(any(d.label == "Start Date" for d in at.date_input))
+        self.assertTrue(any(d.label == "End Date" for d in at.date_input))
+        self.assertFalse(any(d.label == "Date" for d in at.date_input))
         self.assertFalse(any(t.label and "Start Time" in t.label for t in at.time_input))
         next(s for s in at.selectbox if s.label == "Employee").select("Barry Markham")
         project_box.select("BNSF")
-        next(d for d in at.date_input if d.label == "Date").set_value(date(2026, 11, 16))
+        next(d for d in at.date_input if d.label == "Start Date").set_value(date(2026, 11, 16))
+        next(d for d in at.date_input if d.label == "End Date").set_value(date(2026, 11, 16))
         next(b for b in at.button if b.label == "Save request").click().run()
         self.assertFalse(list(at.exception))
         self.assertTrue(any("Saved the listed time-off request." in (s.value or "") for s in at.success))
@@ -3677,21 +3797,68 @@ class HeaderAndEquipmentPageTests(unittest.TestCase):
         self.assertEqual(saved[header.index("Holiday Name")], "")
         self.assertEqual(saved[header.index("Employee")], "Barry Markham")
         self.assertEqual(saved[header.index("Start Date")], "2026-11-16")
+        self.assertEqual(saved[header.index("End Date")], "2026-11-16")
         md = " ".join(m.value or "" for m in at.markdown)
         self.assertIn("Barry M. — Project – BNSF", md)
         self.assertIn("Barry Markham — Project – BNSF — 2026-11-16", md)
         self.assertEqual(set(book.sheets), {"Sheet1", "Time Off"})
 
         next(s for s in at.selectbox if s.label == "Type").select("Project").run()
+        fresh_start = next(d for d in at.date_input if d.label == "Start Date")
+        fresh_end = next(d for d in at.date_input if d.label == "End Date")
+        self.assertEqual(fresh_start.value, fresh_end.value)
         next(s for s in at.selectbox if s.label == "Employee").select("Robert Rackley")
         next(s for s in at.selectbox if s.label == "Project").select("Other")
-        next(d for d in at.date_input if d.label == "Date").set_value(date(2026, 11, 17))
+        next(d for d in at.date_input if d.label == "Start Date").set_value(date(2026, 11, 17))
+        next(d for d in at.date_input if d.label == "End Date").set_value(date(2026, 11, 17))
         next(b for b in at.button if b.label == "Save request").click().run()
         self.assertFalse(list(at.exception))
         md = " ".join(m.value or "" for m in at.markdown)
         self.assertIn("Robert R. — Project – Other", md)
         self.assertIn("Robert Rackley — Project – Other — 2026-11-17", md)
         self.assertEqual(book.sheets["Time Off"].rows[-1][header.index("Project")], "Other")
+        self.assertEqual(book.sheets["Time Off"].rows[-1][header.index("Start Date")], "2026-11-17")
+        self.assertEqual(book.sheets["Time Off"].rows[-1][header.index("End Date")], "2026-11-17")
+
+        next(s for s in at.selectbox if s.label == "Type").select("Project").run()
+        next(s for s in at.selectbox if s.label == "Employee").select("Barry Markham")
+        next(s for s in at.selectbox if s.label == "Project").select("BNSF")
+        next(d for d in at.date_input if d.label == "Start Date").set_value(date(2026, 11, 18))
+        next(d for d in at.date_input if d.label == "End Date").set_value(date(2026, 11, 20))
+        next(b for b in at.button if b.label == "Save request").click().run()
+        self.assertFalse(list(at.exception))
+        header = book.sheets["Time Off"].rows[0]
+        saved = book.sheets["Time Off"].rows[-1]
+        self.assertEqual(saved[header.index("Type")], "Project")
+        self.assertEqual(saved[header.index("Project")], "BNSF")
+        self.assertEqual(saved[header.index("Start Date")], "2026-11-18")
+        self.assertEqual(saved[header.index("End Date")], "2026-11-20")
+        self.assertEqual(saved[header.index("Start Time")], "")
+        self.assertEqual(saved[header.index("End Time")], "")
+        md = " ".join(m.value or "" for m in at.markdown)
+        self.assertIn("Barry Markham — Project – BNSF — 2026-11-18 to 2026-11-20", md)
+
+        def _day_bodies(markup, day_num):
+            return re.findall(
+                r"<span class='daynum'>" + str(day_num) + r"</span>(.*?)</td>",
+                markup,
+            )
+        for day_num in (18, 19, 20):
+            bodies = _day_bodies(md, day_num)
+            self.assertEqual(len(bodies), 1, day_num)
+            self.assertIn("Barry M. — Project – BNSF", bodies[0])
+        self.assertNotIn("Project – BNSF", _day_bodies(md, 17)[0])
+        self.assertNotIn("Project – BNSF", _day_bodies(md, 21)[0])
+
+        rows_before = len(book.sheets["Time Off"].rows)
+        next(s for s in at.selectbox if s.label == "Type").select("Project").run()
+        next(s for s in at.selectbox if s.label == "Employee").select("Gary Grant")
+        next(s for s in at.selectbox if s.label == "Project").select("West")
+        next(d for d in at.date_input if d.label == "Start Date").set_value(date(2026, 11, 22))
+        next(d for d in at.date_input if d.label == "End Date").set_value(date(2026, 11, 21))
+        next(b for b in at.button if b.label == "Save request").click().run()
+        self.assertTrue(any("End date must be on or after" in (e.value or "") for e in at.error))
+        self.assertEqual(len(book.sheets["Time Off"].rows), rows_before)
 
         next(s for s in at.selectbox if s.label == "Type").select("Vacation").run()
         self.assertFalse(any(s.label == "Project" for s in at.selectbox))
@@ -3773,6 +3940,9 @@ class HeaderAndEquipmentPageTests(unittest.TestCase):
         next(s for s in at.selectbox if s.label == "Type").select("Full day off").run()
         self.assertFalse(any(t.label == "Holiday name" for t in at.text_input))
         self.assertFalse(any(s.label == "Project" for s in at.selectbox))
+        self.assertTrue(any(d.label == "Date" for d in at.date_input))
+        self.assertFalse(any(d.label == "Start Date" for d in at.date_input))
+        self.assertFalse(any(d.label == "End Date" for d in at.date_input))
         self.assertNotIn(
             "All employees",
             list(next(s for s in at.selectbox if s.label == "Employee").options),
