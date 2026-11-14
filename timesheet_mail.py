@@ -1749,6 +1749,7 @@ def compact_mail_audit(audit_records, employee):
             "Content Hash": _cell(row.get("Content Hash")),
             "Status": _cell(row.get("Status")),
             "Idempotency Key": _cell(row.get("Idempotency Key")),
+            "Timestamp": _cell(row.get("Timestamp")),
         })
     return compact[-50:]
 
