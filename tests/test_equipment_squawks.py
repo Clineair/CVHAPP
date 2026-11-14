@@ -23,7 +23,7 @@ def _exec_equipment_helpers():
         "OFFICIAL_EQUIPMENT_NAMES", "REGISTRATION_EXPIRE_COL", "ANNUAL_MAINT_COL",
         "TONNAGE_APPLIES_COL", "TONNAGE_EXPIRE_COL", "TONNAGE_DEFAULT_UNITS", "DATE_STATUS_COLORS",
         "IFTA_UNITS", "DRIVERS", "EMPLOYEES", "IFTA_TRIPS_SHEET_TITLE", "IFTA_FUEL_SHEET_TITLE", "IFTA_TRIPS_COLUMNS", "IFTA_FUEL_COLUMNS", "IFTA_RECEIPT_COLUMN", "IFTA_DEFAULT_JURISDICTION", "IFTA_JURISDICTIONS",
-        "DOM_AIRCRAFT", "DOM_ACTION_ANNUAL", "YEARLY_ITEMS_SHEET_TITLE", "YEARLY_ITEMS_COLUMNS", "YEARLY_ITEM_GROUPS", "TIME_OFF_SHEET_TITLE", "TIME_OFF_COLUMNS", "TIME_OFF_TYPES", "TIME_OFF_TYPE_FULL", "TIME_OFF_TYPE_PARTIAL", "TIME_OFF_TYPE_VACATION", "TIME_OFF_TYPE_PROJECT", "TIME_OFF_TYPE_HOLIDAY", "TIME_OFF_ALL_EMPLOYEES", "TIME_OFF_PROJECTS", "TIME_OFF_STATUS_ACTIVE", "TIME_OFF_STATUS_CANCELLED", "TIME_OFF_ACTION_CREATE", "TIME_OFF_ACTION_CANCEL", "TIME_OFF_MAX_PAST_DAYS", "TIME_OFF_MAX_FUTURE_DAYS", "TIME_OFF_MAX_SPAN_DAYS", "TIMESHEET_EMPLOYEES", "TIMESHEET_SHEET_TITLE", "TIMESHEET_DAYS", "TIMESHEET_DAY_FIELDS", "TIMESHEET_WORKED_HOUR_FIELDS", "TIMESHEET_LEAVE_FIELDS", "TIMESHEET_LEAVE_HOURS_MAX", "TIMESHEET_EMAIL_TO", "TIMESHEET_IRS_BUSINESS_MILEAGE_RATES", "TIMESHEET_IRS_MILEAGE_RATES_START", "TIMESHEET_IRS_MILEAGE_RATES_END", "TIMESHEET_IRS_MILEAGE_SOURCE_URL", "TIMESHEET_MILEAGE_SHEET_TITLE", "TIMESHEET_MILEAGE_COLUMNS", "TIMESHEET_MILEAGE_SOURCE_IRS", "TIMESHEET_MILEAGE_SOURCE_COMPANY", "TIMESHEET_MILEAGE_SOURCE_SAVED",
+        "DOM_AIRCRAFT", "DOM_ACTION_ANNUAL", "YEARLY_ITEMS_SHEET_TITLE", "YEARLY_ITEMS_COLUMNS", "YEARLY_ITEM_GROUPS", "TIME_OFF_SHEET_TITLE", "TIME_OFF_COLUMNS", "TIME_OFF_TYPES", "TIME_OFF_TYPE_FULL", "TIME_OFF_TYPE_PARTIAL", "TIME_OFF_TYPE_VACATION", "TIME_OFF_TYPE_PROJECT", "TIME_OFF_TYPE_HOLIDAY", "TIME_OFF_ALL_EMPLOYEES", "TIME_OFF_PROJECTS", "TIME_OFF_STATUS_ACTIVE", "TIME_OFF_STATUS_CANCELLED", "TIME_OFF_ACTION_CREATE", "TIME_OFF_ACTION_CANCEL", "TIME_OFF_MAX_PAST_DAYS", "TIME_OFF_MAX_FUTURE_DAYS", "TIME_OFF_MAX_SPAN_DAYS", "TIMESHEET_EMPLOYEES", "TIMESHEET_SHEET_TITLE", "TIMESHEET_DAYS", "TIMESHEET_DAY_FIELDS", "TIMESHEET_WORKED_HOUR_FIELDS", "TIMESHEET_TOTAL_HOUR_ROWS", "TIMESHEET_LEAVE_FIELDS", "TIMESHEET_LEAVE_HOURS_MAX", "TIMESHEET_EMAIL_TO", "TIMESHEET_IRS_BUSINESS_MILEAGE_RATES", "TIMESHEET_IRS_MILEAGE_RATES_START", "TIMESHEET_IRS_MILEAGE_RATES_END", "TIMESHEET_IRS_MILEAGE_SOURCE_URL", "TIMESHEET_MILEAGE_SHEET_TITLE", "TIMESHEET_MILEAGE_COLUMNS", "TIMESHEET_MILEAGE_SOURCE_IRS", "TIMESHEET_MILEAGE_SOURCE_COMPANY", "TIMESHEET_MILEAGE_SOURCE_SAVED",
         "ANTHONY_TIMESHEET_EMPLOYEE", "ANTHONY_TIMESHEET_SHEET_TITLE", "ANTHONY_TIMESHEET_TEMPLATE", "ANTHONY_TIMESHEET_DAYS", "ANTHONY_TIMESHEET_DAY_FIELDS", "ANTHONY_TIMESHEET_GRID_ROWS", "ANTHONY_TIMESHEET_WEEK_ROWS", "ANTHONY_TIMESHEET_NUMERIC_FIELDS",
         "TIMESHEET_AUTH_REQUIRED_KEYS", "TIMESHEET_AUTH_SHARED_KEYS", "TIMESHEET_AUTH_PROVIDER_KEYS",
         "TIMESHEET_GOOGLE_ISSUERS", "TIMESHEET_MICROSOFT_ISSUER_PREFIXES", "TIMESHEET_EMPLOYEE_EMAILS_SECTION",
@@ -116,6 +116,7 @@ def _exec_equipment_helpers():
         "load_timesheet_mail_records_readonly", "build_timesheet_mail_audit_record",
         "save_timesheet_mail_audit_record", "timesheet_access_message",
         "timesheet_bundle_path", "timesheet_template_labels",
+        "timesheet_grid_totals",
         "build_timesheet_xlsx", "timesheet_pdf_filename", "timesheet_xlsx_filename",
         "build_timesheet_pdf", "_timesheet_wrap_label",
         "new_time_off_entry_id", "parse_time_off_time", "format_time_off_time",
@@ -1880,6 +1881,112 @@ class PlaceholderAndLogicTests(unittest.TestCase):
         self.assertFalse(any(s["time_off_covers_date"](r, date(2026, 11, 20)) for r in active))
         with self.assertRaisesRegex(ValueError, "already cancelled"):
             s["build_time_off_cancel_record"](cancelled)
+
+    def _ron_totals_record(self):
+        from datetime import date, datetime
+        from zoneinfo import ZoneInfo
+        s = self.s
+        days = {
+            "Mon": {"CVH Hours": "1", "Forestry Hours": "1", "BNSF Hours": "1"},
+            "Tues": {"CVH Hours": "1", "Forestry Hours": "1"},
+            "Wed": {"CVH Hours": "1", "Forestry Hours": "1", "BNSF Hours": "1"},
+            "Thur": {"CVH Hours": "4", "Forestry Hours": "2", "BNSF Hours": "2"},
+            "Fri": {"Vacation Hours": "8"},
+            "Sat": {"CVH Hours": "1", "Forestry Hours": "1", "BNSF Hours": "1",
+                    "Vacation Hours": "2", "Sick Hours": "2"},
+        }
+        return s["build_timesheet_record"](
+            "Ron Cline", date(2026, 11, 8), day_values=days, initials="RC",
+            today=datetime(2026, 11, 14, 12, 0, tzinfo=ZoneInfo("America/New_York")),
+        )
+
+    def test_timesheet_grid_totals_values(self):
+        s = self.s
+        rec = self._ron_totals_record()
+        totals = s["timesheet_grid_totals"](rec)
+        self.assertEqual(totals["rows"], {
+            "CVH Hours": 8, "Forestry Hours": 6, "BNSF Hours": 5,
+            "Vacation Hours": 10, "Sick Hours": 2,
+        })
+        self.assertEqual(totals["days"], [0, 3, 2, 3, 8, 8, 7])
+        self.assertEqual(totals["grand"], 31)
+        self.assertEqual(totals["grand"], s["timesheet_weekly_hour_totals"](rec)["Total Hours Including Paid Leave"])
+        self.assertEqual(sum(totals["rows"].values()), totals["grand"])
+        empty = s["timesheet_grid_totals"]({})
+        self.assertEqual(empty["days"], [0] * 7)
+        self.assertEqual(empty["grand"], 0)
+        half = s["timesheet_grid_totals"]({"Mon CVH Hours": "1.5", "Mon Sick Hours": "0.25"})
+        self.assertEqual(half["rows"]["CVH Hours"], 1.5)
+        self.assertEqual(half["days"][1], 1.75)
+        self.assertEqual(half["grand"], 1.75)
+
+    def test_timesheet_pdf_has_total_column_and_daily_total_row(self):
+        from io import BytesIO
+        import fitz
+        from openpyxl import load_workbook
+        s = self.s
+        rec = self._ron_totals_record()
+        pdf = s["build_timesheet_pdf"](rec)
+        doc = fitz.open(stream=pdf, filetype="pdf")
+        self.assertEqual(doc.page_count, 1)
+        page = doc[0]
+        words = page.get_text("words")
+        right_edge = max(w[2] for w in words)
+        self.assertLess(right_edge, page.rect.width - 20)
+        self.assertLess(max(w[3] for w in words), 770)
+        by_text = {}
+        for w in words:
+            by_text.setdefault(w[4], []).append(w)
+        total_head = [w for w in by_text["Total"] if w[1] < 200][0]
+        daily = [w for w in by_text["Daily"]][0]
+        # Daily Total row sits below Sick Hours and above Perdiem Rate.
+        sick = [w for w in by_text["Sick"] if w[1] > total_head[1]][0]
+        perdiem = [w for w in by_text["Perdiem"] if w[1] > total_head[1]][0]
+        self.assertGreater(daily[1], sick[1])
+        self.assertLess(daily[1], perdiem[1])
+        # Values: row totals in the Total column, daily totals on the Daily row,
+        # and the grand total at the right end of the Daily Total row.
+        line_y = lambda w: round((w[1] + w[3]) / 2)
+        def row_values(label_word):
+            y = line_y(label_word)
+            return [w[4] for w in sorted(words, key=lambda w: w[0]) if abs(line_y(w) - y) <= 6 and w[0] > 140]
+        daily_vals = row_values(daily)
+        self.assertEqual(daily_vals[:7], ["0", "3", "2", "3", "8", "8", "7"])
+        self.assertEqual(daily_vals[-1], "31")
+        self.assertEqual(row_values(sick)[-1], "2")
+        total_x = (total_head[0] + total_head[2]) / 2
+        col_texts = {w[4] for w in words if abs((w[0] + w[2]) / 2 - total_x) < 6}
+        for expected in ("8", "6", "5", "10", "2", "31"):
+            self.assertIn(expected, col_texts)
+        text = page.get_text().replace("\n", " ")
+        doc.close()
+        for label in s["timesheet_hour_total_lines"](rec):
+            self.assertIn(label, text, label)
+        self.assertIn("Total hours including paid leave: 31", text)
+
+        grid = load_workbook(BytesIO(s["build_timesheet_xlsx"](rec))).active
+        self.assertEqual(grid["J7"].value, "Total")
+        self.assertEqual(str(grid["J9"].value), "8")
+        self.assertEqual(str(grid["J10"].value), "6")
+        self.assertEqual(str(grid["J11"].value), "5")
+        self.assertEqual(str(grid["J14"].value), "10")
+        self.assertEqual(str(grid["J15"].value), "2")
+        self.assertEqual(grid["B16"].value, "Daily Total")
+        self.assertEqual([str(grid.cell(16, c).value) for c in range(3, 10)], ["0", "3", "2", "3", "8", "8", "7"])
+        self.assertEqual(str(grid["J16"].value), "31")
+        # the sheet below the new row is intact and shifted down by one
+        self.assertEqual(grid["B17"].value, "Perdiem Rates -")
+        self.assertEqual(grid["B14"].value, "Vacation Hours")
+        self.assertEqual(grid["B15"].value, "Sick Hours")
+
+    def test_anthony_timesheet_has_no_daily_total_row(self):
+        s = self.s
+        import inspect  # noqa: F401
+        src = APP.read_text()
+        start = src.index("def build_anthony_timesheet_pdf")
+        self.assertNotIn("timesheet_grid_totals", src[start:start + 12000])
+        start = src.index("def build_anthony_timesheet_xlsx")
+        self.assertNotIn("timesheet_grid_totals", src[start:start + 1500])
 
     def test_timesheet_vacation_and_sick_on_standard_sheets_only(self):
         from datetime import date, datetime
