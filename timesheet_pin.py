@@ -14,8 +14,9 @@ import secrets
 import time
 
 # Same employee keys as [timesheet_employees] and [timesheet_employee_mail].
-# Ron Cline has no time sheet. Anthony Root has his own form.
+# Anthony Root has his own form. Everyone else uses the official weekly form.
 PIN_EMPLOYEES = (
+    "Ron Cline",
     "Carl Mulvaney",
     "Anthony Root",
     "Barry Markham",

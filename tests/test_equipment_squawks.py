@@ -827,18 +827,20 @@ class PlaceholderAndLogicTests(unittest.TestCase):
         from io import BytesIO
         s = self.s
         self.assertEqual(s["TIMESHEET_EMPLOYEES"], [
+            "Ron Cline",
             "Carl Mulvaney",
             "Barry Markham",
             "Robert Rackley",
             "Gary Grant",
             "Skylar Fingerle",
         ])
-        self.assertNotIn("Ron Cline", s["TIMESHEET_EMPLOYEES"])
+        self.assertIn("Ron Cline", s["TIMESHEET_EMPLOYEES"])
         self.assertNotIn("Anthony Root", s["TIMESHEET_EMPLOYEES"])
         self.assertTrue(s["employee_has_timesheet"]("Carl Mulvaney"))
         self.assertTrue(s["employee_has_timesheet"]("Skylar Fingerle"))
-        self.assertFalse(s["employee_has_timesheet"]("Ron Cline"))
+        self.assertTrue(s["employee_has_timesheet"]("Ron Cline"))
         self.assertTrue(s["employee_has_timesheet"]("Anthony Root"))
+        self.assertTrue(s["employee_has_official_weekly_timesheet"]("Ron Cline"))
         self.assertTrue(s["employee_has_official_weekly_timesheet"]("Carl Mulvaney"))
         self.assertFalse(s["employee_has_official_weekly_timesheet"]("Anthony Root"))
         self.assertTrue(s["employee_has_anthony_timesheet"]("Anthony Root"))
@@ -907,8 +909,17 @@ class PlaceholderAndLogicTests(unittest.TestCase):
         self.assertFalse(s["timesheet_initials_match_current"](rec, changed))
         self.assertTrue(s["timesheet_initials_match_current"](rec, dict(rec)))
 
-        with self.assertRaisesRegex(ValueError, "does not have a time sheet"):
-            s["build_timesheet_record"]("Ron Cline", date(2026, 11, 8), today=date(2026, 11, 11))
+        ron = s["build_timesheet_record"](
+            "Ron Cline", date(2026, 11, 8),
+            day_values={"Sun": {"CVH Hours": "8"}},
+            initials="RC",
+            today=date(2026, 11, 11),
+        )
+        self.assertEqual(ron["Employee"], "Ron Cline")
+        self.assertEqual(ron["Sun CVH Hours"], "8")
+        self.assertEqual(ron["Sun Vacation Hours"], "0")
+        self.assertEqual(ron["Sun Sick Hours"], "0")
+        self.assertTrue(s["timesheet_initials_valid"](ron))
         with self.assertRaisesRegex(ValueError, "does not have a time sheet"):
             s["build_timesheet_record"]("Anthony Root", date(2026, 11, 8), today=date(2026, 11, 11))
         with self.assertRaisesRegex(ValueError, "must be a number"):
@@ -1893,7 +1904,7 @@ class PlaceholderAndLogicTests(unittest.TestCase):
         self.assertNotIn("Sick Hours", anthony_cols)
         self.assertNotIn("Vacation Hours", " ".join(s["anthony_timesheet_template_labels"]()))
         self.assertNotIn("Sick Hours", " ".join(s["anthony_timesheet_template_labels"]()))
-        self.assertNotIn("Ron Cline", s["TIMESHEET_EMPLOYEES"])
+        self.assertIn("Ron Cline", s["TIMESHEET_EMPLOYEES"])
         self.assertNotIn("Anthony Root", s["TIMESHEET_EMPLOYEES"])
 
         when = datetime(2026, 11, 11, 9, 0, tzinfo=ZoneInfo("America/Los_Angeles"))
@@ -1990,8 +2001,33 @@ class PlaceholderAndLogicTests(unittest.TestCase):
             today=today,
         )
         self.assertEqual(money["Reimb Total"], "17.25")
-        with self.assertRaisesRegex(ValueError, "does not have a time sheet"):
-            s["build_timesheet_record"]("Ron Cline", date(2026, 11, 8), today=today)
+        ron_leave = s["build_timesheet_record"](
+            "Ron Cline", date(2026, 11, 8),
+            day_values={
+                "Sun": {
+                    "CVH Hours": "8", "Forestry Hours": "1", "BNSF Hours": "1",
+                    "Vacation Hours": "4", "Sick Hours": "2",
+                },
+            },
+            initials="RC",
+            today=today,
+        )
+        self.assertEqual(ron_leave["Employee"], "Ron Cline")
+        self.assertEqual(ron_leave["Sun Vacation Hours"], "4")
+        self.assertEqual(ron_leave["Sun Sick Hours"], "2")
+        ron_totals = s["timesheet_weekly_hour_totals"](ron_leave)
+        self.assertEqual(ron_totals["Worked Hours"], 10)
+        self.assertEqual(ron_totals["Vacation Hours"], 4)
+        self.assertEqual(ron_totals["Sick Hours"], 2)
+        self.assertEqual(ron_totals["Total Hours Including Paid Leave"], 16)
+        ron_pdf = s["build_timesheet_pdf"](ron_leave)
+        self.assertTrue(ron_pdf.startswith(b"%PDF"))
+        ron_doc = fitz.open(stream=ron_pdf, filetype="pdf")
+        ron_text = "\n".join(page.get_text() for page in ron_doc).replace("\n", " ")
+        ron_doc.close()
+        self.assertIn("Ron Cline", ron_text)
+        self.assertIn("Vacation Hours", ron_text)
+        self.assertIn("Sick Hours", ron_text)
         with self.assertRaisesRegex(ValueError, "does not have a time sheet"):
             s["build_timesheet_record"]("Anthony Root", date(2026, 11, 8), today=today)
 
@@ -3734,8 +3770,11 @@ class HeaderAndEquipmentPageTests(unittest.TestCase):
             self.assertEqual(set(book.sheets), {"Sheet1"})
 
         at.button(key="employee_btn_Ron_Cline").click().run()
-        _assert_blank_employee_body(at)
+        self.assertFalse(list(at.exception))
         self.assertTrue(any(t.value == "Ron Cline" for t in at.title))
+        self.assertTrue(any(t.value == "Weekly Time Sheet" for t in at.subheader))
+        self.assertTrue(any("PIN not set up yet - ask the office" in (i.value or "") for i in at.info))
+        self.assertFalse(any(n.label == "Vacation Hours" for n in at.number_input))
         self.assertTrue(any(b.label == "Calendar" for b in at.button))
         self.assertEqual(_employee_names(at), expected)
         self.assertTrue(any((b.label or "") == "● Ron Cline" for b in at.button))
@@ -3758,7 +3797,7 @@ class HeaderAndEquipmentPageTests(unittest.TestCase):
         self.assertTrue(any(t.value == "Employees" for t in at.title))
         self.assertFalse(any(t.value == "Skylar Fingerle" for t in at.title))
 
-        # Anthony has a separate official form, not the five-person weekly sheet.
+        # Anthony has a separate official form, not the official weekly sheet.
         at.button(key="employee_btn_Anthony_Root").click().run()
         self.assertFalse(list(at.exception))
         self.assertTrue(any(t.value == "Anthony Root" for t in at.title))
@@ -3775,6 +3814,7 @@ class HeaderAndEquipmentPageTests(unittest.TestCase):
             self.assertNotIn("Anthony Time Sheets", book.sheets)
             self.assertNotIn("Time Sheets", book.sheets)
         for name, key in (
+            ("Ron Cline", "employee_btn_Ron_Cline"),
             ("Carl Mulvaney", "employee_btn_Carl_Mulvaney"),
             ("Barry Markham", "employee_btn_Barry_Markham"),
             ("Robert Rackley", "employee_btn_Robert_Rackley"),
@@ -4173,7 +4213,9 @@ class HeaderAndEquipmentPageTests(unittest.TestCase):
             at.button(key="nav_employees").click().run()
             at.button(key="employee_btn_Ron_Cline").click().run()
             self.assertFalse(list(at.exception))
-            self.assertFalse(any(t.value == "Weekly Time Sheet" for t in at.subheader))
+            self.assertTrue(any(t.value == "Weekly Time Sheet" for t in at.subheader))
+            self.assertTrue(any("remembered as Carl Mulvaney" in (i.value or "") for i in at.info))
+            self.assertFalse(any(b.label == "Save week" for b in at.button))
             at.button(key="employee_btn_Carl_Mulvaney").click().run()
             self.assertFalse(list(at.exception))
             self.assertTrue(any(t.value == "Carl Mulvaney" for t in at.title))
@@ -4241,6 +4283,77 @@ class HeaderAndEquipmentPageTests(unittest.TestCase):
             email_btn = next(b for b in at.button if b.label == "Email to patti@centralvalleyheli.com")
             self.assertTrue(email_btn.disabled)
             # Clicking a disabled button must not send or write mail.
+            self.assertFalse(list(at.exception))
+        finally:
+            secrets_singleton._programmatic_secrets = previous
+            secrets_singleton._secrets = None
+
+    def test_ron_cline_standard_timesheet_includes_vacation_and_sick(self):
+        from datetime import date
+        from streamlit.testing.v1 import AppTest
+        import timesheet_pin
+        from streamlit.runtime.secrets import secrets_singleton
+
+        pin_map = {
+            "timesheet_pin": {"cookie_secret": "test-cookie-secret-0123456789"},
+            "timesheet_pins": {
+                name: timesheet_pin.make_pin_hash("2468" + name[-1])
+                for name in timesheet_pin.PIN_EMPLOYEES
+            },
+        }
+        previous = secrets_singleton._programmatic_secrets
+        secrets_singleton.merge_programmatic_secrets(pin_map)
+        try:
+            at = AppTest.from_string(equipment_offline_app(), default_timeout=30).run()
+            at.session_state["timesheet_pin_employee"] = "Ron Cline"
+            at.button(key="nav_employees").click().run()
+            at.button(key="employee_btn_Ron_Cline").click().run()
+            self.assertFalse(list(at.exception))
+            self.assertTrue(any(t.value == "Ron Cline" for t in at.title))
+            self.assertTrue(any(t.value == "Weekly Time Sheet" for t in at.subheader))
+            self.assertFalse(any(t.value == "Time Sheet" and t.value != "Weekly Time Sheet" for t in at.subheader))
+            self.assertTrue(any(n.label == "Vacation Hours" for n in at.number_input))
+            self.assertTrue(any(n.label == "Sick Hours" for n in at.number_input))
+            self.assertTrue(any(t.label == "CVH # work hours" for t in at.text_input))
+            self.assertTrue(any(t.label == "Forestry #  work hours" for t in at.text_input))
+            self.assertTrue(any(t.label == "BNSF # work hours" for t in at.text_input))
+            self.assertTrue(any(b.label == "Save week" for b in at.button))
+            self.assertTrue(any(b.label == "Email to patti@centralvalleyheli.com" for b in at.button))
+            email_btn = next(b for b in at.button if b.label == "Email to patti@centralvalleyheli.com")
+            self.assertTrue(getattr(email_btn, "disabled", True) or email_btn.disabled)
+
+            next(d for d in at.date_input if d.label == "Week of (Sunday's Date)").set_value(date(2026, 11, 8)).run()
+            self.assertFalse(list(at.exception))
+            next(t for t in at.text_input if t.label == "Location").set_value("Office").run()
+            next(t for t in at.text_input if t.label == "CVH # work hours").set_value("8")
+            next(n for n in at.number_input if n.label == "Vacation Hours").set_value(4)
+            next(n for n in at.number_input if n.label == "Sick Hours").set_value(2)
+            next(t for t in at.text_input if t.label == "Initials (required before email)").set_value("RC")
+            next(b for b in at.button if b.label == "Save week").click().run()
+            self.assertFalse(list(at.exception))
+            self.assertTrue(any("Saved time sheet for week of 2026-11-08" in (s.value or "") for s in at.success))
+            book = at.session_state.get("_workbook")
+            self.assertIn("Time Sheets", book.sheets)
+            self.assertNotIn("Anthony Time Sheets", book.sheets)
+            header = book.sheets["Time Sheets"].rows[0]
+            row = book.sheets["Time Sheets"].rows[1]
+            self.assertEqual(row[header.index("Employee")], "Ron Cline")
+            self.assertEqual(row[header.index("Week Of")], "2026-11-08")
+            self.assertEqual(row[header.index("Sun Location")], "Office")
+            self.assertEqual(row[header.index("Sun CVH Hours")], "8")
+            self.assertEqual(row[header.index("Sun Vacation Hours")], "4")
+            self.assertEqual(row[header.index("Sun Sick Hours")], "2")
+            self.assertEqual(row[header.index("Initials")], "RC")
+            md = " ".join(m.value or "" for m in at.markdown)
+            self.assertIn("Worked hours: 8", md)
+            self.assertIn("Week Total", md)
+            self.assertIn("Vacation", md)
+            labels = [e.label for e in at.expander]
+            self.assertIn("Sun  2026-11-08 — 14 hrs", labels)
+            self.assertTrue(any(getattr(b, "label", "") == "Download PDF" for b in list(at.button) + list(at.download_button)))
+            self.assertTrue(any(getattr(b, "label", "") == "Download Excel" for b in list(at.button) + list(at.download_button)))
+            email_btn = next(b for b in at.button if b.label == "Email to patti@centralvalleyheli.com")
+            self.assertTrue(email_btn.disabled)
             self.assertFalse(list(at.exception))
         finally:
             secrets_singleton._programmatic_secrets = previous

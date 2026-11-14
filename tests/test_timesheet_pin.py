@@ -25,12 +25,13 @@ def _secrets(extra=None):
 
 
 class TimesheetPinTests(unittest.TestCase):
-    def test_roster_matches_mail_callback_and_excludes_ron(self):
+    def test_roster_matches_mail_callback_and_includes_ron(self):
         self.assertEqual(pin.PIN_EMPLOYEES, tm.TIMESHEET_PIN_EMPLOYEES)
-        self.assertNotIn("Ron Cline", pin.PIN_EMPLOYEES)
+        self.assertIn("Ron Cline", pin.PIN_EMPLOYEES)
         self.assertIn("Anthony Root", pin.PIN_EMPLOYEES)
         self.assertTrue(tm.timesheet_pin_employee_ok("Skylar Fingerle"))
-        self.assertFalse(tm.timesheet_pin_employee_ok("Ron Cline"))
+        self.assertTrue(tm.timesheet_pin_employee_ok("Ron Cline"))
+        self.assertEqual(pin.PIN_EMPLOYEES[0], "Ron Cline")
 
     def test_hash_is_salted_and_does_not_contain_the_pin(self):
         first = pin.make_pin_hash("2468")
@@ -81,8 +82,12 @@ class TimesheetPinTests(unittest.TestCase):
         self.assertIsNone(pin.verify_device_cookie('"' + token + '"', "nope-but-long-enough", now=NOW + 1))
         quoted = pin.verify_device_cookie('"' + token + '"', SECRET, now=NOW + 1)
         self.assertEqual(quoted, "Carl Mulvaney")
+        self.assertEqual(
+            pin.verify_device_cookie(pin.sign_device_cookie("Ron Cline", SECRET, now=NOW), SECRET, now=NOW + 1),
+            "Ron Cline",
+        )
         with self.assertRaises(ValueError):
-            pin.sign_device_cookie("Ron Cline", SECRET, now=NOW)
+            pin.sign_device_cookie("Unknown Person", SECRET, now=NOW)
         with self.assertRaises(ValueError):
             pin.sign_device_cookie("Carl Mulvaney", "short", now=NOW)
 
@@ -105,7 +110,14 @@ class TimesheetPinTests(unittest.TestCase):
         self.assertTrue(line.startswith('"Skylar Fingerle" = "scrypt$'))
         self.assertNotIn("4242", line)
         self.assertIn("shell history", stderr.getvalue())
-        self.assertEqual(tool.main(["--employee", "Ron Cline", "--pin", "4242"]), 2)
+        self.assertEqual(tool.main(["--employee", "Unknown Person", "--pin", "4242"]), 2)
+        stdout_ron = io.StringIO()
+        stderr_ron = io.StringIO()
+        with redirect_stdout(stdout_ron), redirect_stderr(stderr_ron):
+            self.assertEqual(tool.main(["--employee", "Ron Cline", "--pin", "4242"]), 0)
+        ron_line = stdout_ron.getvalue().strip()
+        self.assertTrue(ron_line.startswith('"Ron Cline" = "scrypt$'))
+        self.assertNotIn("4242", ron_line)
         self.assertEqual(tool.main(["--pin", "12"]), 2)
 
 

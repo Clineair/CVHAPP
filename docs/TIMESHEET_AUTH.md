@@ -26,8 +26,7 @@ opens the app at least once a year stays remembered. Clearing site data, or
 Switch employee, forgets the phone. Changing a PIN hash does not sign out
 phones that are already remembered. Rotating `cookie_secret` does.
 
-The Employees list and the calendar stay open with no PIN. Ron Cline has no
-time sheet and no PIN.
+The Employees list and the calendar stay open with no PIN.
 
 If `[timesheet_pins]` or `[timesheet_pin].cookie_secret` is missing, the time
 sheet shows **PIN not set up yet - ask the office** and does not crash.
@@ -79,9 +78,8 @@ client secret.
 
 **Implemented in this branch, but live sending stays off:**
 
-- Time-sheet access for all six employees who have a form: the five official
-  weekly forms, and Anthony Root's separate official form. Ron Cline has no
-  time sheet.
+- Time-sheet access for all seven employees who have a form: the six official
+  weekly forms, including Ron Cline, and Anthony Root's separate official form.
 - Official weekly mileage uses the IRS business rate that applies to the
   actual travel date, including a week that spans a rate change. Historic
   saved amounts are left alone. Anthony's form has no mileage fields.
@@ -288,6 +286,7 @@ server_metadata_url = "https://accounts.google.com/.well-known/openid-configurat
 # mailbox. Leave a name out until you have the real address. Do not guess
 # or commit real addresses.
 [timesheet_employees]
+# "Ron Cline" = "their-signin-account@example.com"
 # "Carl Mulvaney" = "their-signin-account@example.com"
 # "Barry Markham" = "their-signin-account@example.com"
 # "Robert Rackley" = "their-signin-account@example.com"
@@ -299,8 +298,9 @@ server_metadata_url = "https://accounts.google.com/.well-known/openid-configurat
 6. After deploy, the `redirect_uri` in secrets must match a URI registered on
    the Google client.
 
-Time-sheet employees (Ron Cline has no timesheet):
+Time-sheet employees:
 
+- Ron Cline
 - Carl Mulvaney
 - Barry Markham
 - Robert Rackley
