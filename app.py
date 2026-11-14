@@ -388,11 +388,12 @@ EMPLOYEES = [
     "Gary Grant",
     "Skylar Fingerle",
 ]
-# Weekly time sheet is only for these employees, in Ron's listed order.
-# Official weekly form for these five employees. Ron Cline has no timesheet.
+# Weekly time sheet is only for these employees, in the Employees page order.
+# Official weekly form for these six employees.
 # Anthony Root uses a separate official form (see ANTHONY_TIMESHEET_*) and does
 # not get vacation or sick hours on that form.
 TIMESHEET_EMPLOYEES = [
+    "Ron Cline",
     "Carl Mulvaney",
     "Barry Markham",
     "Robert Rackley",
@@ -425,7 +426,7 @@ ANTHONY_TIMESHEET_NUMERIC_FIELDS = {
     "Survery Hrs", "Standby Hrs",
 }
 TIMESHEET_DAYS = ("Sun", "Mon", "Tues", "Wed", "Thur", "Fri", "Sat")
-# Vacation and Sick sit with the worked-hour rows on the five-person form only.
+# Vacation and Sick sit with the worked-hour rows on the official weekly form only.
 TIMESHEET_WORKED_HOUR_FIELDS = ("CVH Hours", "Forestry Hours", "BNSF Hours")
 TIMESHEET_LEAVE_FIELDS = ("Vacation Hours", "Sick Hours")
 TIMESHEET_LEAVE_HOURS_MAX = 24
@@ -2849,7 +2850,7 @@ def employee_has_timesheet(name):
 
 
 def employee_has_official_weekly_timesheet(name):
-    """True for the five employees on the official Central Valley Helicopters weekly form."""
+    """True for the employees on the official Central Valley Helicopters weekly form."""
     return _cell(name) in list(TIMESHEET_EMPLOYEES)
 
 
@@ -2890,7 +2891,7 @@ def timesheet_columns():
 
 
 def timesheet_leave_columns():
-    """Day columns for vacation and sick on the five-person weekly sheet."""
+    """Day columns for vacation and sick on the official weekly sheet."""
     cols = []
     for day in TIMESHEET_DAYS:
         for field in TIMESHEET_LEAVE_FIELDS:
@@ -2946,7 +2947,7 @@ def timesheet_hour_total_lines(record):
 
 
 def timesheet_day_hour_breakdown(record, day):
-    """Hours for one day on the five-person weekly sheet.
+    """Hours for one day on the official weekly sheet.
 
     Worked is CVH + Forestry + BNSF. Total is worked plus vacation plus sick.
     Missing or blank worked-hour cells count as 0. Reimbursement dollars are

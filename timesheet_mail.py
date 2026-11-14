@@ -48,6 +48,7 @@ TIMESHEET_SIGNIN_SECTION = "timesheet_employees"
 # PIN-verified time-sheet employees. Must match timesheet_pin.PIN_EMPLOYEES.
 # Kept here so the callback image does not import the Streamlit app.
 TIMESHEET_PIN_EMPLOYEES = (
+    "Ron Cline",
     "Carl Mulvaney",
     "Anthony Root",
     "Barry Markham",
@@ -181,7 +182,7 @@ def timesheet_mail_recipient(secrets=None):
 
 
 def timesheet_pin_employee_ok(name):
-    """True for an employee who can have a time-sheet PIN. Ron Cline is not included."""
+    """True for an employee who can have a time-sheet PIN."""
     return _cell(name) in TIMESHEET_PIN_EMPLOYEES
 
 
