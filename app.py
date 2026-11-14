@@ -11,6 +11,31 @@ import timesheet_company_mail
 import timesheet_pin
 from zoneinfo import ZoneInfo
 
+
+def _ensure_current_mail_modules():
+    """Reload the mail helpers if this process still holds an older copy.
+
+    Streamlit can keep an already-imported helper module in memory after a
+    deploy, so app.py (new) calls attributes the helper (old) does not have yet.
+    That crashed the timesheet page with an AttributeError. Reloading picks up
+    the files on disk. A no-op when the helpers are already current.
+    """
+    import importlib
+    import sys
+    company = sys.modules.get("timesheet_company_mail")
+    needed = ("sent_count", "resend_too_soon", "RESEND_COOLDOWN_SECONDS", "RESEND_BLOCKED_MESSAGE")
+    if company is not None and all(hasattr(company, name) for name in needed):
+        return company
+    mail = sys.modules.get("timesheet_mail")
+    if mail is not None:
+        importlib.reload(mail)
+    if company is not None:
+        company = importlib.reload(company)
+    return company
+
+
+_ensure_current_mail_modules()
+
 # ────────────────────────────────────────────────
 # Page Config & CVH Logo
 # ────────────────────────────────────────────────

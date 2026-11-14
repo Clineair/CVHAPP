@@ -138,3 +138,43 @@ class TimesheetUpsertTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class StaleMailModuleRegressionTests(unittest.TestCase):
+    """Hotfix: a stale in-memory timesheet_company_mail crashed the timesheet page."""
+
+    def test_stale_helper_module_is_reloaded_with_new_attributes(self):
+        import sys
+        import timesheet_company_mail as company
+        s = _exec_equipment_helpers()
+        saved = {name: getattr(company, name) for name in (
+            "sent_count", "resend_too_soon", "RESEND_COOLDOWN_SECONDS", "RESEND_BLOCKED_MESSAGE")}
+        try:
+            for name in saved:
+                delattr(company, name)
+            self.assertFalse(hasattr(sys.modules["timesheet_company_mail"], "sent_count"))
+            fresh = s["_ensure_current_mail_modules"]()
+            self.assertIs(fresh, sys.modules["timesheet_company_mail"])
+            for name in saved:
+                self.assertTrue(hasattr(fresh, name), name)
+            # Real Time Sheet Mail row shape (as read from the live tab).
+            rows = [{
+                "Timestamp": "2026-11-14 14:45:14 PST", "Entry ID": "TS-20261114-144512-1c14",
+                "Action": "Send", "Employee": "Ron Cline", "Week Of": "2026-11-08",
+                "Recipient": "patti@centralvalleyheli.com", "Content Hash": "e298", "Initials": "RC",
+                "Status": "Sent", "Idempotency Key": "ec0a", "Provider": "gmail_smtp", "Result Detail": "",
+            }]
+            record = {"Employee": "Ron Cline", "Week Of": "2026-11-08", "Content Hash": "e298"}
+            import timesheet_mail as tm
+            compact = tm.compact_mail_audit(rows, "Ron Cline")
+            self.assertEqual(fresh.sent_count(compact, record), 1)
+        finally:
+            for name, value in saved.items():
+                setattr(company, name, value)
+
+    def test_current_helper_module_is_left_alone(self):
+        import timesheet_company_mail as company
+        s = _exec_equipment_helpers()
+        before = company.sent_count
+        self.assertIs(s["_ensure_current_mail_modules"](), company)
+        self.assertIs(company.sent_count, before)
