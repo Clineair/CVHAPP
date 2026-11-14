@@ -330,3 +330,182 @@ class CompanyGraphSendTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class UpdatedCopyResendTests(unittest.TestCase):
+    """A week that was already sent can go out again as an explicit updated copy."""
+
+    def _sent_audit(self, record, when="2026-11-14 14:45:00 PST", count=1):
+        return [{
+            "Employee": record["Employee"],
+            "Week Of": record["Week Of"],
+            "Content Hash": record["Content Hash"],
+            "Status": tm.TIMESHEET_MAIL_STATUS_SENT,
+            "Idempotency Key": tm.timesheet_send_idempotency_key(record),
+            "Timestamp": when,
+        } for _ in range(count)]
+
+    def _later(self, seconds=3600):
+        from datetime import datetime, timedelta
+        from zoneinfo import ZoneInfo
+        return datetime(2026, 11, 14, 14, 45, 0, tzinfo=ZoneInfo("America/Los_Angeles")) + timedelta(seconds=seconds)
+
+    def test_already_sent_still_blocks_without_the_explicit_option(self):
+        record, kwargs = _send_kwargs(audit_records=self._sent_audit(_record()))
+        sent = []
+        result = company.send_company_timesheet(
+            record, PDF, "a.pdf", smtp_send=lambda *a: sent.append(a), **kwargs,
+        )
+        self.assertEqual(result["status"], tm.TIMESHEET_MAIL_STATUS_DENIED)
+        self.assertEqual(result["error"], company.ALREADY_SENT_MESSAGE)
+        self.assertEqual(sent, [])
+        ok, reason = company.send_gates(record, pdf_bytes=PDF, filename="a.pdf", **{
+            k: v for k, v in kwargs.items() if k != "saved_content_hash"
+        })
+        self.assertFalse(ok)
+        self.assertIn("already sent", reason)
+
+    def test_resend_marks_subject_and_body_and_logs_distinct_key(self):
+        record = _record()
+        audit = self._sent_audit(record)
+        record, kwargs = _send_kwargs(audit_records=audit)
+        sent = []
+        result = company.send_company_timesheet(
+            record, PDF, "a.pdf", smtp_send=lambda u, p, m: sent.append(m),
+            allow_resend=True, now=self._later(), **kwargs,
+        )
+        self.assertEqual(result["status"], tm.TIMESHEET_MAIL_STATUS_SENT)
+        self.assertTrue(result["updated_copy"])
+        self.assertEqual(len(sent), 1)
+        self.assertTrue(sent[0]["Subject"].endswith("(updated copy)"))
+        self.assertEqual(sent[0]["To"], tm.timesheet_mail_recipient(kwargs["secrets"]))
+        self.assertIn("(updated copy)", sent[0].get_body(("plain",)).get_content())
+        self.assertNotEqual(result["idempotency_key"], tm.timesheet_send_idempotency_key(record))
+        self.assertEqual(result["idempotency_key"], company.resend_idempotency_key(record, audit))
+        # Second resend after the first is logged gets its own key again.
+        audit2 = audit + [{**audit[0], "Idempotency Key": result["idempotency_key"]}]
+        self.assertNotEqual(company.resend_idempotency_key(record, audit2), result["idempotency_key"])
+        self.assertEqual(company.sent_count(audit2, record), 2)
+
+    def test_normal_first_send_is_not_labelled_updated(self):
+        record, kwargs = _send_kwargs(audit_records=[])
+        sent = []
+        result = company.send_company_timesheet(
+            record, PDF, "a.pdf", smtp_send=lambda u, p, m: sent.append(m),
+            allow_resend=True, **kwargs,
+        )
+        self.assertEqual(result["status"], tm.TIMESHEET_MAIL_STATUS_SENT)
+        self.assertFalse(result["updated_copy"])
+        self.assertNotIn("updated copy", sent[0]["Subject"])
+        self.assertEqual(result["idempotency_key"], tm.timesheet_send_idempotency_key(record))
+
+    def test_resend_still_needs_pin_initials_saved_content_and_pdf(self):
+        record = _record()
+        audit = self._sent_audit(record)
+        sent = []
+        transport = lambda *a: sent.append(a)
+        now = self._later()
+        for extra, text in (
+            ({"access_allowed": False}, "PIN-verified"),
+            ({"user_employee": "Barry Markham"}, "own initialed"),
+            ({"initials_match": False}, "Initial and save"),
+            ({"saved_content_hash": "older-hash"}, "Initial and save"),
+        ):
+            rec, kwargs = _send_kwargs(audit_records=audit, **extra)
+            result = company.send_company_timesheet(
+                rec, PDF, "a.pdf", smtp_send=transport, allow_resend=True, now=now, **kwargs,
+            )
+            self.assertEqual(result["status"], tm.TIMESHEET_MAIL_STATUS_DENIED, extra)
+            self.assertIn(text, result["error"])
+        rec, kwargs = _send_kwargs(audit_records=audit)
+        bad = company.send_company_timesheet(
+            rec, b"not a pdf", "a.pdf", smtp_send=transport, allow_resend=True, now=now, **kwargs,
+        )
+        self.assertIn("PDF", bad["error"])
+        rec, kwargs = _send_kwargs(audit_records=audit, secrets={})
+        closed = company.send_company_timesheet(
+            rec, PDF, "a.pdf", smtp_send=transport, allow_resend=True, now=now, **kwargs,
+        )
+        self.assertEqual(closed["error"], company.NOT_READY_MESSAGE)
+        self.assertEqual(sent, [])
+
+    def test_double_tap_is_refused_inside_the_cooldown(self):
+        record = _record()
+        audit = self._sent_audit(record)
+        rec, kwargs = _send_kwargs(audit_records=audit)
+        sent = []
+        result = company.send_company_timesheet(
+            rec, PDF, "a.pdf", smtp_send=lambda *a: sent.append(a),
+            allow_resend=True, now=self._later(30), **kwargs,
+        )
+        self.assertEqual(result["status"], tm.TIMESHEET_MAIL_STATUS_DENIED)
+        self.assertEqual(result["error"], company.RESEND_BLOCKED_MESSAGE)
+        self.assertEqual(sent, [])
+        ok, _reason = company.send_gates(
+            rec, user_employee=rec["Employee"], secrets=kwargs["secrets"], initials_match=True,
+            access_allowed=True, pdf_bytes=PDF, filename="a.pdf", audit_records=audit,
+            allow_resend=True, now=self._later(120),
+        )
+        self.assertTrue(ok)
+
+    def test_uncertain_resend_needs_the_sent_folder_check(self):
+        record = _record()
+        audit = self._sent_audit(record) + [{
+            "Employee": record["Employee"], "Week Of": record["Week Of"],
+            "Content Hash": record["Content Hash"], "Status": tm.TIMESHEET_MAIL_STATUS_UNCERTAIN,
+            "Idempotency Key": "x", "Timestamp": "2026-11-14 15:00:00 PST",
+        }]
+        rec, kwargs = _send_kwargs(audit_records=audit)
+        sent = []
+        blocked = company.send_company_timesheet(
+            rec, PDF, "a.pdf", smtp_send=lambda *a: sent.append(a),
+            allow_resend=True, now=self._later(7200), **kwargs,
+        )
+        self.assertIn("did not get a clear result", blocked["error"])
+        self.assertEqual(sent, [])
+
+    def test_hash_is_hours_and_initials_only_so_new_layout_is_not_a_change(self):
+        # The duplicate key uses employee, week and content hash only; no PDF bytes.
+        record = _record()
+        key = tm.timesheet_send_idempotency_key(record)
+        self.assertEqual(key, tm.timesheet_send_idempotency_key(dict(record, Initials="CM")))
+
+    def test_compact_audit_keeps_timestamp_for_the_cooldown(self):
+        rows = tm.compact_mail_audit(self._sent_audit(_record()), "Carl Mulvaney")
+        self.assertEqual(rows[0]["Timestamp"], "2026-11-14 14:45:00 PST")
+
+    def test_audit_subject_for_resend_and_app_wiring(self):
+        source = (Path(__file__).resolve().parent.parent / "app.py").read_text()
+        self.assertIn('"Send an updated copy to Patti"', source)
+        self.assertIn("allow_resend=allow_resend", source)
+        self.assertIn("resend_offered = bool(already_sent and initials_ok and access_ok and identity == employee)", source)
+        self.assertIn('updated_copy=bool(result.get("updated_copy"))', source)
+
+    def test_edited_and_reinitialed_week_sends_normally_with_no_resend_option(self):
+        old = _record()
+        audit = self._sent_audit(old)
+        edited = dict(old, **{"Content Hash": "hash-after-edit"})
+        rec, kwargs = _send_kwargs(record=edited, audit_records=audit)
+        sent = []
+        result = company.send_company_timesheet(
+            rec, PDF, "a.pdf", smtp_send=lambda u, p, m: sent.append(m), **kwargs,
+        )
+        self.assertEqual(result["status"], tm.TIMESHEET_MAIL_STATUS_SENT)
+        self.assertFalse(result["updated_copy"])
+        self.assertNotIn("updated copy", sent[0]["Subject"])
+
+    def test_anthony_record_can_resend_as_updated_copy(self):
+        record = dict(_record("Anthony Root"), Form="Anthony")
+        audit = self._sent_audit(record)
+        rec, kwargs = _send_kwargs(
+            record=record, audit_records=audit,
+            secrets=_smtp_secrets(timesheet_employee_mail={"Anthony Root": {"email": "a@example.com", "provider": "gmail"}}),
+        )
+        sent = []
+        result = company.send_company_timesheet(
+            rec, PDF, "anthony.pdf", smtp_send=lambda u, p, m: sent.append(m),
+            allow_resend=True, now=self._later(), **kwargs,
+        )
+        self.assertEqual(result["status"], tm.TIMESHEET_MAIL_STATUS_SENT)
+        self.assertTrue(result["updated_copy"])
+        self.assertTrue(sent[0]["Subject"].endswith("(updated copy)"))

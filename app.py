@@ -4,6 +4,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import requests
 from datetime import datetime, date, time as dt_time, timedelta
+import time as time_module
 import uuid
 import timesheet_mail
 import timesheet_company_mail
@@ -3844,6 +3845,69 @@ def save_timesheet_mileage_trips(record, spreadsheet=None):
     return "Google Sheets (Time Sheet Mileage)"
 
 
+def _timesheet_col_letter(number):
+    letters = ""
+    while number > 0:
+        number, rem = divmod(number - 1, 26)
+        letters = chr(65 + rem) + letters
+    return letters
+
+
+def _replace_sheet_row(ws, row_number, header, values):
+    """Overwrite one row of a tab in place. Touches only that row."""
+    values = list(values) + [""] * (len(header) - len(values))
+    if hasattr(ws, "update"):
+        ws.update(
+            values=[values],
+            range_name="A" + str(row_number) + ":" + _timesheet_col_letter(len(header)) + str(row_number),
+            value_input_option="RAW",
+        )
+        return
+    for col_number, value in enumerate(values, start=1):
+        ws.update_cell(row_number, col_number, value)
+
+
+def _upsert_week_row(ws, header, values, record):
+    """One row per employee per week on the Time Sheets tabs.
+
+    A correction or re-save overwrites the newest existing row for that
+    employee and week. If older duplicate rows already exist they are left
+    alone (nothing is ever deleted); only the newest one is updated. A week
+    with no row yet is appended. The header row is never written.
+    """
+    employee = _cell((record or {}).get("Employee"))
+    week = format_equipment_date((record or {}).get("Week Of"))
+    existing = ws.get_all_values() if hasattr(ws, "get_all_values") else []
+    columns = [_cell(c) for c in (existing[0] if existing else header)]
+    try:
+        emp_col = columns.index("Employee")
+        week_col = columns.index("Week Of")
+        stamp_col = columns.index("Timestamp") if "Timestamp" in columns else None
+        entry_col = columns.index("Entry ID") if "Entry ID" in columns else None
+    except ValueError:
+        emp_col = None
+    best = None
+    if emp_col is not None and employee and week:
+        for number, row in enumerate(existing[1:], start=2):
+            row = list(row) + [""] * (len(columns) - len(row))
+            if _cell(row[emp_col]) != employee or format_equipment_date(row[week_col]) != week:
+                continue
+            key = (
+                _timesheet_sort_key({
+                    "Timestamp": row[stamp_col] if stamp_col is not None else "",
+                    "Entry ID": row[entry_col] if entry_col is not None else "",
+                }),
+                number,
+            )
+            if best is None or key > best[0]:
+                best = (key, number)
+    if best is None:
+        ws.append_row(values, value_input_option="RAW")
+        return "appended"
+    _replace_sheet_row(ws, best[1], header, values)
+    return "updated"
+
+
 def save_timesheet_record(record, spreadsheet=None):
     book = spreadsheet or _gsheets_spreadsheet()
     ws, _created = ensure_timesheets_worksheet(book)
@@ -3857,7 +3921,7 @@ def save_timesheet_record(record, spreadsheet=None):
             values.append("")
         else:
             values.append(str(value or ""))
-    ws.append_row(values, value_input_option="RAW")
+    _upsert_week_row(ws, header, values, record)
     mileage_dest = save_timesheet_mileage_trips(record, book)
     if mileage_dest:
         return "Google Sheets (Time Sheets, Time Sheet Mileage)"
@@ -4105,17 +4169,19 @@ def timesheet_email_can_send(record=None, configured=None, user=None, secrets=No
         audit_records=kwargs.get("audit_records"),
         acknowledge_uncertain=kwargs.get("acknowledge_uncertain", False),
         saved_content_hash=kwargs.get("saved_content_hash"),
+        allow_resend=kwargs.get("allow_resend", False),
+        now=kwargs.get("now"),
     )
 
 
-def timesheet_email_subject(record):
+def timesheet_email_subject(record, updated_copy=False):
     import timesheet_company_mail
-    return timesheet_company_mail.email_subject(record)
+    return timesheet_company_mail.email_subject(record, updated_copy)
 
 
-def timesheet_email_body(record):
+def timesheet_email_body(record, updated_copy=False):
     import timesheet_company_mail
-    return timesheet_company_mail.email_body(record)
+    return timesheet_company_mail.email_body(record, updated_copy)
 
 
 def timesheet_email_compose(record, to=None):
@@ -4258,7 +4324,7 @@ def load_timesheet_mail_records_readonly(spreadsheet=None):
     return records_from_worksheet(ws, timesheet_mail_columns())
 
 
-def build_timesheet_mail_audit_record(record, action=None, user=None, when=None, status=None, idempotency_key=None, provider=None, detail=None, recipient=None, pin_employee=None):
+def build_timesheet_mail_audit_record(record, action=None, user=None, when=None, status=None, idempotency_key=None, provider=None, detail=None, recipient=None, pin_employee=None, updated_copy=False):
     action = _cell(action) or TIMESHEET_MAIL_ACTION_COMPOSER
     when = when or datetime.now(ZoneInfo("America/Los_Angeles"))
     if pin_employee:
@@ -4274,7 +4340,7 @@ def build_timesheet_mail_audit_record(record, action=None, user=None, when=None,
         "Employee": _cell(record.get("Employee")),
         "Week Of": _cell(record.get("Week Of")),
         "Recipient": _cell(recipient) or TIMESHEET_EMAIL_TO,
-        "Subject": timesheet_email_subject(record),
+        "Subject": timesheet_email_subject(record, updated_copy),
         "Content Hash": _cell(record.get("Content Hash")),
         "Initials": _cell(record.get("Initials")),
         "Signed-in Email": email,
@@ -4299,6 +4365,7 @@ def apply_timesheet_send_result(record, result, user=None, spreadsheet=None, whe
         provider=result.get("provider"),
         detail=result.get("error") or "",
         recipient=result.get("to") or TIMESHEET_EMAIL_TO,
+        updated_copy=bool(result.get("updated_copy")),
     )
     save_timesheet_mail_audit_record(audit, spreadsheet=spreadsheet)
     return audit
@@ -5256,7 +5323,7 @@ def save_anthony_timesheet_record(record, spreadsheet=None):
     header = [_cell(c) for c in ws.row_values(1)]
     if not header:
         raise RuntimeError("Anthony Time Sheets worksheet has no header")
-    ws.append_row([str(record.get(c, "")) for c in header], value_input_option="RAW")
+    _upsert_week_row(ws, header, [str(record.get(c, "")) for c in header], record)
     return "Google Sheets (Anthony Time Sheets)"
 
 
@@ -6030,6 +6097,24 @@ def show_timesheet_email_section(employee, preview, saved=None, form_ok=False, p
             "I checked the company Sent folder. Send again only if it is not there. This is not an automatic retry.",
             key=prefix + "ack_uncertain",
         )
+    resend_key = "timesheet_resend_last_" + employee
+    already_sent = bool(
+        preview and audit_records and timesheet_mail.timesheet_already_sent(audit_records, preview)
+    )
+    # Every employee's timesheet (Anthony's separate one included) may send an updated copy.
+    resend_offered = bool(already_sent and initials_ok and access_ok and identity == employee)
+    allow_resend = False
+    if resend_offered:
+        # The checkbox key changes after every Sent row, so it starts unchecked again.
+        allow_resend = st.checkbox(
+            "Send an updated copy to Patti",
+            key=prefix + "resend_" + str(timesheet_company_mail.sent_count(audit_records, preview)),
+        )
+        last_resend = st.session_state.get(resend_key)
+        if allow_resend and last_resend and (time_module.time() - last_resend) < timesheet_company_mail.RESEND_COOLDOWN_SECONDS:
+            allow_resend = False
+            st.caption(timesheet_company_mail.RESEND_BLOCKED_MESSAGE)
+    updated_copy = bool(allow_resend and already_sent)
     can_send = False
     if not audit_failed:
         can_send = timesheet_email_can_send(
@@ -6043,6 +6128,7 @@ def show_timesheet_email_section(employee, preview, saved=None, form_ok=False, p
             audit_records=audit_records,
             acknowledge_uncertain=acknowledge,
             saved_content_hash=_cell((saved or preview).get("Content Hash")) if preview else None,
+            allow_resend=allow_resend,
         )
     if audit_failed:
         block = "Time-sheet mail history could not be read, so sending stays off."
@@ -6062,6 +6148,11 @@ def show_timesheet_email_section(employee, preview, saved=None, form_ok=False, p
         )
     elif not setup_ready:
         block = timesheet_company_mail.NOT_READY_MESSAGE
+    elif can_send and updated_copy:
+        block = (
+            "Review the message, then press Send. This sends an updated copy of the time sheet "
+            "Patti already received, from the company mailbox."
+        )
     elif can_send:
         block = "Review the message, then press Send. This sends from the company mailbox."
     else:
@@ -6076,6 +6167,7 @@ def show_timesheet_email_section(employee, preview, saved=None, form_ok=False, p
             audit_records=audit_records,
             acknowledge_uncertain=acknowledge,
             saved_content_hash=_cell((saved or preview).get("Content Hash")) if preview else None,
+            allow_resend=allow_resend,
         )
     st.markdown("**Email this week's time sheet**")
     st.caption(block)
@@ -6084,22 +6176,25 @@ def show_timesheet_email_section(employee, preview, saved=None, form_ok=False, p
         st.markdown("**From:** " + from_line)
         if reply_to:
             st.markdown("**Reply-To:** " + reply_to)
-        st.markdown("**Subject:** " + timesheet_email_subject(preview))
+        st.markdown("**Subject:** " + timesheet_email_subject(preview, updated_copy))
         st.text_area(
             "Message body (not sent until you press Send)",
-            value=timesheet_email_body(preview),
+            value=timesheet_email_body(preview, updated_copy),
             height=140,
             disabled=True,
             key=prefix + "email_body",
         )
         st.caption("Attachment: " + (filename or "weekly time sheet PDF") + " — official generated PDF only.")
         send_clicked = st.button(
-            "Send to " + recipient if can_send else "Email to " + recipient,
+            ("Send updated copy to " if updated_copy else "Send to ") + recipient if can_send else "Email to " + recipient,
             disabled=not can_send,
             use_container_width=True,
             key=prefix + "email",
         )
         if send_clicked and can_send and pdf_bytes:
+            if updated_copy:
+                # Stamp before sending so a quick second tap is refused.
+                st.session_state[resend_key] = time_module.time()
             result = timesheet_company_mail.send_company_timesheet(
                 preview,
                 pdf_bytes,
@@ -6111,6 +6206,7 @@ def show_timesheet_email_section(employee, preview, saved=None, form_ok=False, p
                 audit_records=audit_records,
                 acknowledge_uncertain=acknowledge,
                 access_allowed=True,
+                allow_resend=allow_resend,
             )
             flash = {
                 "status": result.get("status") or "",
