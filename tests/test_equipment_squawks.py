@@ -17,7 +17,7 @@ def _exec_equipment_helpers():
         "PILOTS", "ACCOUNTABLE_EXEC", "DIRECTOR_MAINTENANCE", "APPROVERS",
         "EQUIPMENT_SHEET_TITLE", "SQUAWKS_SHEET_TITLE", "SAFETY_MEETINGS_SHEET_TITLE", "SAFETY_MEETING_ITEMS", "SAFETY_MEETING_ATTENDEES", "SAFETY_MEETING_VIEW", "SAFETY_MEETING_RECORD", "AIRCRAFT_MAINT_SHEET_TITLE", "AIRCRAFT_MAINT_COLUMNS", "AIRCRAFT_MAINT_PROFILES",
         "GREASE_CHECKPOINT_OFFSETS", "GREASE_AMBER_HOURS", "N480ML_MAINT_SHEET_TITLE",
-        "EQUIPMENT_INFO_COLUMNS", "EQUIPMENT_COLUMNS", "EQUIPMENT_EDIT_COLUMNS", "SQUAWK_COLUMNS", "EQUIPMENT_TYPES",
+        "EQUIPMENT_INFO_COLUMNS", "EQUIPMENT_INFO_ENTRY_COLUMNS", "EQUIPMENT_COLUMNS", "EQUIPMENT_EDIT_COLUMNS", "SQUAWK_COLUMNS", "EQUIPMENT_TYPES",
         "SQUAWK_CATEGORIES", "SQUAWK_SEVERITIES", "SEVERITY_GROUNDED", "STATUS_OPEN",
         "STATUS_RESOLVED", "REPORTERS", "ACTIVE_VALUES", "HEADER_PAGES",
         "OFFICIAL_EQUIPMENT_NAMES", "REGISTRATION_EXPIRE_COL", "ANNUAL_MAINT_COL",
@@ -36,7 +36,7 @@ def _exec_equipment_helpers():
         "_cell", "parse_equipment_date", "format_equipment_date", "registration_due_date", "annual_maint_due_date",
         "date_flag", "date_flag_label", "date_status_markup", "tonnage_applies", "tonnage_due_date", "is_active_equipment",
         "is_open_squawk", "is_grounded_squawk", "squawks_for", "open_squawks_for",
-        "equipment_has_grounding", "records_from_worksheet", "_worksheet_or_none",
+        "equipment_has_grounding", "equipment_has_info", "equipment_info_button_color", "streamlit_widget_key_css_class", "equipment_info_button_styles_css", "apply_equipment_info_button_styles", "records_from_worksheet", "_worksheet_or_none",
         "_write_equipment_rows", "ensure_equipment_worksheet", "ensure_equipment_info_columns",
         "ensure_squawks_worksheet", "load_equipment_records",
         "load_squawk_records", "build_squawk_record", "save_squawk_record", "resolve_squawk",
@@ -252,6 +252,77 @@ class PlaceholderAndLogicTests(unittest.TestCase):
         self.assertIn("Tonnage Applies", self.s["EQUIPMENT_COLUMNS"])
         self.assertEqual(self.s["official_equipment_rows"]()[21][0], "Heli Hauler")
         self.assertEqual(self.s["official_equipment_rows"]()[21][2], "")
+
+    def test_equipment_has_info_ignores_tonnage_applies_and_blanks(self):
+        has_info = self.s["equipment_has_info"]
+        color = self.s["equipment_info_button_color"]
+        entry_cols = self.s["EQUIPMENT_INFO_ENTRY_COLUMNS"]
+        info_cols = self.s["EQUIPMENT_INFO_COLUMNS"]
+        green = self.s["DATE_STATUS_COLORS"]["ok"]
+        red = self.s["DATE_STATUS_COLORS"]["expired"]
+        self.assertEqual(green, "#15803d")
+        self.assertEqual(red, "#b91c1c")
+        self.assertEqual(
+            entry_cols,
+            [
+                "Year", "Make/Model", "VIN/Serial", "Plate/N-number", "Notes",
+                "Registration Expire Date", "Annual Maint Date",
+                "Tonnage Wt Expire Date",
+            ],
+        )
+        self.assertIn("Tonnage Applies", info_cols)
+        self.assertNotIn("Tonnage Applies", entry_cols)
+        self.assertFalse(has_info({}))
+        self.assertFalse(has_info({"Tonnage Applies": "Yes"}))
+        self.assertFalse(has_info({"Tonnage Applies": "No"}))
+        self.assertFalse(has_info({"Year": "  ", "Notes": "", "Tonnage Applies": "Yes"}))
+        self.assertEqual(color({"Tonnage Applies": "Yes"}), red)
+        for col in entry_cols:
+            record = {c: "" for c in info_cols}
+            record["Tonnage Applies"] = "Yes"
+            record[col] = "  "
+            self.assertFalse(has_info(record), col)
+            record[col] = "entered"
+            self.assertTrue(has_info(record), col)
+            self.assertEqual(color(record), green, col)
+
+    def test_equipment_info_button_styles_color_by_info(self):
+        css_fn = self.s["equipment_info_button_styles_css"]
+        key_class = self.s["streamlit_widget_key_css_class"]
+        green = self.s["DATE_STATUS_COLORS"]["ok"]
+        red = self.s["DATE_STATUS_COLORS"]["expired"]
+        units = [
+            {"Unit ID": "Heli1", "Year": "1984", "Make/Model": "GMC Sierra C6500", "Tonnage Applies": ""},
+            {"Unit ID": "Heli2", "Tonnage Applies": "Yes"},
+            {"Unit ID": "FS Truck", "Notes": "", "Tonnage Applies": "No"},
+        ]
+        css = css_fn(units)
+        self.assertEqual(key_class("info_btn_Heli1"), "st-key-info_btn_Heli1")
+        self.assertEqual(key_class("info_btn_FS Truck"), "st-key-info_btn_FS-Truck")
+        self.assertIn(".st-key-info_btn_Heli1", css)
+        self.assertIn(".st-key-info_btn_Heli2", css)
+        self.assertIn(".st-key-info_btn_FS-Truck", css)
+        self.assertNotIn(".st-key-info_btn_FS Truck", css)
+
+        def rule_for(cls):
+            start = css.find("." + cls)
+            self.assertGreaterEqual(start, 0, cls)
+            end = css.find("}", start)
+            self.assertGreater(end, start, cls)
+            return css[start:end + 1]
+
+        heli1 = rule_for("st-key-info_btn_Heli1")
+        heli2 = rule_for("st-key-info_btn_Heli2")
+        truck = rule_for("st-key-info_btn_FS-Truck")
+        self.assertIn("background-color:" + green, heli1)
+        self.assertIn("color:#ffffff", heli1)
+        self.assertIn("background-color:" + red, heli2)
+        self.assertIn("background-color:" + red, truck)
+        self.assertNotIn("background-color:" + red, heli1)
+        self.assertNotIn("ifta_btn_", css)
+        self.assertNotIn("squawk_btn_", css)
+        self.assertEqual(css_fn([]), "<style></style>")
+        self.assertEqual(css_fn([{"Unit ID": ""}]), "<style></style>")
 
     def test_registration_and_annual_maint_flags(self):
         from datetime import date
@@ -3559,6 +3630,25 @@ class HeaderAndEquipmentPageTests(unittest.TestCase):
         book = at.session_state["_workbook"]
         self.assertEqual(len(book.sheets["Squawks"].rows), 2)
         self.assertEqual(book.sheets["Sheet1"].rows, [])
+
+    def test_equipment_info_buttons_are_red_when_only_tonnage_applies_is_set(self):
+        from streamlit.testing.v1 import AppTest
+        at = AppTest.from_string(equipment_offline_app(), default_timeout=30).run()
+        at.button(key="nav_equipment").click().run()
+        self.assertFalse(list(at.exception))
+        md = " ".join(m.value or "" for m in at.markdown)
+        compact = md.replace(" ", "")
+        self.assertIn(".st-key-info_btn_Heli1", md)
+        self.assertIn(".st-key-info_btn_Heli2", md)
+        self.assertIn(".st-key-info_btn_FS-Truck", md)
+        # Official seed leaves info blank; Tonnage Applies Yes on Heli2 still counts as no entry.
+        self.assertIn("background-color:#b91c1c", compact)
+        self.assertNotIn("background-color:#15803d", compact)
+        self.assertNotIn(".st-key-ifta_btn_", md)
+        self.assertNotIn(".st-key-squawk_btn_", md)
+        # The injected CSS should not recolor IFTA or Squawk buttons.
+        self.assertTrue(any(b.label == "IFTA" for b in at.button))
+        self.assertTrue(any(b.label == "Squawk" for b in at.button))
 
     def test_header_placeholders_and_frat_still_reachable(self):
         from streamlit.testing.v1 import AppTest
