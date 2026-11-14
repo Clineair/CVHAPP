@@ -2935,6 +2935,37 @@ def timesheet_weekly_hour_totals(record):
     }
 
 
+TIMESHEET_TOTAL_HOUR_ROWS = (
+    "CVH Hours", "Forestry Hours", "BNSF Hours", "Vacation Hours", "Sick Hours",
+)
+
+
+def timesheet_grid_totals(record):
+    """Totals for the grid on the printed weekly sheet (PDF and Excel).
+
+    rows: weekly sum of each hour row (CVH, Forestry, BNSF, Vacation, Sick).
+    days: per-day sum of worked plus vacation plus sick, in TIMESHEET_DAYS order.
+    grand: the week's grand total, the same as Total Hours Including Paid Leave.
+    Blank cells count as 0. Location, Perdiem Rate and Other are not hours.
+    """
+    record = record or {}
+    rows = {}
+    for field in TIMESHEET_TOTAL_HOUR_ROWS:
+        total = 0.0
+        for day in TIMESHEET_DAYS:
+            raw = record.get(timesheet_day_column(day, field))
+            if field in TIMESHEET_LEAVE_FIELDS:
+                total += timesheet_leave_hours(raw)
+            else:
+                number = timesheet_parse_number(raw)
+                if number is not None:
+                    total += number
+        rows[field] = round(total, 2)
+    days = [timesheet_day_hour_breakdown(record, day)["Total"] for day in TIMESHEET_DAYS]
+    grand = round(sum(days), 2)
+    return {"rows": rows, "days": days, "grand": grand}
+
+
 def timesheet_hour_total_lines(record):
     """Labeled hour totals. Worked hours do not include paid leave."""
     totals = timesheet_weekly_hour_totals(record)
@@ -4676,6 +4707,7 @@ def build_timesheet_xlsx(record):
     from copy import copy
     from openpyxl import load_workbook
     from openpyxl.styles import Font, Alignment, Border, Side
+    from openpyxl.worksheet.properties import PageSetupProperties
 
     path = timesheet_bundle_path("timesheet_template.xlsx")
     wb = load_workbook(path)
@@ -4765,6 +4797,45 @@ def build_timesheet_xlsx(record):
     ws["B42"] = sig_line
     date_text = format_equipment_date(record.get("Signature Date"))
     ws["F42"] = "Date" + (("  " + date_text) if date_text else "")
+    # Totals: a Total column (J) for each hour row and a Daily Total row under
+    # Sick Hours. Insert the row last so every fixed cell above keeps its address.
+    grid_totals = timesheet_grid_totals(record)
+    last_row = ws.max_row
+    ws.insert_rows(16)
+    for r in range(last_row + 1, 15, -1):
+        ws.row_dimensions[r + 1].height = ws.row_dimensions[r].height
+    ws.row_dimensions[16].height = 22
+    thin = Side(style="thin")
+    box = Border(left=thin, right=thin, top=thin, bottom=thin)
+    bold = Font(name="Arial", size=10, bold=True)
+    center = Alignment(horizontal="center", vertical="center")
+    for r in range(7, 17):
+        ws.cell(r, 10).border = box
+        if r >= 14:
+            for col in range(2, 10):
+                ws.cell(r, col).border = box
+    ws.column_dimensions["J"].width = 11.43
+    ws["J7"] = "Total"
+    ws["J7"].font = bold
+    ws["J7"].alignment = center
+    for row_num, field in ((9, "CVH Hours"), (10, "Forestry Hours"), (11, "BNSF Hours"),
+                           (14, "Vacation Hours"), (15, "Sick Hours")):
+        ws.cell(row_num, 10, timesheet_format_hours(grid_totals["rows"][field]) or "0")
+        ws.cell(row_num, 10).font = bold
+        ws.cell(row_num, 10).alignment = center
+    ws["B16"] = "Daily Total"
+    ws["B16"].font = bold
+    for i, value in enumerate(grid_totals["days"]):
+        cell = ws.cell(16, 3 + i, timesheet_format_hours(value) or "0")
+        cell.font = bold
+        cell.alignment = center
+    ws["J16"] = timesheet_format_hours(grid_totals["grand"]) or "0"
+    ws["J16"].font = bold
+    ws["J16"].alignment = center
+    # keep the sheet on one printed page after the added row and column
+    ws.sheet_properties.pageSetUpPr = PageSetupProperties(fitToPage=True)
+    ws.page_setup.fitToWidth = 1
+    ws.page_setup.fitToHeight = 1
     buf = io.BytesIO()
     wb.save(buf)
     return buf.getvalue()
@@ -4817,20 +4888,34 @@ def build_timesheet_pdf(record, logo_path=None):
     # Grid. Vacation and Sick are extra rows on the same day columns as worked hours.
     y -= 16
     left = 0.55 * inch
-    row_labels = [label for _field, label in TIMESHEET_DAY_FIELDS]
-    col_labels = [""] + list(TIMESHEET_DAYS)
-    col_w = [1.45 * inch] + [0.72 * inch] * 7
-    field_rows = len(TIMESHEET_DAY_FIELDS)
-    # Header is tall enough for the day name and date. Field rows stay readable
-    # with Vacation and Sick added, and the sheet still fits on one page.
-    row_h = [0.36 * inch] + [0.40 * inch] * field_rows
-    rows = 1 + field_rows
-    cols = 8
+    # Header is tall enough for the day name and date.
+    # Data rows are a little shorter so the Daily Total row still fits on one page.
+    # A Total column on the far right holds each hour row's weekly sum.
+    daily_after = "Sick Hours"
+    grid_rows = []
+    for field, label in TIMESHEET_DAY_FIELDS:
+        grid_rows.append((field, label))
+        if field == daily_after:
+            grid_rows.append(("__daily_total__", "Daily Total"))
+    grid_totals = timesheet_grid_totals(record)
+    col_labels = [""] + list(TIMESHEET_DAYS) + ["Total"]
+    col_w = [1.40 * inch] + [0.66 * inch] * 7 + [0.68 * inch]
+    row_h = [0.36 * inch] + [0.37 * inch] * len(grid_rows)
+    rows = len(row_h)
+    cols = len(col_w)
     grid_top = y
     grid_height = sum(row_h)
     grid_width = sum(col_w)
     c.setStrokeColor(black)
     c.setLineWidth(0.7)
+    # shade the header, the Total column and the Daily Total row so totals stand out
+    c.setFillColor(HexColor("#EEEEEE"))
+    total_x = left + sum(col_w[:-1])
+    c.rect(total_x, grid_top - grid_height, col_w[-1], grid_height, stroke=0, fill=1)
+    daily_idx = [i for i, (f, _l) in enumerate(grid_rows) if f == "__daily_total__"][0]
+    daily_top = grid_top - sum(row_h[: daily_idx + 1])
+    c.rect(left, daily_top - row_h[daily_idx + 1], grid_width, row_h[daily_idx + 1], stroke=0, fill=1)
+    c.setFillColor(black)
     # horizontal lines
     yy = grid_top
     for r in range(rows + 1):
@@ -4845,9 +4930,6 @@ def build_timesheet_pdf(record, logo_path=None):
 
     dates = timesheet_day_dates(week)
     _s(8, True)
-    xx = left
-    # header row
-    c.drawCentredString(left + col_w[0] / 2, grid_top - 16, "")
     xx = left + col_w[0]
     for i, day in enumerate(TIMESHEET_DAYS):
         c.drawCentredString(xx + col_w[i + 1] / 2, grid_top - 12, day)
@@ -4855,22 +4937,36 @@ def build_timesheet_pdf(record, logo_path=None):
         c.drawCentredString(xx + col_w[i + 1] / 2, grid_top - 22, dates[i].strftime("%m/%d"))
         _s(8, True)
         xx += col_w[i + 1]
+    c.drawCentredString(xx + col_w[-1] / 2, grid_top - 16, "Total")
     # labels and values
     yy = grid_top - row_h[0]
-    for r, (field, label) in enumerate(TIMESHEET_DAY_FIELDS):
-        _s(6.5, True)
-        # wrap label in first column
-        text_y = yy - 12
+    for r, (field, label) in enumerate(grid_rows):
+        is_daily = field == "__daily_total__"
+        _s(7 if is_daily else 6.5, True)
+        text_y = yy - 12 if not is_daily else yy - 16
         for line in _timesheet_wrap_label(label, 24):
             c.drawString(left + 4, text_y, line)
             text_y -= 9
         xx = left + col_w[0]
-        _s(7, False)
+        _s(8 if is_daily else 7, is_daily)
         for i, day in enumerate(TIMESHEET_DAYS):
-            val = _cell(record.get(timesheet_day_column(day, field)))
+            if is_daily:
+                val = timesheet_format_hours(grid_totals["days"][i]) or "0"
+            else:
+                val = _cell(record.get(timesheet_day_column(day, field)))
             if val:
-                c.drawCentredString(xx + col_w[i + 1] / 2, yy - 18, val[:14])
+                c.drawCentredString(xx + col_w[i + 1] / 2, yy - (16 if is_daily else 18), val[:14])
             xx += col_w[i + 1]
+        # far right: weekly sum of the hour row, or the week's grand total
+        if is_daily:
+            _s(9, True)
+            c.drawCentredString(xx + col_w[-1] / 2, yy - 16, timesheet_format_hours(grid_totals["grand"]) or "0")
+        elif field in grid_totals["rows"]:
+            _s(8, True)
+            c.drawCentredString(
+                xx + col_w[-1] / 2, yy - 18,
+                timesheet_format_hours(grid_totals["rows"][field]) or "0",
+            )
         yy -= row_h[r + 1]
 
     y = grid_top - grid_height - 12
