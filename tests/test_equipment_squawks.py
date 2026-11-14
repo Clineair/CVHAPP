@@ -105,7 +105,7 @@ def _exec_equipment_helpers():
         "new_timesheet_entry_id", "_timesheet_sort_key", "latest_timesheet_record",
         "build_timesheet_record", "ensure_timesheets_worksheet",
         "load_timesheet_records", "load_timesheet_records_readonly",
-        "save_timesheet_record", "_timesheet_col_letter", "_replace_sheet_row", "_upsert_week_row", "timesheet_gmail_configured",
+        "save_timesheet_record", "_ensure_current_mail_modules", "_timesheet_col_letter", "_replace_sheet_row", "_upsert_week_row", "timesheet_gmail_configured",
         "timesheet_secret_section", "timesheet_section_has_keys", "timesheet_auth_configured",
         "timesheet_auth_login_providers", "timesheet_trusted_signin_issuer",
         "timesheet_employee_email_map", "timesheet_user_info", "timesheet_verified_signin_email",
