@@ -332,6 +332,8 @@ EQUIPMENT_INFO_COLUMNS = [
     "Registration Expire Date", "Annual Maint Date",
     "Tonnage Applies", "Tonnage Wt Expire Date",
 ]
+# Tonnage Applies is pre-filled Yes/No for some units, so it does not count as an info entry.
+EQUIPMENT_INFO_ENTRY_COLUMNS = [col for col in EQUIPMENT_INFO_COLUMNS if col != TONNAGE_APPLIES_COL]
 EQUIPMENT_COLUMNS = ["Unit ID", "Name", "Type", "Active"] + EQUIPMENT_INFO_COLUMNS
 EQUIPMENT_EDIT_COLUMNS = [
     "Type", "Active", "Year", "Make/Model", "VIN/Serial", "Plate/N-number", "Notes",
@@ -718,6 +720,53 @@ def open_squawks_for(unit_id, squawks):
 
 def equipment_has_grounding(unit_id, squawks):
     return any(is_grounded_squawk(s) for s in open_squawks_for(unit_id, squawks))
+
+
+def equipment_has_info(unit):
+    """True when any info column other than Tonnage Applies has a non-blank value.
+
+    Tonnage Applies is pre-filled Yes or No for some units and does not count as an entry.
+    """
+    unit = unit or {}
+    return any(_cell(unit.get(col)) for col in EQUIPMENT_INFO_ENTRY_COLUMNS)
+
+
+def equipment_info_button_color(unit):
+    """Green when the unit has info entered, red when it does not."""
+    return DATE_STATUS_COLORS["ok"] if equipment_has_info(unit) else DATE_STATUS_COLORS["expired"]
+
+
+def streamlit_widget_key_css_class(key):
+    """CSS class Streamlit assigns to a widget key (st-key- plus non [A-Za-z0-9_-] as '-')."""
+    sanitized = "".join(ch if (ch.isalnum() or ch in "_-") else "-" for ch in _cell(key))
+    return "st-key-" + sanitized
+
+
+def equipment_info_button_styles_css(units):
+    """CSS that colors each Equipment INFO button green or red from its info fields."""
+    css = ["<style>"]
+    for unit in units or []:
+        unit_id = _cell(unit.get("Unit ID"))
+        if not unit_id:
+            continue
+        color = equipment_info_button_color(unit)
+        cls = streamlit_widget_key_css_class("info_btn_" + unit_id)
+        css.append(
+            "." + cls + " button,"
+            "." + cls + " button[data-baseweb='button'][kind='primary']{"
+            "background-color:" + color + " !important;"
+            "color:#ffffff !important;"
+            "border-color:" + color + " !important;"
+            "}"
+        )
+    css.append("</style>")
+    return "".join(css)
+
+
+def apply_equipment_info_button_styles(units):
+    """Color each Equipment INFO button green when the unit has info, red when it does not."""
+    st.markdown(equipment_info_button_styles_css(units), unsafe_allow_html=True)
+    return units
 
 
 def records_from_worksheet(ws, expected_columns):
@@ -7878,6 +7927,7 @@ def show_equipment_page():
     if st.session_state.get("equipment_saved"):
         st.success(st.session_state.pop("equipment_saved"))
 
+    apply_equipment_info_button_styles(units)
     selected_id = st.session_state.get("squawk_unit_id")
     info_id = st.session_state.get("info_unit_id")
     for unit in units:
