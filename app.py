@@ -57,6 +57,28 @@ BLT_LABEL = "Bulletins Live Two"
 BLT_URL = "https://www.epa.gov/endangered-species/bulletins-live-two-view-bulletins"
 BLT_HELP = "EPA Bulletins Live! Two – check pesticide use limitations"
 BLT_COLOR = "#1d4ed8"
+BLT_CHECKS_SHEET_TITLE = "BLT Checks"
+BLT_CHECKS_COLUMNS = [
+    "Timestamp",
+    "Pilot/User",
+    "Job or Field",
+    "County",
+    "Chemical/Product",
+    "EPA Reg No",
+    "Application Month",
+    "Result",
+    "Notes",
+    "Bulletin PDF",
+]
+BLT_CHECK_RESULTS = ["No PULAs", "PULA limits apply"]
+BLT_CHECK_MONTHS = [
+    "January", "February", "March", "April", "May", "June",
+    "July", "August", "September", "October", "November", "December",
+]
+BLT_CHECK_PDF_NOTE = (
+    "The bulletin PDF is not uploaded to Google Drive or Sheets. "
+    "Only the filename is stored with this check."
+)
 
 # Button Colors and compact wrapping header buttons for phones
 st.markdown("""
@@ -840,6 +862,171 @@ def _worksheet_or_none(spreadsheet, title):
         if name in {"WorksheetNotFound", "NotFound"} or ("worksheet" in message and "not found" in message):
             return None
         raise
+
+
+def blt_check_user_names():
+    """Pilots first, then other employees, with no duplicate names."""
+    names = []
+    seen = set()
+    for name in list(PILOTS) + list(EMPLOYEES):
+        cell = _cell(name)
+        if cell and cell not in seen:
+            names.append(cell)
+            seen.add(cell)
+    return names
+
+
+def blt_check_application_month(month, year):
+    """Store the bulletin month as 'November 2026'."""
+    return (_cell(month) + " " + _cell(year)).strip()
+
+
+def format_blt_check_timestamp(when):
+    """Pacific Time, same clock the rest of the app uses for timestamps."""
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=ZoneInfo("America/Los_Angeles"))
+    else:
+        when = when.astimezone(ZoneInfo("America/Los_Angeles"))
+    return when.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def blt_check_pdf_filename(uploaded):
+    """Sheets only stores the uploaded file's name; the PDF itself is not saved."""
+    if uploaded is None:
+        return ""
+    return _cell(getattr(uploaded, "name", ""))
+
+
+def build_blt_check_record(
+    user,
+    job,
+    county,
+    chemical,
+    epa_reg,
+    application_month,
+    result,
+    notes="",
+    pdf_name="",
+    when=None,
+):
+    """Build one BLT Checks row. Timestamp is always Pacific Time at save."""
+    when = when or datetime.now(ZoneInfo("America/Los_Angeles"))
+    return {
+        "Timestamp": format_blt_check_timestamp(when),
+        "Pilot/User": _cell(user),
+        "Job or Field": _cell(job),
+        "County": _cell(county),
+        "Chemical/Product": _cell(chemical),
+        "EPA Reg No": _cell(epa_reg),
+        "Application Month": _cell(application_month),
+        "Result": _cell(result),
+        "Notes": _cell(notes),
+        "Bulletin PDF": _cell(pdf_name),
+    }
+
+
+def ensure_blt_checks_worksheet(spreadsheet):
+    """Create the BLT Checks tab with a header when it is missing.
+
+    Existing BLT Checks headers are left in place. Never writes the FRAT
+    worksheet or any other tab.
+    """
+    cols = list(BLT_CHECKS_COLUMNS)
+    ws = _worksheet_or_none(spreadsheet, BLT_CHECKS_SHEET_TITLE)
+    created = False
+    if ws is None:
+        ws = spreadsheet.add_worksheet(title=BLT_CHECKS_SHEET_TITLE, rows=200, cols=max(len(cols), 10))
+        ws.append_row(cols, value_input_option="RAW")
+        created = True
+    else:
+        header = [_cell(c) for c in ws.row_values(1)]
+        if not header:
+            ws.append_row(cols, value_input_option="RAW")
+            created = True
+    return ws, created
+
+
+def save_blt_check_record(record, spreadsheet=None):
+    """Append one check to the BLT Checks tab only. Never touches other tabs."""
+    ws, _created = ensure_blt_checks_worksheet(spreadsheet or _gsheets_spreadsheet())
+    header = [_cell(c) for c in ws.row_values(1)]
+    if not header:
+        raise RuntimeError("BLT Checks worksheet has no header")
+    ws.append_row([str(record.get(c, "")) for c in header], value_input_option="RAW")
+    return "Google Sheets (BLT Checks)"
+
+
+def show_blt_check_log():
+    """Check-log section under the Bulletins Live Two button.
+
+    The form stays hidden until opened so these widgets do not appear on
+    every page.
+    """
+    st.markdown("**Bulletins Live Two check log**")
+    opened = bool(st.session_state.get("blt_check_show_form"))
+    toggle = "Close check log" if opened else "Log a BLT check"
+    if st.button(toggle, key="blt_check_toggle", use_container_width=True):
+        st.session_state.blt_check_show_form = not opened
+        st.rerun()
+    if not st.session_state.get("blt_check_show_form"):
+        return
+    st.caption("Date and time are recorded automatically in Pacific Time when you save.")
+    st.caption(BLT_CHECK_PDF_NOTE)
+    now = datetime.now(ZoneInfo("America/Los_Angeles"))
+    names = blt_check_user_names()
+    st.selectbox("Pilot/user name", names, key="blt_check_user")
+    st.text_input("Job or field", key="blt_check_job")
+    st.text_input("County", key="blt_check_county")
+    st.text_input("Chemical/product", key="blt_check_chemical")
+    st.text_input("EPA registration number (optional)", key="blt_check_epa_reg")
+    month_col, year_col = st.columns(2)
+    with month_col:
+        st.selectbox(
+            "Application month",
+            BLT_CHECK_MONTHS,
+            index=max(0, now.month - 1),
+            key="blt_check_month",
+        )
+    with year_col:
+        st.number_input(
+            "Application year",
+            min_value=2020,
+            max_value=2100,
+            value=now.year,
+            step=1,
+            key="blt_check_year",
+        )
+    st.radio("Result", BLT_CHECK_RESULTS, key="blt_check_result")
+    st.text_area("Result notes (optional)", key="blt_check_notes")
+    st.file_uploader("Bulletin PDF (optional)", type=["pdf"], key="blt_check_pdf")
+    if st.button("Save BLT check", key="blt_check_save", use_container_width=True, type="primary"):
+        user = _cell(st.session_state.get("blt_check_user"))
+        if not user:
+            st.error("Choose a pilot or user name.")
+        else:
+            record = build_blt_check_record(
+                user=user,
+                job=st.session_state.get("blt_check_job"),
+                county=st.session_state.get("blt_check_county"),
+                chemical=st.session_state.get("blt_check_chemical"),
+                epa_reg=st.session_state.get("blt_check_epa_reg"),
+                application_month=blt_check_application_month(
+                    st.session_state.get("blt_check_month"),
+                    st.session_state.get("blt_check_year"),
+                ),
+                result=st.session_state.get("blt_check_result"),
+                notes=st.session_state.get("blt_check_notes"),
+                pdf_name=blt_check_pdf_filename(st.session_state.get("blt_check_pdf")),
+            )
+            try:
+                where = save_blt_check_record(record)
+                st.success("Saved to " + where + ".")
+                pdf_name = record.get("Bulletin PDF") or ""
+                if pdf_name:
+                    st.caption("Recorded PDF filename: " + pdf_name + ". " + BLT_CHECK_PDF_NOTE)
+            except Exception as exc:
+                st.error("Could not save this BLT check to Google Sheets.")
+                st.caption("Save error: " + type(exc).__name__ + ": " + str(exc))
 
 
 def _write_equipment_rows(ws, rows):
@@ -8526,6 +8713,7 @@ with col3:
         type="primary",
         width="stretch",
     )
+show_blt_check_log()
 st.markdown("---")
 
 # ────────────────────────────────────────────────
