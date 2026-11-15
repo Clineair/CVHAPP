@@ -76,9 +76,21 @@ BLT_CHECK_MONTHS = [
     "July", "August", "September", "October", "November", "December",
 ]
 BLT_CHECK_PDF_NOTE = (
-    "The bulletin PDF is not uploaded to Google Drive or Sheets. "
-    "Only the filename is stored with this check."
+    "If a bulletin PDF is attached and a Drive folder is configured, "
+    "the file is uploaded and the Drive link is stored in the Bulletin PDF column."
 )
+BLT_CHECK_PDF_FALLBACK_NOTE = (
+    "No Drive folder is configured, so only the PDF filename is stored. "
+    "Add [blt_checks] drive_folder_id in Streamlit secrets to store the file in Drive."
+)
+BLT_CHECK_PDF_UPLOAD_FAILED_NOTE = (
+    "The PDF could not be uploaded to Google Drive, so only the filename was stored."
+)
+BLT_CHECK_DRIVE_SCOPES = (
+    "https://www.googleapis.com/auth/drive.file",
+    "https://www.googleapis.com/auth/drive",
+)
+BLT_CHECK_DRIVE_UPLOAD_URL = "https://www.googleapis.com/upload/drive/v3/files"
 
 # Button Colors and compact wrapping header buttons for phones
 st.markdown("""
@@ -891,10 +903,177 @@ def format_blt_check_timestamp(when):
 
 
 def blt_check_pdf_filename(uploaded):
-    """Sheets only stores the uploaded file's name; the PDF itself is not saved."""
+    """Original uploaded filename, used when Drive upload is not available."""
     if uploaded is None:
         return ""
     return _cell(getattr(uploaded, "name", ""))
+
+
+def blt_check_pdf_token(value, fallback):
+    """Safe filename piece: letters, numbers, and hyphens only."""
+    text = "".join(ch if (ch.isalnum() or ch in "-") else "-" for ch in _cell(value))
+    while "--" in text:
+        text = text.replace("--", "-")
+    return text.strip("-") or fallback
+
+
+def blt_check_pdf_drive_filename(when, county, chemical, job):
+    """YYYY-MM-DD_County_Chemical_Job.pdf in Pacific Time."""
+    if when is None:
+        when = datetime.now(ZoneInfo("America/Los_Angeles"))
+    elif when.tzinfo is None:
+        when = when.replace(tzinfo=ZoneInfo("America/Los_Angeles"))
+    else:
+        when = when.astimezone(ZoneInfo("America/Los_Angeles"))
+    return "_".join((
+        when.strftime("%Y-%m-%d"),
+        blt_check_pdf_token(county, "County"),
+        blt_check_pdf_token(chemical, "Chemical"),
+        blt_check_pdf_token(job, "Job"),
+    )) + ".pdf"
+
+
+def blt_check_pdf_bytes(uploaded):
+    if uploaded is None:
+        return b""
+    if hasattr(uploaded, "getvalue"):
+        data = uploaded.getvalue()
+    elif hasattr(uploaded, "read"):
+        data = uploaded.read()
+    else:
+        return b""
+    return bytes(data) if isinstance(data, (bytes, bytearray)) else b""
+
+
+def blt_checks_drive_folder_id(secrets=None):
+    """Read [blt_checks] drive_folder_id. Empty when missing. Never logs the value."""
+    try:
+        source = secrets if secrets is not None else st.secrets
+        section = source.get("blt_checks") if hasattr(source, "get") else None
+    except Exception:
+        return ""
+    if not section:
+        return ""
+    try:
+        return _cell(section.get("drive_folder_id")) if hasattr(section, "get") else ""
+    except Exception:
+        return ""
+
+
+def blt_checks_gcp_service_account_info(secrets=None):
+    """Return the service account mapping, or None. Never logs the values."""
+    try:
+        source = secrets if secrets is not None else st.secrets
+        if "gcp_service_account" not in source:
+            return None
+        info = source.get("gcp_service_account")
+    except Exception:
+        return None
+    if not info:
+        return None
+    try:
+        return dict(info)
+    except Exception:
+        return None
+
+
+def blt_check_drive_session(secrets=None):
+    """Authorized Drive session from the existing gcp_service_account secret."""
+    from google.oauth2.service_account import Credentials
+    from google.auth.transport.requests import AuthorizedSession
+    info = blt_checks_gcp_service_account_info(secrets)
+    if not info:
+        raise RuntimeError("Google Drive service account is not configured")
+    creds = Credentials.from_service_account_info(info, scopes=list(BLT_CHECK_DRIVE_SCOPES))
+    return AuthorizedSession(creds)
+
+
+def upload_blt_check_pdf_to_drive(pdf_bytes, filename, folder_id, secrets=None, session=None):
+    """Upload a PDF into the configured folder. Always sets supportsAllDrives.
+
+    That flag is required for Shared Drives and is safe for a user-owned
+    folder shared with the service account. Service accounts have no My
+    Drive quota, so a file cannot be stored in the service account's own Drive.
+    """
+    import json
+    folder_id = _cell(folder_id)
+    filename = _cell(filename)
+    if not folder_id or not filename or not pdf_bytes:
+        raise ValueError("A PDF, filename, and Drive folder are required")
+    authed = session or blt_check_drive_session(secrets)
+    metadata = json.dumps({
+        "name": filename,
+        "parents": [folder_id],
+        "mimeType": "application/pdf",
+    })
+    boundary = "blt_check_pdf_boundary"
+    marker = b"--" + boundary.encode("ascii")
+    body = (
+        marker + b"\r\n"
+        b"Content-Type: application/json; charset=UTF-8\r\n\r\n"
+        + metadata.encode("utf-8") + b"\r\n"
+        + marker + b"\r\n"
+        b"Content-Type: application/pdf\r\n\r\n"
+        + bytes(pdf_bytes) + b"\r\n"
+        + marker + b"--"
+    )
+    resp = authed.post(
+        BLT_CHECK_DRIVE_UPLOAD_URL,
+        params={
+            "uploadType": "multipart",
+            "supportsAllDrives": "true",
+            "fields": "id,webViewLink,webContentLink",
+        },
+        headers={"Content-Type": "multipart/related; boundary=" + boundary},
+        data=body,
+        timeout=60,
+    )
+    resp.raise_for_status()
+    payload = resp.json() if hasattr(resp, "json") else {}
+    link = _cell((payload or {}).get("webViewLink"))
+    file_id = _cell((payload or {}).get("id"))
+    if link:
+        return link
+    if file_id:
+        return "https://drive.google.com/file/d/" + file_id + "/view"
+    raise RuntimeError("Drive upload did not return a file link")
+
+
+def store_blt_check_pdf(
+    uploaded,
+    when,
+    county,
+    chemical,
+    job,
+    folder_id=None,
+    uploader=None,
+    secrets=None,
+):
+    """Return (Bulletin PDF column value, user notice).
+
+    Prefers a Drive link when the folder secret is set and upload works.
+    If the secret is missing or upload fails, stores the filename only and
+    does not raise.
+    """
+    if uploaded is None:
+        return "", ""
+    original = blt_check_pdf_filename(uploaded)
+    stored_name = blt_check_pdf_drive_filename(when, county, chemical, job)
+    fallback = original or stored_name
+    folder = folder_id if folder_id is not None else blt_checks_drive_folder_id(secrets)
+    if not folder:
+        return fallback, BLT_CHECK_PDF_FALLBACK_NOTE
+    try:
+        data = blt_check_pdf_bytes(uploaded)
+        if not data:
+            return fallback, BLT_CHECK_PDF_UPLOAD_FAILED_NOTE
+        upload = uploader or upload_blt_check_pdf_to_drive
+        link = _cell(upload(data, stored_name, folder, secrets=secrets))
+        if not link:
+            return fallback, BLT_CHECK_PDF_UPLOAD_FAILED_NOTE
+        return link, ""
+    except Exception:
+        return fallback, BLT_CHECK_PDF_UPLOAD_FAILED_NOTE
 
 
 def build_blt_check_record(
@@ -971,7 +1150,10 @@ def show_blt_check_log():
     if not st.session_state.get("blt_check_show_form"):
         return
     st.caption("Date and time are recorded automatically in Pacific Time when you save.")
-    st.caption(BLT_CHECK_PDF_NOTE)
+    if blt_checks_drive_folder_id():
+        st.caption(BLT_CHECK_PDF_NOTE)
+    else:
+        st.caption(BLT_CHECK_PDF_FALLBACK_NOTE)
     now = datetime.now(ZoneInfo("America/Los_Angeles"))
     names = blt_check_user_names()
     st.selectbox("Pilot/user name", names, key="blt_check_user")
@@ -1004,6 +1186,14 @@ def show_blt_check_log():
         if not user:
             st.error("Choose a pilot or user name.")
         else:
+            when = datetime.now(ZoneInfo("America/Los_Angeles"))
+            pdf_value, pdf_notice = store_blt_check_pdf(
+                st.session_state.get("blt_check_pdf"),
+                when,
+                st.session_state.get("blt_check_county"),
+                st.session_state.get("blt_check_chemical"),
+                st.session_state.get("blt_check_job"),
+            )
             record = build_blt_check_record(
                 user=user,
                 job=st.session_state.get("blt_check_job"),
@@ -1016,14 +1206,18 @@ def show_blt_check_log():
                 ),
                 result=st.session_state.get("blt_check_result"),
                 notes=st.session_state.get("blt_check_notes"),
-                pdf_name=blt_check_pdf_filename(st.session_state.get("blt_check_pdf")),
+                pdf_name=pdf_value,
+                when=when,
             )
             try:
                 where = save_blt_check_record(record)
                 st.success("Saved to " + where + ".")
-                pdf_name = record.get("Bulletin PDF") or ""
-                if pdf_name:
-                    st.caption("Recorded PDF filename: " + pdf_name + ". " + BLT_CHECK_PDF_NOTE)
+                if pdf_notice:
+                    st.warning(pdf_notice)
+                elif pdf_value.startswith("http"):
+                    st.caption("Drive file: " + pdf_value)
+                elif pdf_value:
+                    st.caption("Recorded PDF filename: " + pdf_value)
             except Exception as exc:
                 st.error("Could not save this BLT check to Google Sheets.")
                 st.caption("Save error: " + type(exc).__name__ + ": " + str(exc))

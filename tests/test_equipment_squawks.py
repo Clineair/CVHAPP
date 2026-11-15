@@ -19,7 +19,7 @@ def _exec_equipment_helpers():
         "GREASE_CHECKPOINT_OFFSETS", "GREASE_AMBER_HOURS", "N480ML_MAINT_SHEET_TITLE",
         "EQUIPMENT_INFO_COLUMNS", "EQUIPMENT_INFO_ENTRY_COLUMNS", "EQUIPMENT_COLUMNS", "EQUIPMENT_EDIT_COLUMNS", "SQUAWK_COLUMNS", "EQUIPMENT_TYPES",
         "SQUAWK_CATEGORIES", "SQUAWK_SEVERITIES", "SEVERITY_GROUNDED", "STATUS_OPEN",
-        "STATUS_RESOLVED", "REPORTERS", "ACTIVE_VALUES", "HEADER_PAGES", "BLT_LABEL", "BLT_URL", "BLT_HELP", "BLT_COLOR", "BLT_CHECKS_SHEET_TITLE", "BLT_CHECKS_COLUMNS", "BLT_CHECK_RESULTS", "BLT_CHECK_MONTHS", "BLT_CHECK_PDF_NOTE",
+        "STATUS_RESOLVED", "REPORTERS", "ACTIVE_VALUES", "HEADER_PAGES", "BLT_LABEL", "BLT_URL", "BLT_HELP", "BLT_COLOR", "BLT_CHECKS_SHEET_TITLE", "BLT_CHECKS_COLUMNS", "BLT_CHECK_RESULTS", "BLT_CHECK_MONTHS", "BLT_CHECK_PDF_NOTE", "BLT_CHECK_PDF_FALLBACK_NOTE", "BLT_CHECK_PDF_UPLOAD_FAILED_NOTE", "BLT_CHECK_DRIVE_SCOPES", "BLT_CHECK_DRIVE_UPLOAD_URL",
         "OFFICIAL_EQUIPMENT_NAMES", "REGISTRATION_EXPIRE_COL", "ANNUAL_MAINT_COL",
         "TONNAGE_APPLIES_COL", "TONNAGE_EXPIRE_COL", "TONNAGE_DEFAULT_UNITS", "DATE_STATUS_COLORS",
         "IFTA_UNITS", "DRIVERS", "EMPLOYEES", "IFTA_TRIPS_SHEET_TITLE", "IFTA_FUEL_SHEET_TITLE", "IFTA_TRIPS_COLUMNS", "IFTA_FUEL_COLUMNS", "IFTA_RECEIPT_COLUMN", "IFTA_DEFAULT_JURISDICTION", "IFTA_JURISDICTIONS",
@@ -36,7 +36,7 @@ def _exec_equipment_helpers():
         "_cell", "parse_equipment_date", "format_equipment_date", "registration_due_date", "annual_maint_due_date",
         "date_flag", "date_flag_label", "date_status_markup", "tonnage_applies", "tonnage_due_date", "is_active_equipment",
         "is_open_squawk", "is_grounded_squawk", "squawks_for", "open_squawks_for",
-        "equipment_has_grounding", "equipment_has_info", "equipment_info_button_color", "streamlit_widget_key_css_class", "equipment_info_button_styles_css", "apply_equipment_info_button_styles", "records_from_worksheet", "_worksheet_or_none", "blt_check_user_names", "blt_check_application_month", "format_blt_check_timestamp", "blt_check_pdf_filename", "build_blt_check_record", "ensure_blt_checks_worksheet", "save_blt_check_record",
+        "equipment_has_grounding", "equipment_has_info", "equipment_info_button_color", "streamlit_widget_key_css_class", "equipment_info_button_styles_css", "apply_equipment_info_button_styles", "records_from_worksheet", "_worksheet_or_none", "blt_check_user_names", "blt_check_application_month", "format_blt_check_timestamp", "blt_check_pdf_filename", "blt_check_pdf_token", "blt_check_pdf_drive_filename", "blt_check_pdf_bytes", "blt_checks_drive_folder_id", "blt_checks_gcp_service_account_info", "blt_check_drive_session", "upload_blt_check_pdf_to_drive", "store_blt_check_pdf", "build_blt_check_record", "ensure_blt_checks_worksheet", "save_blt_check_record",
         "_write_equipment_rows", "ensure_equipment_worksheet", "ensure_equipment_info_columns",
         "ensure_squawks_worksheet", "load_equipment_records",
         "load_squawk_records", "build_squawk_record", "save_squawk_record", "resolve_squawk",
@@ -926,7 +926,123 @@ class PlaceholderAndLogicTests(unittest.TestCase):
         self.assertEqual(ws2.rows[1], [record.get(c, "") for c in custom])
         self.assertEqual(ws2.rows[0], custom)
 
+    def test_blt_check_pdf_uploads_to_drive_or_falls_back_to_filename(self):
+        s = self.s
+        when = _pacific("2026-11-15 06:43:46")
+        self.assertEqual(
+            s["blt_check_pdf_drive_filename"](when, "Chelan", "Zivalgo", "River field"),
+            "2026-11-15_Chelan_Zivalgo_River-field.pdf",
+        )
+        self.assertEqual(
+            s["blt_check_pdf_drive_filename"](when, "Kittitas/West", "2,4-D", ""),
+            "2026-11-15_Kittitas-West_2-4-D_Job.pdf",
+        )
+        self.assertEqual(
+            s["blt_checks_drive_folder_id"]({}),
+            "",
+        )
+        self.assertEqual(
+            s["blt_checks_drive_folder_id"]({"blt_checks": {"drive_folder_id": "  folder-1  "}}),
+            "folder-1",
+        )
+        self.assertIsNone(s["blt_checks_gcp_service_account_info"]({}))
+        # Confirm the expected key exists in the mapping structure without reading live secrets.
+        self.assertIsNone(s["blt_checks_gcp_service_account_info"]({"other": 1}))
+        dummy = s["blt_checks_gcp_service_account_info"]({"gcp_service_account": {"client_email": "placeholder"}})
+        self.assertEqual(set(dummy), {"client_email"})
+
+        class Uploaded:
+            name = "original.pdf"
+            def getvalue(self):
+                return b"%PDF-fake"
+        uploaded = Uploaded()
+
+        name, notice = s["store_blt_check_pdf"](
+            uploaded, when, "Chelan", "Zivalgo", "River field",
+            folder_id="", secrets={},
+        )
+        self.assertEqual(name, "original.pdf")
+        self.assertIn("drive_folder_id", notice)
+        self.assertIn("filename is stored", notice)
+
+        posts = []
+        def fake_upload(pdf_bytes, filename, folder_id, secrets=None):
+            posts.append({
+                "filename": filename,
+                "folder_id": folder_id,
+                "pdf_bytes": pdf_bytes,
+                "secrets": secrets,
+            })
+            return "https://drive.google.com/file/d/abc123/view"
+
+        link, notice = s["store_blt_check_pdf"](
+            uploaded, when, "Chelan", "Zivalgo", "River field",
+            folder_id="folder-1", uploader=fake_upload, secrets={"blt_checks": {"drive_folder_id": "folder-1"}},
+        )
+        self.assertEqual(link, "https://drive.google.com/file/d/abc123/view")
+        self.assertEqual(notice, "")
+        self.assertEqual(posts[0]["filename"], "2026-11-15_Chelan_Zivalgo_River-field.pdf")
+        self.assertEqual(posts[0]["folder_id"], "folder-1")
+        self.assertEqual(posts[0]["pdf_bytes"], b"%PDF-fake")
+
+        def boom(*args, **kwargs):
+            raise RuntimeError("no network")
+        name, notice = s["store_blt_check_pdf"](
+            uploaded, when, "Chelan", "Zivalgo", "River field",
+            folder_id="folder-1", uploader=boom, secrets={},
+        )
+        self.assertEqual(name, "original.pdf")
+        self.assertIn("could not be uploaded", notice.lower())
+
+        none_value, none_notice = s["store_blt_check_pdf"](
+            None, when, "Chelan", "Zivalgo", "River field", folder_id="folder-1",
+        )
+        self.assertEqual((none_value, none_notice), ("", ""))
+
+        class FakeResp:
+            def __init__(self, payload):
+                self.payload = payload
+                self.status = 200
+            def raise_for_status(self):
+                return None
+            def json(self):
+                return self.payload
+
+        class FakeSession:
+            def __init__(self, payload):
+                self.payload = payload
+                self.posts = []
+            def post(self, url, params=None, headers=None, data=None, timeout=None):
+                self.posts.append({"url": url, "params": params, "headers": headers, "data": data, "timeout": timeout})
+                return FakeResp(self.payload)
+
+        session = FakeSession({"id": "file1", "webViewLink": "https://drive.google.com/file/d/file1/view"})
+        link = s["upload_blt_check_pdf_to_drive"](
+            b"%PDF-fake", "2026-11-15_Chelan_Zivalgo_River-field.pdf", "folder-1", session=session,
+        )
+        self.assertEqual(link, "https://drive.google.com/file/d/file1/view")
+        self.assertEqual(len(session.posts), 1)
+        self.assertEqual(session.posts[0]["params"]["supportsAllDrives"], "true")
+        self.assertEqual(session.posts[0]["params"]["uploadType"], "multipart")
+        self.assertEqual(session.posts[0]["url"], s["BLT_CHECK_DRIVE_UPLOAD_URL"])
+        self.assertIn(b"2026-11-15_Chelan_Zivalgo_River-field.pdf", session.posts[0]["data"])
+        self.assertIn(b"folder-1", session.posts[0]["data"])
+        self.assertIn(b"%PDF-fake", session.posts[0]["data"])
+        self.assertIn("https://www.googleapis.com/auth/drive.file", s["BLT_CHECK_DRIVE_SCOPES"])
+
+        session2 = FakeSession({"id": "file2"})
+        link2 = s["upload_blt_check_pdf_to_drive"](b"%PDF-fake", "x.pdf", "folder-1", session=session2)
+        self.assertEqual(link2, "https://drive.google.com/file/d/file2/view")
+
+        record = s["build_blt_check_record"](
+            user="Ronald A Cline", job="River field", county="Chelan", chemical="Zivalgo",
+            epa_reg="100-1690", application_month="November 2026", result="No PULAs",
+            notes="", pdf_name="https://drive.google.com/file/d/abc123/view", when=when,
+        )
+        self.assertEqual(record["Bulletin PDF"], "https://drive.google.com/file/d/abc123/view")
+
     def test_timesheet_roster_week_calcs_initials_and_exports(self):
+
 
         from datetime import date, datetime
         from zoneinfo import ZoneInfo
@@ -4016,6 +4132,7 @@ class HeaderAndEquipmentPageTests(unittest.TestCase):
         captions = " ".join(c.value or "" for c in at.caption)
         self.assertIn("Pacific Time", captions)
         self.assertIn("filename is stored", captions)
+        self.assertIn("drive_folder_id", captions)
 
         next(s for s in at.selectbox if s.label == "Pilot/user name").select("Ronald A Cline")
         next(t for t in at.text_input if t.label == "Job or field").set_value("River field")
