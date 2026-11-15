@@ -36,7 +36,7 @@ def _exec_equipment_helpers():
         "_cell", "parse_equipment_date", "format_equipment_date", "registration_due_date", "annual_maint_due_date",
         "date_flag", "date_flag_label", "date_status_markup", "tonnage_applies", "tonnage_due_date", "is_active_equipment",
         "is_open_squawk", "is_grounded_squawk", "squawks_for", "open_squawks_for",
-        "equipment_has_grounding", "equipment_has_info", "equipment_info_button_color", "streamlit_widget_key_css_class", "equipment_info_button_styles_css", "apply_equipment_info_button_styles", "records_from_worksheet", "_worksheet_or_none", "blt_check_user_names", "blt_check_application_month", "format_blt_check_timestamp", "blt_check_pdf_filename", "blt_check_pdf_token", "blt_check_pdf_drive_filename", "blt_check_pdf_bytes", "blt_checks_apps_script_config", "_blt_check_response_looks_like_json", "_blt_check_apps_script_link", "upload_blt_check_pdf_via_apps_script", "store_blt_check_pdf", "build_blt_check_record", "ensure_blt_checks_worksheet", "save_blt_check_record",
+        "equipment_has_grounding", "equipment_has_info", "equipment_info_button_color", "streamlit_widget_key_css_class", "equipment_info_button_styles_css", "apply_equipment_info_button_styles", "records_from_worksheet", "_worksheet_or_none", "blt_check_user_names", "blt_check_application_month", "format_blt_check_timestamp", "blt_check_pdf_filename", "blt_check_pdf_token", "blt_check_pdf_drive_filename", "blt_check_pdf_bytes", "blt_checks_apps_script_config", "_blt_check_response_looks_like_json", "_blt_check_apps_script_link", "upload_blt_check_pdf_via_apps_script", "store_blt_check_pdf", "build_blt_check_record", "ensure_blt_checks_worksheet", "save_blt_check_record", "extract_blt_bulletin_text", "parse_blt_bulletin_text", "parse_blt_bulletin_pdf", "blt_check_pdf_fingerprint", "apply_blt_bulletin_fields_to_session", "_blt_bulletin_canonical_month", "_blt_bulletin_header_block",
         "_write_equipment_rows", "ensure_equipment_worksheet", "ensure_equipment_info_columns",
         "ensure_squawks_worksheet", "load_equipment_records",
         "load_squawk_records", "build_squawk_record", "save_squawk_record", "resolve_squawk",
@@ -2624,6 +2624,246 @@ class PlaceholderAndLogicTests(unittest.TestCase):
         )
 
 
+
+    def test_blt_bulletin_pdf_text_prefills_log_fields(self):
+        s = self.s
+        no_limits = """
+Endangered Species Protection Bulletin
+Application Month: November 2026
+Product: ZIVALGO (100-1690)
+County: Chelan
+Currently, no pesticide use limitations exist within the printed map view for the month/year and product you selected, beyond the instructions specified on the pesticide label. Follow the use instructions on your label.
+Date Printed: 11/15/2026, 8:00:00 AM
+Bulletin ID: BLT-TEST-001
+"""
+        fields = s["parse_blt_bulletin_text"](no_limits)
+        self.assertEqual(fields["county"], "Chelan")
+        self.assertEqual(fields["chemical"], "ZIVALGO")
+        self.assertEqual(fields["epa_reg"], "100-1690")
+        self.assertEqual(fields["month"], "November")
+        self.assertEqual(fields["year"], 2026)
+        self.assertEqual(fields["result"], "No PULAs")
+        self.assertIn("Valid for November 2026.", fields["notes"])
+        self.assertIn("Date printed: 11/15/2026, 8:00:00 AM", fields["notes"])
+        self.assertIn("Bulletin ID: BLT-TEST-001", fields["notes"])
+        self.assertIn("no pesticide use limitations exist", fields["notes"])
+
+        # Modern EPA bulletin header and Codes and Limitations Table,
+        # matching a real December 2025 printable bulletin.
+        modern = """
+    Endangered Species Protection Bulletin
+                   Application Month: December 2025
+                             Product: All products with limitations in selected area
+        Date Printed: 12/2/2025, 1:07:16 PM
+    Pesticide Use Limitation Summary Table
+      Product                   AI                   Use            Method             Form               Code   Last Update
+GAS CARTRIDGE (56228-61)            Carbon, Sodium nitrate   Any Use   Animal burrow treatment  Gas cartridge  C1  6/24/2025
+Codes and Limitations Table
+ Code                                          Limitation
+C1       Use of gas cartridges is prohibited in this area.
+C2       Use of the gas cartridge products by USDA/APHIS personnel is prohibited in this
+         area, unless USDA/APHIS has consulted with the U.S. Fish and Wildlife Service.
+"""
+        fields = s["parse_blt_bulletin_text"](modern)
+        self.assertEqual(fields["county"], "")
+        self.assertEqual(fields["chemical"], "")
+        self.assertEqual(fields["epa_reg"], "")
+        self.assertEqual(fields["month"], "December")
+        self.assertEqual(fields["year"], 2025)
+        self.assertEqual(fields["result"], "PULA limits apply")
+        self.assertIn("Valid for December 2025.", fields["notes"])
+        self.assertIn("Date printed: 12/2/2025, 1:07:16 PM", fields["notes"])
+        self.assertIn("Use of gas cartridges is prohibited in this area.", fields["notes"])
+        self.assertIn("C2", fields["notes"])
+
+        # Older bulletin header used "Valid For:" and bracketed EPA numbers.
+        older = """
+Endangered Species Protection Bulletin
+                    Valid For: November 2020
+Pesticide Use Limitation Summary Table
+AI/Product                                                  Use                          App Method                      Formulation               Code
+XTENDIMAX WITH VAPORGRIP TECHNOLOGY                         Dicamba-Tolerant Soybean Ground spray                        Liquid                    D120
+[264-1210]
+Codes and Limitations Table
+Code     Limitation
+D120     To protect federally listed threatened and endangered species, both a 310-foot in-field wind-directional spray drift buffer and a 57-foot
+         omnidirectional in-field buffer are required.
+"""
+        fields = s["parse_blt_bulletin_text"](older)
+        self.assertEqual(fields["month"], "November")
+        self.assertEqual(fields["year"], 2020)
+        self.assertEqual(fields["result"], "PULA limits apply")
+        self.assertIn("Valid for November 2020.", fields["notes"])
+        self.assertIn("310-foot", fields["notes"])
+        # No Product: line, so chemical/EPA stay blank rather than guessing from a table.
+        self.assertEqual(fields["chemical"], "")
+        self.assertEqual(fields["epa_reg"], "")
+
+        # pypdf plain-mode can emit labels and values on separate lines.
+        scrambled = """
+Application Month:
+Product:
+March 2026
+CLEAN CROP MALATHION 8E INSECTICIDE (34704-452)
+Currently, no pesticide use limitations exist within the printed map view for the month/year and product you selected, beyond the instructions specified on the pesticide label.
+"""
+        fields = s["parse_blt_bulletin_text"](scrambled)
+        self.assertEqual(fields["month"], "March")
+        self.assertEqual(fields["year"], 2026)
+        self.assertEqual(fields["chemical"], "CLEAN CROP MALATHION 8E INSECTICIDE")
+        self.assertEqual(fields["epa_reg"], "34704-452")
+        self.assertEqual(fields["result"], "No PULAs")
+
+        # Same-line single-product header, as in EPA webinar examples.
+        single = """
+Endangered Species Protection Bulletin
+Application Month: November 2023
+Product: CLEAN CROP MALATHION 8E INSECTICIDE (34704-452)
+Currently, no pesticide use limitations exist within the printed map view for the month/year and product you selected, beyond the instructions specified on the pesticide label.
+"""
+        fields = s["parse_blt_bulletin_text"](single)
+        self.assertEqual(fields["chemical"], "CLEAN CROP MALATHION 8E INSECTICIDE")
+        self.assertEqual(fields["epa_reg"], "34704-452")
+        self.assertEqual(fields["month"], "November")
+        self.assertEqual(fields["year"], 2023)
+        self.assertEqual(fields["result"], "No PULAs")
+
+        # Empty or unrelated text fails gracefully.
+        blank = s["parse_blt_bulletin_text"]("")
+        self.assertEqual(blank["county"], "")
+        self.assertEqual(blank["chemical"], "")
+        self.assertEqual(blank["epa_reg"], "")
+        self.assertEqual(blank["month"], "")
+        self.assertIsNone(blank["year"])
+        self.assertEqual(blank["result"], "")
+        self.assertEqual(blank["notes"], "")
+        noise = s["parse_blt_bulletin_text"]("This is a random invoice, not a bulletin.")
+        self.assertEqual(noise["result"], "")
+        self.assertEqual(noise["month"], "")
+        self.assertEqual(noise["notes"], "")
+
+        # Synthetic PDF bytes, not live Sheets or Drive.
+        from io import BytesIO
+        from reportlab.pdfgen import canvas
+        from reportlab.lib.pagesizes import letter
+        buf = BytesIO()
+        c = canvas.Canvas(buf, pagesize=letter)
+        lines = [
+            "Endangered Species Protection Bulletin",
+            "Application Month: August 2026",
+            "Product: ZIVALGO (100-1690)",
+            "County: Kittitas",
+            "Currently, no pesticide use limitations exist within the printed map view for the month/year and product you selected, beyond the instructions specified on the pesticide label.",
+            "Date Printed: 11/15/2026, 8:21:00 AM",
+        ]
+        y = 750
+        for line in lines:
+            c.drawString(40, y, line)
+            y -= 18
+        c.save()
+        pdf_bytes = buf.getvalue()
+        extracted = s["extract_blt_bulletin_text"](pdf_bytes)
+        self.assertIn("Application Month", extracted)
+        self.assertIn("ZIVALGO", extracted)
+        fields, note = s["parse_blt_bulletin_pdf"](pdf_bytes)
+        self.assertIn("Filled in from the attached bulletin PDF", note)
+        self.assertEqual(fields["chemical"], "ZIVALGO")
+        self.assertEqual(fields["epa_reg"], "100-1690")
+        self.assertEqual(fields["county"], "Kittitas")
+        self.assertEqual(fields["month"], "August")
+        self.assertEqual(fields["year"], 2026)
+        self.assertEqual(fields["result"], "No PULAs")
+
+        fields, note = s["parse_blt_bulletin_pdf"](b"not-a-pdf")
+        self.assertEqual(fields["chemical"], "")
+        self.assertEqual(fields["result"], "")
+        self.assertIn("could not be read", note)
+        fields, note = s["parse_blt_bulletin_pdf"](None)
+        self.assertEqual(fields["notes"], "")
+        self.assertIn("could not be read", note)
+
+        class Uploaded:
+            def __init__(self, name, data):
+                self.name = name
+                self._data = data
+            def getvalue(self):
+                return self._data
+        first = Uploaded("a.pdf", pdf_bytes)
+        second = Uploaded("a.pdf", pdf_bytes + b"%EOF extra")
+        self.assertTrue(s["blt_check_pdf_fingerprint"](first))
+        self.assertNotEqual(
+            s["blt_check_pdf_fingerprint"](first),
+            s["blt_check_pdf_fingerprint"](second),
+        )
+        self.assertEqual(s["blt_check_pdf_fingerprint"](None), "")
+
+        session = {"blt_check_notes": ""}
+        s["apply_blt_bulletin_fields_to_session"](session, {
+            "county": "Chelan",
+            "chemical": "ZIVALGO",
+            "epa_reg": "100-1690",
+            "month": "November",
+            "year": 2026,
+            "result": "No PULAs",
+            "notes": "Valid for November 2026.",
+        })
+        self.assertEqual(session["blt_check_county"], "Chelan")
+        self.assertEqual(session["blt_check_chemical"], "ZIVALGO")
+        self.assertEqual(session["blt_check_epa_reg"], "100-1690")
+        self.assertEqual(session["blt_check_month"], "November")
+        self.assertEqual(session["blt_check_year"], 2026)
+        self.assertEqual(session["blt_check_result"], "No PULAs")
+        self.assertEqual(session["blt_check_notes"], "Valid for November 2026.")
+        # Do not overwrite notes the user has already edited.
+        session["blt_check_notes"] = "Pilot note"
+        s["apply_blt_bulletin_fields_to_session"](session, {
+            "county": "Douglas",
+            "chemical": "Other",
+            "epa_reg": "1-2",
+            "month": "May",
+            "year": 2027,
+            "result": "PULA limits apply",
+            "notes": "New auto notes",
+        })
+        self.assertEqual(session["blt_check_county"], "Douglas")
+        self.assertEqual(session["blt_check_notes"], "Pilot note")
+        # Year outside the form range is ignored; month still applies.
+        session = {}
+        s["apply_blt_bulletin_fields_to_session"](session, {
+            "month": "November",
+            "year": 2019,
+            "result": "not-a-result",
+            "notes": "",
+        })
+        self.assertEqual(session.get("blt_check_month"), "November")
+        self.assertNotIn("blt_check_year", session)
+        self.assertNotIn("blt_check_result", session)
+
+    def test_blt_bulletin_parser_reads_real_sample_pdfs_when_present(self):
+        """Optional check against downloaded EPA bulletin PDFs; skipped if absent."""
+        from pathlib import Path
+        samples = [
+            Path("/tmp/blt-samples/alabama-fumigants.pdf"),
+            Path("/tmp/blt-samples/nc-auxin.pdf"),
+        ]
+        if not all(p.is_file() for p in samples):
+            self.skipTest("real bulletin sample PDFs are not on this machine")
+        s = self.s
+        alabama = s["parse_blt_bulletin_pdf"](samples[0].read_bytes())[0]
+        self.assertEqual(alabama["month"], "December")
+        self.assertEqual(alabama["year"], 2025)
+        self.assertEqual(alabama["result"], "PULA limits apply")
+        self.assertEqual(alabama["chemical"], "")
+        self.assertIn("Use of gas cartridges is prohibited in this area.", alabama["notes"])
+        self.assertIn("Date printed:", alabama["notes"])
+        nc = s["parse_blt_bulletin_pdf"](samples[1].read_bytes())[0]
+        self.assertEqual(nc["month"], "November")
+        self.assertEqual(nc["year"], 2020)
+        self.assertEqual(nc["result"], "PULA limits apply")
+        self.assertIn("310-foot", nc["notes"])
+
+
+
 class FakeSheetBehaviorTests(unittest.TestCase):
     def setUp(self):
         self.s = _exec_equipment_helpers()
@@ -4240,6 +4480,71 @@ class HeaderAndEquipmentPageTests(unittest.TestCase):
         self.assertRegex(row[0], r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$")
         self.assertEqual(book.sheets["Sheet1"].rows, frat_before)
         self.assertEqual(set(book.sheets), {"Sheet1", "BLT Checks"})
+
+
+    def test_blt_check_log_prefills_from_attached_bulletin_pdf_without_saving(self):
+        from io import BytesIO
+        from reportlab.lib.pagesizes import letter
+        from reportlab.pdfgen import canvas
+        from streamlit.testing.v1 import AppTest
+
+        buf = BytesIO()
+        c = canvas.Canvas(buf, pagesize=letter)
+        y = 750
+        for line in (
+            "Endangered Species Protection Bulletin",
+            "Application Month: April 2026",
+            "Product: ZIVALGO (100-1690)",
+            "County: Chelan",
+            "Currently, no pesticide use limitations exist within the printed map view for the month/year and product you selected, beyond the instructions specified on the pesticide label.",
+            "Date Printed: 11/15/2026, 8:21:00 AM",
+        ):
+            c.drawString(40, y, line)
+            y -= 18
+        c.save()
+        pdf_bytes = buf.getvalue()
+
+        at = AppTest.from_string(equipment_offline_app(), default_timeout=30).run()
+        self.assertFalse(list(at.exception))
+        at.button(key="blt_check_toggle").click().run()
+        self.assertFalse(list(at.exception))
+        frat_before = list(at.session_state.get("_workbook").sheet1.rows)
+        next(u for u in at.file_uploader if "Bulletin PDF" in (u.label or "")).upload(
+            "Chelan_Zivalgo.pdf", pdf_bytes, "application/pdf"
+        ).run()
+        self.assertFalse(list(at.exception))
+        self.assertTrue(any("Filled in from the attached bulletin PDF" in (i.value or "") for i in at.info))
+        self.assertEqual(next(t for t in at.text_input if t.label == "County").value, "Chelan")
+        self.assertEqual(next(t for t in at.text_input if t.label == "Chemical/product").value, "ZIVALGO")
+        self.assertEqual(next(t for t in at.text_input if "EPA registration number" in (t.label or "")).value, "100-1690")
+        self.assertEqual(next(s for s in at.selectbox if s.label == "Application month").value, "April")
+        self.assertEqual(next(n for n in at.number_input if n.label == "Application year").value, 2026)
+        self.assertEqual(next(r for r in at.radio if r.label == "Result").value, "No PULAs")
+        notes = next(t for t in at.text_area if "Result notes" in (t.label or "")).value or ""
+        self.assertIn("Valid for April 2026.", notes)
+        self.assertIn("no pesticide use limitations exist", notes)
+        # Attaching a PDF must not save a BLT Checks row.
+        book = at.session_state["_workbook"]
+        self.assertNotIn("BLT Checks", book.sheets)
+        self.assertEqual(book.sheets["Sheet1"].rows, frat_before)
+        # The user can still edit a field and then save.
+        next(t for t in at.text_input if t.label == "Job or field").set_value("River field")
+        next(s for s in at.selectbox if s.label == "Pilot/user name").select("Ronald A Cline")
+        at.button(key="blt_check_save").click().run()
+        self.assertFalse(list(at.exception))
+        self.assertTrue(any("Saved to Google Sheets (BLT Checks)." in (s.value or "") for s in at.success))
+        row = at.session_state["_workbook"].sheets["BLT Checks"].rows[1]
+        self.assertEqual(row[1], "Ronald A Cline")
+        self.assertEqual(row[2], "River field")
+        self.assertEqual(row[3], "Chelan")
+        self.assertEqual(row[4], "ZIVALGO")
+        self.assertEqual(row[5], "100-1690")
+        self.assertEqual(row[6], "April 2026")
+        self.assertEqual(row[7], "No PULAs")
+        self.assertIn("Valid for April 2026.", row[8])
+        self.assertEqual(row[9], "Chelan_Zivalgo.pdf")
+        self.assertEqual(at.session_state["_workbook"].sheets["Sheet1"].rows, frat_before)
+
 
     def test_employees_header_navigation_and_blank_placeholders(self):
 
