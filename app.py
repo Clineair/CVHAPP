@@ -89,6 +89,19 @@ BLT_CHECK_PDF_UPLOAD_FAILED_NOTE = (
     "The PDF could not be uploaded to Google Drive, so only the filename was stored."
 )
 BLT_CHECK_PDF_MAX_BYTES = 15 * 1024 * 1024
+BLT_CHECKS_CACHE_TTL_SECONDS = 60
+BLT_CHECK_TABLE_COLUMNS = [
+    "Date/time",
+    "Pilot",
+    "Job/field",
+    "County",
+    "Chemical",
+    "EPA Reg No",
+    "Month",
+    "Result",
+    "Notes",
+    "Bulletin PDF",
+]
 
 # Button Colors and compact wrapping header buttons for phones
 st.markdown("""
@@ -1132,6 +1145,111 @@ def save_blt_check_record(record, spreadsheet=None):
     return "Google Sheets (BLT Checks)"
 
 
+def load_blt_check_records_readonly(spreadsheet=None):
+    """Read the BLT Checks tab without creating or changing it."""
+    ws = _worksheet_or_none(spreadsheet or _gsheets_spreadsheet(), BLT_CHECKS_SHEET_TITLE)
+    if ws is None:
+        return []
+    header = [_cell(c) for c in ws.row_values(1)]
+    if not header:
+        return []
+    return records_from_worksheet(ws, BLT_CHECKS_COLUMNS)
+
+
+def _blt_check_sort_key(record):
+    ts = _cell((record or {}).get("Timestamp"))
+    return (1 if ts else 0, ts)
+
+
+def sort_blt_check_records(records):
+    """Newest Timestamp first. Rows with no timestamp stay at the end."""
+    def newest_first(record):
+        ts = _cell((record or {}).get("Timestamp"))
+        return (1 if ts else 0, ts)
+    return sorted(list(records or []), key=newest_first, reverse=True)
+
+
+def filter_blt_check_records(records, query):
+    """Case-insensitive match on job/field or chemical. Blank query keeps all rows."""
+    text = _cell(query).lower()
+    if not text:
+        return list(records or [])
+    out = []
+    for record in records or []:
+        job = _cell(record.get("Job or Field")).lower()
+        chemical = _cell(record.get("Chemical/Product")).lower()
+        if text in job or text in chemical:
+            out.append(record)
+    return out
+
+
+def blt_check_pdf_is_link(value):
+    text = _cell(value).lower()
+    return text.startswith("http://") or text.startswith("https://")
+
+
+def blt_check_record_display_row(record):
+    record = record or {}
+    return {
+        "Date/time": _cell(record.get("Timestamp")),
+        "Pilot": _cell(record.get("Pilot/User")),
+        "Job/field": _cell(record.get("Job or Field")),
+        "County": _cell(record.get("County")),
+        "Chemical": _cell(record.get("Chemical/Product")),
+        "EPA Reg No": _cell(record.get("EPA Reg No")),
+        "Month": _cell(record.get("Application Month")),
+        "Result": _cell(record.get("Result")),
+        "Notes": _cell(record.get("Notes")),
+        "Bulletin PDF": _cell(record.get("Bulletin PDF")),
+    }
+
+
+def blt_checks_table_rows(records):
+    return [blt_check_record_display_row(record) for record in (records or [])]
+
+
+def read_blt_checks_cache(cache, loader, now=None, ttl=None, force=False):
+    """Short-lived read-through cache. cache is a mutable dict; loader() runs on miss."""
+    import time
+    ttl = BLT_CHECKS_CACHE_TTL_SECONDS if ttl is None else ttl
+    now_ts = time.time() if now is None else now
+    if force and cache is not None:
+        cache.clear()
+    cache = cache if cache is not None else {}
+    records = cache.get("records")
+    expires = cache.get("expires") or 0
+    if records is not None and now_ts < expires:
+        return list(records)
+    records = list(loader() or [])
+    cache["records"] = list(records)
+    cache["expires"] = now_ts + ttl
+    return list(records)
+
+
+def clear_blt_checks_cache():
+    """Drop the in-app BLT Checks cache so a new save shows up immediately."""
+    try:
+        st.session_state.pop("_blt_checks_cache", None)
+    except Exception:
+        pass
+
+
+def cached_blt_check_records(spreadsheet=None, now=None, force=False):
+    """Read BLT Checks with a brief cache. Pass a spreadsheet to bypass the cache."""
+    if spreadsheet is not None:
+        return load_blt_check_records_readonly(spreadsheet)
+    try:
+        cache = st.session_state.setdefault("_blt_checks_cache", {})
+    except Exception:
+        cache = {}
+    return read_blt_checks_cache(
+        cache,
+        load_blt_check_records_readonly,
+        now=now,
+        ttl=BLT_CHECKS_CACHE_TTL_SECONDS,
+        force=force,
+    )
+
 
 def extract_blt_bulletin_text(pdf_bytes):
     """Best-effort text from a Bulletins Live! Two printable bulletin PDF."""
@@ -1475,6 +1593,37 @@ def apply_blt_bulletin_fields_to_session(session, fields):
         session["blt_check_notes_autofill"] = notes
 
 
+def show_saved_blt_checks(spreadsheet=None):
+    """Read-only list of saved BLT Checks rows, newest first."""
+    st.markdown("**Saved BLT checks**")
+    st.caption("Newest first. This list is read-only.")
+    query = st.text_input("Search by job or chemical", key="blt_checks_search")
+    try:
+        records = cached_blt_check_records(spreadsheet=spreadsheet)
+    except Exception as exc:
+        st.error("Could not load saved BLT checks from Google Sheets.")
+        st.caption("Load error: " + type(exc).__name__ + ": " + str(exc))
+        return
+    records = filter_blt_check_records(sort_blt_check_records(records), query)
+    if not records:
+        if _cell(query):
+            st.info("No checks match that search.")
+        else:
+            st.info("No checks logged yet.")
+        return
+    rows = blt_checks_table_rows(records)
+    import pandas as pd
+    df = pd.DataFrame(rows, columns=BLT_CHECK_TABLE_COLUMNS)
+    st.dataframe(
+        df,
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "Bulletin PDF": st.column_config.LinkColumn("Bulletin PDF"),
+        },
+    )
+
+
 def show_blt_check_log():
     """Check-log section under the Bulletins Live Two button.
 
@@ -1569,6 +1718,7 @@ def show_blt_check_log():
             )
             try:
                 where = save_blt_check_record(record)
+                clear_blt_checks_cache()
                 st.success("Saved to " + where + ".")
                 if pdf_notice:
                     st.warning(pdf_notice)
@@ -1579,6 +1729,7 @@ def show_blt_check_log():
             except Exception as exc:
                 st.error("Could not save this BLT check to Google Sheets.")
                 st.caption("Save error: " + type(exc).__name__ + ": " + str(exc))
+    show_saved_blt_checks()
 
 
 def _write_equipment_rows(ws, rows):

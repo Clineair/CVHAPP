@@ -19,7 +19,7 @@ def _exec_equipment_helpers():
         "GREASE_CHECKPOINT_OFFSETS", "GREASE_AMBER_HOURS", "N480ML_MAINT_SHEET_TITLE",
         "EQUIPMENT_INFO_COLUMNS", "EQUIPMENT_INFO_ENTRY_COLUMNS", "EQUIPMENT_COLUMNS", "EQUIPMENT_EDIT_COLUMNS", "SQUAWK_COLUMNS", "EQUIPMENT_TYPES",
         "SQUAWK_CATEGORIES", "SQUAWK_SEVERITIES", "SEVERITY_GROUNDED", "STATUS_OPEN",
-        "STATUS_RESOLVED", "REPORTERS", "ACTIVE_VALUES", "HEADER_PAGES", "BLT_LABEL", "BLT_URL", "BLT_HELP", "BLT_COLOR", "BLT_CHECKS_SHEET_TITLE", "BLT_CHECKS_COLUMNS", "BLT_CHECK_RESULTS", "BLT_CHECK_MONTHS", "BLT_CHECK_PDF_NOTE", "BLT_CHECK_PDF_FALLBACK_NOTE", "BLT_CHECK_PDF_UPLOAD_FAILED_NOTE", "BLT_CHECK_PDF_MAX_BYTES",
+        "STATUS_RESOLVED", "REPORTERS", "ACTIVE_VALUES", "HEADER_PAGES", "BLT_LABEL", "BLT_URL", "BLT_HELP", "BLT_COLOR", "BLT_CHECKS_SHEET_TITLE", "BLT_CHECKS_COLUMNS", "BLT_CHECK_RESULTS", "BLT_CHECK_MONTHS", "BLT_CHECK_PDF_NOTE", "BLT_CHECK_PDF_FALLBACK_NOTE", "BLT_CHECK_PDF_UPLOAD_FAILED_NOTE", "BLT_CHECK_PDF_MAX_BYTES", "BLT_CHECKS_CACHE_TTL_SECONDS", "BLT_CHECK_TABLE_COLUMNS",
         "OFFICIAL_EQUIPMENT_NAMES", "REGISTRATION_EXPIRE_COL", "ANNUAL_MAINT_COL",
         "TONNAGE_APPLIES_COL", "TONNAGE_EXPIRE_COL", "TONNAGE_DEFAULT_UNITS", "DATE_STATUS_COLORS",
         "IFTA_UNITS", "DRIVERS", "EMPLOYEES", "IFTA_TRIPS_SHEET_TITLE", "IFTA_FUEL_SHEET_TITLE", "IFTA_TRIPS_COLUMNS", "IFTA_FUEL_COLUMNS", "IFTA_RECEIPT_COLUMN", "IFTA_DEFAULT_JURISDICTION", "IFTA_JURISDICTIONS",
@@ -36,7 +36,7 @@ def _exec_equipment_helpers():
         "_cell", "parse_equipment_date", "format_equipment_date", "registration_due_date", "annual_maint_due_date",
         "date_flag", "date_flag_label", "date_status_markup", "tonnage_applies", "tonnage_due_date", "is_active_equipment",
         "is_open_squawk", "is_grounded_squawk", "squawks_for", "open_squawks_for",
-        "equipment_has_grounding", "equipment_has_info", "equipment_info_button_color", "streamlit_widget_key_css_class", "equipment_info_button_styles_css", "apply_equipment_info_button_styles", "records_from_worksheet", "_worksheet_or_none", "blt_check_user_names", "blt_check_application_month", "format_blt_check_timestamp", "blt_check_pdf_filename", "blt_check_pdf_token", "blt_check_pdf_drive_filename", "blt_check_pdf_bytes", "blt_checks_apps_script_config", "_blt_check_response_looks_like_json", "_blt_check_apps_script_link", "upload_blt_check_pdf_via_apps_script", "store_blt_check_pdf", "build_blt_check_record", "ensure_blt_checks_worksheet", "save_blt_check_record", "extract_blt_bulletin_text", "parse_blt_bulletin_text", "parse_blt_bulletin_pdf", "blt_check_pdf_fingerprint", "apply_blt_bulletin_fields_to_session", "_blt_bulletin_canonical_month", "_blt_bulletin_header_block",
+        "equipment_has_grounding", "equipment_has_info", "equipment_info_button_color", "streamlit_widget_key_css_class", "equipment_info_button_styles_css", "apply_equipment_info_button_styles", "records_from_worksheet", "_worksheet_or_none", "blt_check_user_names", "blt_check_application_month", "format_blt_check_timestamp", "blt_check_pdf_filename", "blt_check_pdf_token", "blt_check_pdf_drive_filename", "blt_check_pdf_bytes", "blt_checks_apps_script_config", "_blt_check_response_looks_like_json", "_blt_check_apps_script_link", "upload_blt_check_pdf_via_apps_script", "store_blt_check_pdf", "build_blt_check_record", "ensure_blt_checks_worksheet", "save_blt_check_record", "load_blt_check_records_readonly", "_blt_check_sort_key", "sort_blt_check_records", "filter_blt_check_records", "blt_check_pdf_is_link", "blt_check_record_display_row", "blt_checks_table_rows", "read_blt_checks_cache", "extract_blt_bulletin_text", "parse_blt_bulletin_text", "parse_blt_bulletin_pdf", "blt_check_pdf_fingerprint", "apply_blt_bulletin_fields_to_session", "_blt_bulletin_canonical_month", "_blt_bulletin_header_block",
         "_write_equipment_rows", "ensure_equipment_worksheet", "ensure_equipment_info_columns",
         "ensure_squawks_worksheet", "load_equipment_records",
         "load_squawk_records", "build_squawk_record", "save_squawk_record", "resolve_squawk",
@@ -925,6 +925,124 @@ class PlaceholderAndLogicTests(unittest.TestCase):
         s["save_blt_check_record"](record, spreadsheet=book2)
         self.assertEqual(ws2.rows[1], [record.get(c, "") for c in custom])
         self.assertEqual(ws2.rows[0], custom)
+
+    def test_blt_saved_checks_readonly_sort_filter_and_cache(self):
+        s = self.s
+        frat_header = ["timestamp", "date", "part"]
+        book = FakeSpreadsheet(sheet1_header=frat_header)
+        book.sheet1.append_row(["2026-01-01 00:00:00", "2026-01-01", "Part 137"])
+        safety = book.add_worksheet("Safety Meetings", rows=5, cols=4)
+        safety.append_row(["Timestamp", "Meeting Date"])
+        frat_before = [list(r) for r in book.sheet1.rows]
+        frat_writes = list(book.sheet1.writes)
+        safety_before = [list(r) for r in safety.rows]
+        added_before = list(book.added)
+
+        self.assertEqual(s["load_blt_check_records_readonly"](book), [])
+        self.assertNotIn("BLT Checks", book.sheets)
+        self.assertEqual(book.added, added_before)
+        self.assertEqual([list(r) for r in book.sheet1.rows], frat_before)
+        self.assertEqual(book.sheet1.writes, frat_writes)
+        self.assertEqual([list(r) for r in safety.rows], safety_before)
+
+        ws = book.add_worksheet("BLT Checks")
+        ws.append_row(s["BLT_CHECKS_COLUMNS"])
+        older = s["build_blt_check_record"](
+            user="Ronald A Cline",
+            job="Sinlahekin",
+            county="Okanogan",
+            chemical="Whetstone",
+            epa_reg="",
+            application_month="October 2026",
+            result="No PULAs",
+            notes="Center point only",
+            pdf_name="ok-old.pdf",
+            when=_pacific("2026-11-14 09:00:00"),
+        )
+        newer = s["build_blt_check_record"](
+            user="Anthony Root",
+            job="Chelan Hills",
+            county="Okanogan",
+            chemical="Panoramic 2 SL",
+            epa_reg="241-327",
+            application_month="October 2026",
+            result="No PULAs",
+            notes="Official bulletin still needed",
+            pdf_name="https://drive.google.com/file/d/abc123/view",
+            when=_pacific("2026-11-15 10:30:00"),
+        )
+        ws.append_row([older[c] for c in s["BLT_CHECKS_COLUMNS"]])
+        ws.append_row([newer[c] for c in s["BLT_CHECKS_COLUMNS"]])
+        # Empty header on another book returns no rows and does not write.
+        empty_book = FakeSpreadsheet()
+        empty = empty_book.add_worksheet("BLT Checks")
+        empty_writes = list(empty.writes)
+        self.assertEqual(s["load_blt_check_records_readonly"](empty_book), [])
+        self.assertEqual(empty.writes, empty_writes)
+        self.assertEqual(empty.rows, [])
+
+        added_after = list(book.added)
+        writes_before = list(ws.writes)
+        rows_before = [list(r) for r in ws.rows]
+        header_before = list(ws.rows[0])
+        records = s["load_blt_check_records_readonly"](book)
+        self.assertEqual([r["Job or Field"] for r in records], ["Sinlahekin", "Chelan Hills"])
+        self.assertEqual(ws.writes, writes_before)
+        self.assertEqual(ws.rows[0], header_before)
+        self.assertEqual([list(r) for r in ws.rows], rows_before)
+        self.assertEqual(book.added, added_after)
+        self.assertEqual([list(r) for r in book.sheet1.rows], frat_before)
+        self.assertEqual(book.sheet1.writes, frat_writes)
+        self.assertEqual([list(r) for r in safety.rows], safety_before)
+
+        ordered = s["sort_blt_check_records"](records)
+        self.assertEqual([r["Job or Field"] for r in ordered], ["Chelan Hills", "Sinlahekin"])
+        self.assertEqual(s["filter_blt_check_records"](ordered, ""), ordered)
+        self.assertEqual(
+            [r["Job or Field"] for r in s["filter_blt_check_records"](ordered, "chelan")],
+            ["Chelan Hills"],
+        )
+        self.assertEqual(
+            [r["Chemical/Product"] for r in s["filter_blt_check_records"](ordered, "WHET")],
+            ["Whetstone"],
+        )
+        self.assertEqual(s["filter_blt_check_records"](ordered, "nope"), [])
+
+        rows = s["blt_checks_table_rows"](ordered)
+        self.assertEqual(list(rows[0]), s["BLT_CHECK_TABLE_COLUMNS"])
+        self.assertEqual(rows[0]["Date/time"], "2026-11-15 10:30:00")
+        self.assertEqual(rows[0]["Pilot"], "Anthony Root")
+        self.assertEqual(rows[0]["Job/field"], "Chelan Hills")
+        self.assertEqual(rows[0]["County"], "Okanogan")
+        self.assertEqual(rows[0]["Chemical"], "Panoramic 2 SL")
+        self.assertEqual(rows[0]["EPA Reg No"], "241-327")
+        self.assertEqual(rows[0]["Month"], "October 2026")
+        self.assertEqual(rows[0]["Result"], "No PULAs")
+        self.assertEqual(rows[0]["Notes"], "Official bulletin still needed")
+        self.assertEqual(rows[0]["Bulletin PDF"], "https://drive.google.com/file/d/abc123/view")
+        self.assertTrue(s["blt_check_pdf_is_link"](rows[0]["Bulletin PDF"]))
+        self.assertEqual(rows[1]["Bulletin PDF"], "ok-old.pdf")
+        self.assertFalse(s["blt_check_pdf_is_link"](rows[1]["Bulletin PDF"]))
+        self.assertEqual(s["BLT_CHECKS_CACHE_TTL_SECONDS"], 60)
+
+        calls = {"n": 0}
+
+        def loader():
+            calls["n"] += 1
+            return list(records)
+
+        cache = {}
+        first = s["read_blt_checks_cache"](cache, loader, now=1000, ttl=60)
+        second = s["read_blt_checks_cache"](cache, loader, now=1059, ttl=60)
+        self.assertEqual(first, records)
+        self.assertEqual(second, records)
+        self.assertEqual(calls["n"], 1)
+        third = s["read_blt_checks_cache"](cache, loader, now=1060, ttl=60)
+        self.assertEqual(calls["n"], 2)
+        self.assertEqual(third, records)
+        fourth = s["read_blt_checks_cache"](cache, loader, now=1061, ttl=60, force=True)
+        self.assertEqual(calls["n"], 3)
+        self.assertEqual(fourth, records)
 
     def test_blt_check_pdf_uploads_via_apps_script_or_falls_back_to_filename(self):
         import base64
@@ -4480,7 +4598,76 @@ class HeaderAndEquipmentPageTests(unittest.TestCase):
         self.assertRegex(row[0], r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$")
         self.assertEqual(book.sheets["Sheet1"].rows, frat_before)
         self.assertEqual(set(book.sheets), {"Sheet1", "BLT Checks"})
+        self.assertTrue(any((m.value or "") == "**Saved BLT checks**" for m in at.markdown))
+        frames = list(at.dataframe)
+        self.assertTrue(frames)
+        saved = frames[0].value
+        self.assertEqual(list(saved.columns), [
+            "Date/time", "Pilot", "Job/field", "County", "Chemical",
+            "EPA Reg No", "Month", "Result", "Notes", "Bulletin PDF",
+        ])
+        self.assertEqual(len(saved), 1)
+        self.assertEqual(saved.iloc[0]["Pilot"], "Ronald A Cline")
+        self.assertEqual(saved.iloc[0]["Job/field"], "River field")
+        self.assertEqual(saved.iloc[0]["Chemical"], "Zivalgo")
+        self.assertEqual(saved.iloc[0]["EPA Reg No"], "100-1690")
+        self.assertEqual(saved.iloc[0]["Month"], "November 2026")
+        self.assertEqual(saved.iloc[0]["Result"], "No PULAs")
 
+
+    def test_blt_saved_checks_list_is_readonly_and_filterable(self):
+        from streamlit.testing.v1 import AppTest
+        at = AppTest.from_string(equipment_offline_app(), default_timeout=30).run()
+        self.assertFalse(list(at.exception))
+        # The list sits under the log form, so it stays hidden until the log is opened.
+        self.assertFalse(any((m.value or "") == "**Saved BLT checks**" for m in at.markdown))
+        self.assertFalse(any(t.label == "Search by job or chemical" for t in at.text_input))
+        at.button(key="blt_check_toggle").click().run()
+        self.assertFalse(list(at.exception))
+        self.assertTrue(any((m.value or "") == "**Saved BLT checks**" for m in at.markdown))
+        self.assertTrue(any(t.label == "Search by job or chemical" for t in at.text_input))
+        self.assertTrue(any((i.value or "") == "No checks logged yet." for i in at.info))
+        self.assertFalse(list(at.dataframe))
+        book = at.session_state["_workbook"]
+        self.assertNotIn("BLT Checks", book.sheets)
+        frat_before = [list(r) for r in book.sheet1.rows]
+
+        ws = book.add_worksheet("BLT Checks")
+        ws.append_row([
+            "Timestamp", "Pilot/User", "Job or Field", "County", "Chemical/Product",
+            "EPA Reg No", "Application Month", "Result", "Notes", "Bulletin PDF",
+        ])
+        ws.append_row([
+            "2026-11-14 09:00:00", "Ronald A Cline", "Sinlahekin", "Okanogan",
+            "Whetstone", "", "October 2026", "No PULAs", "Older check", "ok-old.pdf",
+        ])
+        ws.append_row([
+            "2026-11-15 10:30:00", "Anthony Root", "Chelan Hills", "Okanogan",
+            "Panoramic 2 SL", "241-327", "October 2026", "No PULAs",
+            "Newer check", "https://drive.google.com/file/d/abc123/view",
+        ])
+        at.session_state["_blt_checks_cache"] = {}
+        rows_before = [list(r) for r in ws.rows]
+        at.run()
+        self.assertFalse(list(at.exception))
+        self.assertFalse(any((i.value or "") == "No checks logged yet." for i in at.info))
+        saved = at.dataframe[0].value
+        self.assertEqual(list(saved["Job/field"]), ["Chelan Hills", "Sinlahekin"])
+        self.assertEqual(list(saved["Chemical"]), ["Panoramic 2 SL", "Whetstone"])
+        self.assertEqual(saved.iloc[0]["Bulletin PDF"], "https://drive.google.com/file/d/abc123/view")
+        self.assertEqual(saved.iloc[1]["Bulletin PDF"], "ok-old.pdf")
+        next(t for t in at.text_input if t.label == "Search by job or chemical").set_value("whet").run()
+        self.assertFalse(list(at.exception))
+        filtered = at.dataframe[0].value
+        self.assertEqual(list(filtered["Job/field"]), ["Sinlahekin"])
+        self.assertEqual(list(filtered["Chemical"]), ["Whetstone"])
+        next(t for t in at.text_input if t.label == "Search by job or chemical").set_value("nope").run()
+        self.assertFalse(list(at.exception))
+        self.assertTrue(any((i.value or "") == "No checks match that search." for i in at.info))
+        self.assertFalse(list(at.dataframe))
+        self.assertEqual([list(r) for r in ws.rows], rows_before)
+        self.assertEqual([list(r) for r in book.sheet1.rows], frat_before)
+        self.assertEqual(set(book.sheets), {"Sheet1", "BLT Checks"})
 
     def test_blt_check_log_prefills_from_attached_bulletin_pdf_without_saving(self):
         from io import BytesIO
