@@ -53,7 +53,7 @@ st.markdown("""
 # CVH Logo and header navigation (logo left, header buttons right)
 LOGO_URL = "flaglogo.png"
 HEADER_PAGES = ["Monthly Safety Meeting", "Yearly Items", "Equipment", "DOM", "EMPLOYEES"]
-BLT_LABEL = "BL2"
+BLT_LABEL = "Bulletins Live Two"
 BLT_URL = "https://www.epa.gov/endangered-species/bulletins-live-two-view-bulletins"
 BLT_HELP = "EPA Bulletins Live! Two – check pesticide use limitations"
 BLT_COLOR = "#1d4ed8"

@@ -817,7 +817,7 @@ class PlaceholderAndLogicTests(unittest.TestCase):
             self.s["HEADER_PAGES"],
             ["Monthly Safety Meeting", "Yearly Items", "Equipment", "DOM", "EMPLOYEES"],
         )
-        self.assertEqual(self.s["BLT_LABEL"], "BL2")
+        self.assertEqual(self.s["BLT_LABEL"], "Bulletins Live Two")
         self.assertEqual(
             self.s["BLT_URL"],
             "https://www.epa.gov/endangered-species/bulletins-live-two-view-bulletins",
@@ -3863,7 +3863,7 @@ class HeaderAndEquipmentPageTests(unittest.TestCase):
 
         emergency = next(b for b in at.button if b.label == "🚨 Emergency")
         employees = next(b for b in at.button if (b.label or "").endswith("EMPLOYEES"))
-        blt = next((b for b in at.link_button if b.proto.label == "BL2"), None)
+        blt = next((b for b in at.link_button if b.proto.label == "Bulletins Live Two"), None)
         self.assertIsNotNone(blt)
         self.assertEqual(
             blt.proto.url,
@@ -3891,9 +3891,9 @@ class HeaderAndEquipmentPageTests(unittest.TestCase):
         # BLT is rendered in the same column, immediately after Emergency.
         # EMPLOYEES stays in the top header, so it is on screen above both.
         self.assertIn("🚨 Emergency", labels)
-        self.assertIn("BL2", labels)
+        self.assertIn("Bulletins Live Two", labels)
         self.assertTrue(any(label.endswith("EMPLOYEES") for label in labels))
-        self.assertLess(labels.index("🚨 Emergency"), labels.index("BL2"))
+        self.assertLess(labels.index("🚨 Emergency"), labels.index("Bulletins Live Two"))
 
     def test_employees_header_navigation_and_blank_placeholders(self):
 
