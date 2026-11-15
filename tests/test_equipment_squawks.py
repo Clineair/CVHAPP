@@ -21,7 +21,7 @@ def _exec_equipment_helpers():
         "SQUAWK_CATEGORIES", "SQUAWK_SEVERITIES", "SEVERITY_GROUNDED", "STATUS_OPEN",
         "STATUS_RESOLVED", "REPORTERS", "ACTIVE_VALUES", "HEADER_PAGES", "BLT_LABEL", "BLT_URL", "BLT_HELP", "BLT_COLOR", "BLT_CHECKS_SHEET_TITLE", "BLT_CHECKS_COLUMNS", "BLT_CHECK_RESULTS", "BLT_CHECK_MONTHS", "BLT_CHECK_PDF_NOTE", "BLT_CHECK_PDF_FALLBACK_NOTE", "BLT_CHECK_PDF_UPLOAD_FAILED_NOTE", "BLT_CHECK_PDF_MAX_BYTES", "BLT_CHECKS_CACHE_TTL_SECONDS", "BLT_CHECK_TABLE_COLUMNS",
         "OFFICIAL_EQUIPMENT_NAMES", "REGISTRATION_EXPIRE_COL", "ANNUAL_MAINT_COL",
-        "TONNAGE_APPLIES_COL", "TONNAGE_EXPIRE_COL", "TONNAGE_DEFAULT_UNITS", "DATE_STATUS_COLORS",
+        "TONNAGE_APPLIES_COL", "TONNAGE_EXPIRE_COL", "TONNAGE_DEFAULT_UNITS", "DATE_STATUS_COLORS", "EQUIPMENT_BUTTON_YELLOW", "EQUIPMENT_BUTTON_DARK_TEXT", "EQUIPMENT_BUTTON_LIGHT_TEXT",
         "IFTA_UNITS", "DRIVERS", "EMPLOYEES", "IFTA_TRIPS_SHEET_TITLE", "IFTA_FUEL_SHEET_TITLE", "IFTA_TRIPS_COLUMNS", "IFTA_FUEL_COLUMNS", "IFTA_RECEIPT_COLUMN", "IFTA_DEFAULT_JURISDICTION", "IFTA_JURISDICTIONS",
         "DOM_AIRCRAFT", "DOM_ACTION_ANNUAL", "YEARLY_ITEMS_SHEET_TITLE", "YEARLY_ITEMS_COLUMNS", "YEARLY_ITEM_GROUPS", "TIME_OFF_SHEET_TITLE", "TIME_OFF_COLUMNS", "TIME_OFF_TYPES", "TIME_OFF_TYPE_FULL", "TIME_OFF_TYPE_PARTIAL", "TIME_OFF_TYPE_VACATION", "TIME_OFF_TYPE_PROJECT", "TIME_OFF_TYPE_HOLIDAY", "TIME_OFF_ALL_EMPLOYEES", "TIME_OFF_PROJECTS", "TIME_OFF_STATUS_ACTIVE", "TIME_OFF_STATUS_CANCELLED", "TIME_OFF_ACTION_CREATE", "TIME_OFF_ACTION_CANCEL", "TIME_OFF_MAX_PAST_DAYS", "TIME_OFF_MAX_FUTURE_DAYS", "TIME_OFF_MAX_SPAN_DAYS", "TIMESHEET_EMPLOYEES", "TIMESHEET_SHEET_TITLE", "TIMESHEET_DAYS", "TIMESHEET_DAY_FIELDS", "TIMESHEET_WORKED_HOUR_FIELDS", "TIMESHEET_TOTAL_HOUR_ROWS", "TIMESHEET_LEAVE_FIELDS", "TIMESHEET_LEAVE_HOURS_MAX", "TIMESHEET_EMAIL_TO", "TIMESHEET_IRS_BUSINESS_MILEAGE_RATES", "TIMESHEET_IRS_MILEAGE_RATES_START", "TIMESHEET_IRS_MILEAGE_RATES_END", "TIMESHEET_IRS_MILEAGE_SOURCE_URL", "TIMESHEET_MILEAGE_SHEET_TITLE", "TIMESHEET_MILEAGE_COLUMNS", "TIMESHEET_MILEAGE_SOURCE_IRS", "TIMESHEET_MILEAGE_SOURCE_COMPANY", "TIMESHEET_MILEAGE_SOURCE_SAVED",
         "ANTHONY_TIMESHEET_EMPLOYEE", "ANTHONY_TIMESHEET_SHEET_TITLE", "ANTHONY_TIMESHEET_TEMPLATE", "ANTHONY_TIMESHEET_DAYS", "ANTHONY_TIMESHEET_DAY_FIELDS", "ANTHONY_TIMESHEET_GRID_ROWS", "ANTHONY_TIMESHEET_WEEK_ROWS", "ANTHONY_TIMESHEET_NUMERIC_FIELDS",
@@ -36,7 +36,7 @@ def _exec_equipment_helpers():
         "_cell", "parse_equipment_date", "format_equipment_date", "registration_due_date", "annual_maint_due_date",
         "date_flag", "date_flag_label", "date_status_markup", "tonnage_applies", "tonnage_due_date", "is_active_equipment",
         "is_open_squawk", "is_grounded_squawk", "squawks_for", "open_squawks_for",
-        "equipment_has_grounding", "equipment_has_info", "equipment_info_button_color", "streamlit_widget_key_css_class", "equipment_info_button_styles_css", "apply_equipment_info_button_styles", "records_from_worksheet", "_worksheet_or_none", "blt_check_user_names", "blt_check_application_month", "format_blt_check_timestamp", "blt_check_pdf_filename", "blt_check_pdf_token", "blt_check_pdf_drive_filename", "blt_check_pdf_bytes", "blt_checks_apps_script_config", "_blt_check_response_looks_like_json", "_blt_check_apps_script_link", "upload_blt_check_pdf_via_apps_script", "store_blt_check_pdf", "build_blt_check_record", "ensure_blt_checks_worksheet", "save_blt_check_record", "load_blt_check_records_readonly", "_blt_check_sort_key", "sort_blt_check_records", "filter_blt_check_records", "blt_check_pdf_is_link", "blt_check_record_display_row", "blt_checks_table_rows", "read_blt_checks_cache", "extract_blt_bulletin_text", "parse_blt_bulletin_text", "parse_blt_bulletin_pdf", "blt_check_pdf_fingerprint", "apply_blt_bulletin_fields_to_session", "_blt_bulletin_canonical_month", "_blt_bulletin_header_block",
+        "equipment_has_grounding", "equipment_has_info", "equipment_info_button_color", "equipment_squawk_button_color", "equipment_button_text_color", "streamlit_widget_key_css_class", "streamlit_button_color_rule", "equipment_info_button_styles_css", "apply_equipment_info_button_styles", "records_from_worksheet", "_worksheet_or_none", "blt_check_user_names", "blt_check_application_month", "format_blt_check_timestamp", "blt_check_pdf_filename", "blt_check_pdf_token", "blt_check_pdf_drive_filename", "blt_check_pdf_bytes", "blt_checks_apps_script_config", "_blt_check_response_looks_like_json", "_blt_check_apps_script_link", "upload_blt_check_pdf_via_apps_script", "store_blt_check_pdf", "build_blt_check_record", "ensure_blt_checks_worksheet", "save_blt_check_record", "load_blt_check_records_readonly", "_blt_check_sort_key", "sort_blt_check_records", "filter_blt_check_records", "blt_check_pdf_is_link", "blt_check_record_display_row", "blt_checks_table_rows", "read_blt_checks_cache", "extract_blt_bulletin_text", "parse_blt_bulletin_text", "parse_blt_bulletin_pdf", "blt_check_pdf_fingerprint", "apply_blt_bulletin_fields_to_session", "_blt_bulletin_canonical_month", "_blt_bulletin_header_block",
         "_write_equipment_rows", "ensure_equipment_worksheet", "ensure_equipment_info_columns",
         "ensure_squawks_worksheet", "load_equipment_records",
         "load_squawk_records", "build_squawk_record", "save_squawk_record", "resolve_squawk",
@@ -260,9 +260,12 @@ class PlaceholderAndLogicTests(unittest.TestCase):
         entry_cols = self.s["EQUIPMENT_INFO_ENTRY_COLUMNS"]
         info_cols = self.s["EQUIPMENT_INFO_COLUMNS"]
         green = self.s["DATE_STATUS_COLORS"]["ok"]
-        red = self.s["DATE_STATUS_COLORS"]["expired"]
+        yellow = self.s["EQUIPMENT_BUTTON_YELLOW"]
         self.assertEqual(green, "#15803d")
-        self.assertEqual(red, "#b91c1c")
+        self.assertEqual(yellow, "#FFC107")
+        self.assertEqual(self.s["equipment_squawk_button_color"](), yellow)
+        self.assertEqual(self.s["equipment_button_text_color"](green), self.s["EQUIPMENT_BUTTON_LIGHT_TEXT"])
+        self.assertEqual(self.s["equipment_button_text_color"](yellow), self.s["EQUIPMENT_BUTTON_DARK_TEXT"])
         self.assertEqual(
             entry_cols,
             [
@@ -277,7 +280,7 @@ class PlaceholderAndLogicTests(unittest.TestCase):
         self.assertFalse(has_info({"Tonnage Applies": "Yes"}))
         self.assertFalse(has_info({"Tonnage Applies": "No"}))
         self.assertFalse(has_info({"Year": "  ", "Notes": "", "Tonnage Applies": "Yes"}))
-        self.assertEqual(color({"Tonnage Applies": "Yes"}), red)
+        self.assertEqual(color({"Tonnage Applies": "Yes"}), yellow)
         for col in entry_cols:
             record = {c: "" for c in info_cols}
             record["Tonnage Applies"] = "Yes"
@@ -291,6 +294,9 @@ class PlaceholderAndLogicTests(unittest.TestCase):
         css_fn = self.s["equipment_info_button_styles_css"]
         key_class = self.s["streamlit_widget_key_css_class"]
         green = self.s["DATE_STATUS_COLORS"]["ok"]
+        yellow = self.s["EQUIPMENT_BUTTON_YELLOW"]
+        white = self.s["EQUIPMENT_BUTTON_LIGHT_TEXT"]
+        dark = self.s["EQUIPMENT_BUTTON_DARK_TEXT"]
         red = self.s["DATE_STATUS_COLORS"]["expired"]
         units = [
             {"Unit ID": "Heli1", "Year": "1984", "Make/Model": "GMC Sierra C6500", "Tonnage Applies": ""},
@@ -300,28 +306,58 @@ class PlaceholderAndLogicTests(unittest.TestCase):
         css = css_fn(units)
         self.assertEqual(key_class("info_btn_Heli1"), "st-key-info_btn_Heli1")
         self.assertEqual(key_class("info_btn_FS Truck"), "st-key-info_btn_FS-Truck")
+        self.assertEqual(key_class("squawk_btn_FS Truck"), "st-key-squawk_btn_FS-Truck")
         self.assertIn(".st-key-info_btn_Heli1", css)
         self.assertIn(".st-key-info_btn_Heli2", css)
         self.assertIn(".st-key-info_btn_FS-Truck", css)
+        self.assertIn(".st-key-squawk_btn_Heli1", css)
+        self.assertIn(".st-key-squawk_btn_Heli2", css)
+        self.assertIn(".st-key-squawk_btn_FS-Truck", css)
         self.assertNotIn(".st-key-info_btn_FS Truck", css)
+        self.assertNotIn(".st-key-squawk_btn_FS Truck", css)
+        # Current Streamlit button targets, plus older data-baseweb selectors.
+        for cls in ("st-key-info_btn_Heli1", "st-key-squawk_btn_Heli1"):
+            self.assertIn("." + cls + " button[kind='primary']", css)
+            self.assertIn("." + cls + " button[kind='secondary']", css)
+            self.assertIn("." + cls + " button[data-testid='stBaseButton-primary']", css)
+            self.assertIn("." + cls + " button[data-testid='stBaseButton-secondary']", css)
+            self.assertIn("." + cls + " button[data-baseweb='button']", css)
 
-        def rule_for(cls):
-            start = css.find("." + cls)
-            self.assertGreaterEqual(start, 0, cls)
-            end = css.find("}", start)
-            self.assertGreater(end, start, cls)
-            return css[start:end + 1]
+        def rules_for(cls):
+            parts = []
+            start = 0
+            needle = "." + cls
+            while True:
+                start = css.find(needle, start)
+                if start < 0:
+                    break
+                end = css.find("}", start)
+                self.assertGreater(end, start, cls)
+                parts.append(css[start:end + 1])
+                start = end + 1
+            self.assertTrue(parts, cls)
+            return "".join(parts)
 
-        heli1 = rule_for("st-key-info_btn_Heli1")
-        heli2 = rule_for("st-key-info_btn_Heli2")
-        truck = rule_for("st-key-info_btn_FS-Truck")
+        heli1 = rules_for("st-key-info_btn_Heli1")
+        heli2 = rules_for("st-key-info_btn_Heli2")
+        truck = rules_for("st-key-info_btn_FS-Truck")
+        squawk1 = rules_for("st-key-squawk_btn_Heli1")
+        squawk2 = rules_for("st-key-squawk_btn_Heli2")
+        squawk_truck = rules_for("st-key-squawk_btn_FS-Truck")
         self.assertIn("background-color:" + green, heli1)
-        self.assertIn("color:#ffffff", heli1)
-        self.assertIn("background-color:" + red, heli2)
-        self.assertIn("background-color:" + red, truck)
-        self.assertNotIn("background-color:" + red, heli1)
+        self.assertIn("color:" + white, heli1)
+        self.assertNotIn("background-color:" + yellow, heli1)
+        self.assertIn("background-color:" + yellow, heli2)
+        self.assertIn("color:" + dark, heli2)
+        self.assertIn("background-color:" + yellow, truck)
+        self.assertIn("color:" + dark, truck)
+        self.assertIn("background-color:" + yellow, squawk1)
+        self.assertIn("color:" + dark, squawk1)
+        self.assertIn("background-color:" + yellow, squawk2)
+        self.assertIn("background-color:" + yellow, squawk_truck)
+        self.assertNotIn("background-color:" + red, css)
         self.assertNotIn("ifta_btn_", css)
-        self.assertNotIn("squawk_btn_", css)
+        self.assertNotIn("nav_equipment", css)
         self.assertEqual(css_fn([]), "<style></style>")
         self.assertEqual(css_fn([{"Unit ID": ""}]), "<style></style>")
 
@@ -4434,26 +4470,48 @@ class HeaderAndEquipmentPageTests(unittest.TestCase):
         self.assertEqual(len(book.sheets["Squawks"].rows), 2)
         self.assertEqual(book.sheets["Sheet1"].rows, [])
 
-    def test_equipment_info_buttons_are_red_when_only_tonnage_applies_is_set(self):
+    def test_equipment_info_buttons_are_yellow_when_only_tonnage_applies_is_set(self):
         from streamlit.testing.v1 import AppTest
         at = AppTest.from_string(equipment_offline_app(), default_timeout=30).run()
         at.button(key="nav_equipment").click().run()
         self.assertFalse(list(at.exception))
         md = " ".join(m.value or "" for m in at.markdown)
-        compact = md.replace(" ", "")
         self.assertIn(".st-key-info_btn_Heli1", md)
         self.assertIn(".st-key-info_btn_Heli2", md)
         self.assertIn(".st-key-info_btn_FS-Truck", md)
+        self.assertIn(".st-key-squawk_btn_Heli1", md)
+        self.assertIn(".st-key-squawk_btn_Heli2", md)
+        self.assertIn(".st-key-squawk_btn_FS-Truck", md)
         # Official seed leaves info blank; Tonnage Applies Yes on Heli2 still counts as no entry.
         # The always-on BL2 button is blue; exclude that scoped rule here.
         compact = css_without_blt_rule(md).replace(" ", "")
-        self.assertIn("background-color:#b91c1c", compact)
+        def rules_for(cls):
+            parts = []
+            start = 0
+            needle = "." + cls
+            while True:
+                start = md.find(needle, start)
+                if start < 0:
+                    break
+                end = md.find("}", start)
+                self.assertGreater(end, start, cls)
+                parts.append(md[start:end + 1])
+                start = end + 1
+            self.assertTrue(parts, cls)
+            return "".join(parts).replace(" ", "")
+        info_heli2 = rules_for("st-key-info_btn_Heli2")
+        squawk_heli1 = rules_for("st-key-squawk_btn_Heli1")
+        self.assertIn("background-color:#FFC107", info_heli2)
+        self.assertIn("color:#111111", info_heli2)
+        self.assertIn("background-color:#FFC107", squawk_heli1)
+        self.assertIn("color:#111111", squawk_heli1)
+        self.assertIn("button[data-testid='stBaseButton-secondary']", info_heli2)
         self.assertNotIn("background-color:#15803d", compact)
+        self.assertNotIn("background-color:#b91c1c", rules_for("st-key-info_btn_Heli1"))
         self.assertIn("background-color:#1d4ed8", md.replace(" ", ""))
         self.assertIn(".st-key-nav_blt", md)
         self.assertNotIn(".st-key-ifta_btn_", md)
-        self.assertNotIn(".st-key-squawk_btn_", md)
-        # The injected CSS should not recolor IFTA or Squawk buttons.
+        # The injected CSS should not recolor IFTA or header buttons.
         self.assertTrue(any(b.label == "IFTA" for b in at.button))
         self.assertTrue(any(b.label == "Squawk" for b in at.button))
 
