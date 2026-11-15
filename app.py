@@ -1132,6 +1132,349 @@ def save_blt_check_record(record, spreadsheet=None):
     return "Google Sheets (BLT Checks)"
 
 
+
+def extract_blt_bulletin_text(pdf_bytes):
+    """Best-effort text from a Bulletins Live! Two printable bulletin PDF."""
+    from io import BytesIO
+    try:
+        from pypdf import PdfReader
+        data = bytes(pdf_bytes or b"")
+        if not data:
+            return ""
+        reader = PdfReader(BytesIO(data))
+        pages = []
+        for page in reader.pages:
+            text = ""
+            try:
+                text = page.extract_text(extraction_mode="layout") or ""
+            except Exception:
+                text = ""
+            if not str(text).strip():
+                try:
+                    text = page.extract_text() or ""
+                except Exception:
+                    text = ""
+            if str(text).strip():
+                pages.append(str(text))
+        return "\n".join(pages)
+    except Exception:
+        return ""
+
+
+def _blt_bulletin_canonical_month(word):
+    text = _cell(word)
+    for name in BLT_CHECK_MONTHS:
+        if name.lower() == text.lower():
+            return name
+    return ""
+
+
+def _blt_bulletin_header_block(text):
+    import re
+    cut = re.search(
+        r"Pesticide Use Limitation Summary Table|"
+        r"Codes and Limitations Table|"
+        r"Areas where pesticide use must be limited",
+        text or "",
+        re.I,
+    )
+    if cut:
+        return (text or "")[:cut.start()]
+    return (text or "")[:2500]
+
+
+def parse_blt_bulletin_text(text):
+    """Parse extracted bulletin text into log fields. Best-effort; blanks if unknown.
+
+    Layout was checked against real EPA printable bulletins (modern
+    "Application Month:" / "Product:" header, older "Valid For:" header,
+    and the official no-limitations sentence). County/location is often
+    only on the map and may be absent from the text.
+    """
+    import re
+    empty = {
+        "county": "",
+        "chemical": "",
+        "epa_reg": "",
+        "month": "",
+        "year": None,
+        "result": "",
+        "notes": "",
+    }
+    text = text or ""
+    if not text.strip():
+        return empty
+
+    months = "|".join(BLT_CHECK_MONTHS)
+    month = ""
+    year = None
+    month_patterns = [
+        rf"Application\s+Month\s*:\s*({months})\s+(\d{{4}})",
+        rf"Valid\s+For\s*:\s*({months})\s+(\d{{4}})",
+        rf"Valid\s+for\s*:\s*({months})\s+(\d{{4}})",
+        rf"({months})\s+(\d{{4}})\s+Application\s+Month",
+    ]
+    for pat in month_patterns:
+        match = re.search(pat, text, re.I)
+        if match:
+            month = _blt_bulletin_canonical_month(match.group(1))
+            try:
+                year = int(match.group(2))
+            except (TypeError, ValueError):
+                year = None
+            if month:
+                break
+            month = ""
+            year = None
+
+    header = _blt_bulletin_header_block(text)
+    header_lines = [re.sub(r"\s+", " ", ln).strip() for ln in header.splitlines()]
+    header_lines = [ln for ln in header_lines if ln]
+    if not month:
+        for index, line in enumerate(header_lines):
+            label = re.match(r"(?i)^(?:Application\s+Month|Valid\s+For)\s*:\s*(.*)$", line)
+            if not label:
+                continue
+            candidates = [label.group(1).strip()] + header_lines[index + 1:index + 6]
+            for cand in candidates:
+                found = re.search(rf"^({months})\s+(\d{{4}})$", cand, re.I)
+                if found:
+                    month = _blt_bulletin_canonical_month(found.group(1))
+                    try:
+                        year = int(found.group(2))
+                    except (TypeError, ValueError):
+                        year = None
+                    break
+            if month:
+                break
+
+    product_line = ""
+    for index, line in enumerate(header_lines):
+        label = re.match(r"(?i)^Product\s*:\s*(.*)$", line)
+        if not label:
+            continue
+        candidates = [label.group(1).strip()] + header_lines[index + 1:index + 6]
+        for cand in candidates:
+            if not cand:
+                continue
+            if re.match(r"(?i)^(?:Application\s+Month|Valid\s+For|Date Printed|County|Location|Bulletin)\s*:", cand):
+                continue
+            if re.match(rf"(?i)^({months})\s+\d{{4}}$", cand):
+                continue
+            if re.match(r"(?i)all products with limitations", cand):
+                product_line = ""
+                break
+            product_line = cand.strip().strip("\"'").strip()
+            if product_line:
+                break
+        break
+
+    chemical = ""
+    epa_reg = ""
+    if product_line:
+        chemical = product_line
+        epa_match = re.search(
+            r"[\(\[](\d{1,6}-\d{1,6}(?:-\d{1,6})?)[\)\]]",
+            product_line,
+        )
+        if epa_match:
+            epa_reg = epa_match.group(1)
+            chemical = (product_line[:epa_match.start()] + product_line[epa_match.end():]).strip()
+        chemical = re.sub(r"\s*[•·]\s*$", "", chemical).strip().strip("\"'").strip()
+        chemical = re.sub(r"\s+", " ", chemical).strip()
+    if not epa_reg:
+        header_regs = re.findall(
+            r"[\(\[](\d{1,6}-\d{1,6}(?:-\d{1,6})?)[\)\]]",
+            header,
+        )
+        unique_regs = list(dict.fromkeys(header_regs))
+        if len(unique_regs) == 1:
+            epa_reg = unique_regs[0]
+
+    county = ""
+    for pat in (
+        r"(?im)^\s*County\s*/\s*Location\s*:\s*(.+)$",
+        r"(?im)^\s*County\s*:\s*(.+)$",
+        r"(?im)^\s*Location\s*:\s*(.+)$",
+        r"(?im)^\s*Application\s+(?:Area|Location)\s*:\s*(.+)$",
+    ):
+        match = re.search(pat, text)
+        if match:
+            value = re.sub(r"\s+", " ", match.group(1)).strip().strip("\"'")
+            if value and len(value) <= 80 and not re.search(r"pesticide use limitation", value, re.I):
+                county = value
+                break
+
+    result = ""
+    if re.search(r"no pesticide use limitations exist", text, re.I):
+        result = "No PULAs"
+    elif re.search(
+        r"Pesticide Use Limitation Summary Table|Codes and Limitations Table",
+        text,
+        re.I,
+    ):
+        result = "PULA limits apply"
+
+    notes_parts = []
+    bulletin_id = ""
+    id_match = re.search(
+        r"(?im)^\s*Bulletin\s+(?:ID|No\.?|Number|#)\s*:\s*(.+)$",
+        text,
+    )
+    if id_match:
+        bulletin_id = re.sub(r"\s+", " ", id_match.group(1)).strip()
+        if bulletin_id:
+            notes_parts.append("Bulletin ID: " + bulletin_id)
+    if month and year:
+        notes_parts.append("Valid for " + month + " " + str(year) + ".")
+    printed_match = re.search(r"(?im)^\s*Date Printed:\s*(.+)$", text)
+    if printed_match:
+        printed = re.sub(r"\s+", " ", printed_match.group(1)).strip()
+        if printed:
+            notes_parts.append("Date printed: " + printed)
+    if result == "No PULAs":
+        sentence = re.search(
+            r"Currently, no pesticide use limitations exist[^\n.]*\.?(?:\s*Follow the use instructions on your label\.)?",
+            text,
+            re.I,
+        )
+        if sentence:
+            notes_parts.append(re.sub(r"\s+", " ", sentence.group(0)).strip())
+        else:
+            notes_parts.append(
+                "No pesticide use limitations found in this bulletin beyond the product label."
+            )
+    limits_match = None
+    for found in re.finditer(r"(?im)^\s*Codes and Limitations Table\s*$", text):
+        limits_match = found
+    if limits_match:
+        body = text[limits_match.end():]
+        body = re.split(r"This document contains legal requirements", body, maxsplit=1, flags=re.I)[0]
+        body = re.split(r"ESPP Contact:", body, maxsplit=1, flags=re.I)[0]
+        body = re.split(r"Date Printed:", body, maxsplit=1, flags=re.I)[0]
+        lines = []
+        for raw in body.splitlines():
+            line = re.sub(r"[ \t]+", " ", raw).strip()
+            if not line:
+                continue
+            if re.match(r"(?i)^code(?:s)?(?:\s+limitation)?$", line):
+                continue
+            if re.match(r"(?i)^limitation$", line):
+                continue
+            lines.append(line)
+        if lines:
+            notes_parts.append("Limitations:\n" + "\n".join(lines))
+
+    notes = "\n".join(notes_parts).strip()
+    if len(notes) > 8000:
+        notes = notes[:7997].rstrip() + "..."
+
+    return {
+        "county": county,
+        "chemical": chemical,
+        "epa_reg": epa_reg,
+        "month": month,
+        "year": year,
+        "result": result,
+        "notes": notes,
+    }
+
+
+def parse_blt_bulletin_pdf(uploaded):
+    """Return (fields, user_note). Never raises; fields stay blank on failure."""
+    empty = {
+        "county": "",
+        "chemical": "",
+        "epa_reg": "",
+        "month": "",
+        "year": None,
+        "result": "",
+        "notes": "",
+    }
+    try:
+        data = blt_check_pdf_bytes(uploaded) if not isinstance(uploaded, (bytes, bytearray)) else bytes(uploaded)
+        if not data:
+            return empty, (
+                "The bulletin PDF could not be read, so the form was left blank. "
+                "You can fill it in by hand."
+            )
+        text = extract_blt_bulletin_text(data)
+        if not text.strip():
+            return empty, (
+                "The bulletin PDF could not be read, so the form was left blank. "
+                "You can fill it in by hand."
+            )
+        fields = parse_blt_bulletin_text(text)
+        found = any((
+            fields.get("county"),
+            fields.get("chemical"),
+            fields.get("epa_reg"),
+            fields.get("month"),
+            fields.get("year"),
+            fields.get("result"),
+            fields.get("notes"),
+        ))
+        if not found:
+            return fields, (
+                "Nothing in this PDF could be matched to the log fields. "
+                "You can fill them in by hand."
+            )
+        return fields, (
+            "Filled in from the attached bulletin PDF. "
+            "Please check the fields before you save."
+        )
+    except Exception:
+        return empty, (
+            "The bulletin PDF could not be read, so the form was left blank. "
+            "You can fill it in by hand."
+        )
+
+
+def blt_check_pdf_fingerprint(uploaded):
+    """Identify an attached PDF so a new file can refill the form once."""
+    import hashlib
+    if uploaded is None:
+        return ""
+    name = _cell(getattr(uploaded, "name", ""))
+    data = blt_check_pdf_bytes(uploaded)
+    if not data:
+        return name
+    digest = hashlib.sha256(data).hexdigest()[:16]
+    return name + ":" + str(len(data)) + ":" + digest
+
+
+def apply_blt_bulletin_fields_to_session(session, fields):
+    """Write parsed fields into the log widget keys. Does not save the check."""
+    if session is None or not fields:
+        return
+    if fields.get("county"):
+        session["blt_check_county"] = fields["county"]
+    if fields.get("chemical"):
+        session["blt_check_chemical"] = fields["chemical"]
+    if fields.get("epa_reg"):
+        session["blt_check_epa_reg"] = fields["epa_reg"]
+    month = fields.get("month")
+    if month and month in BLT_CHECK_MONTHS:
+        session["blt_check_month"] = month
+    year = fields.get("year")
+    try:
+        year = int(year) if year is not None and year != "" else None
+    except (TypeError, ValueError):
+        year = None
+    if year is not None and 2020 <= year <= 2100:
+        session["blt_check_year"] = year
+    result = fields.get("result")
+    if result in BLT_CHECK_RESULTS:
+        session["blt_check_result"] = result
+    notes = _cell(fields.get("notes"))
+    if notes:
+        current = _cell(session.get("blt_check_notes"))
+        previous = _cell(session.get("blt_check_notes_autofill"))
+        if not current or current == previous:
+            session["blt_check_notes"] = notes
+        session["blt_check_notes_autofill"] = notes
+
+
 def show_blt_check_log():
     """Check-log section under the Bulletins Live Two button.
 
@@ -1153,6 +1496,26 @@ def show_blt_check_log():
     else:
         st.caption(BLT_CHECK_PDF_FALLBACK_NOTE)
     now = datetime.now(ZoneInfo("America/Los_Angeles"))
+    if "blt_check_month" not in st.session_state:
+        st.session_state["blt_check_month"] = BLT_CHECK_MONTHS[max(0, now.month - 1)]
+    if "blt_check_year" not in st.session_state:
+        st.session_state["blt_check_year"] = now.year
+    # Keep the uploader above the other fields so a new PDF can fill them
+    # on this run. The form is not auto-saved.
+    st.file_uploader("Bulletin PDF (optional)", type=["pdf"], key="blt_check_pdf")
+    uploaded = st.session_state.get("blt_check_pdf")
+    fingerprint = blt_check_pdf_fingerprint(uploaded)
+    if uploaded and fingerprint and st.session_state.get("blt_check_pdf_parsed_fp") != fingerprint:
+        fields, parse_note = parse_blt_bulletin_pdf(uploaded)
+        apply_blt_bulletin_fields_to_session(st.session_state, fields)
+        st.session_state["blt_check_pdf_parsed_fp"] = fingerprint
+        st.session_state["blt_check_pdf_parse_note"] = parse_note
+    elif not uploaded:
+        st.session_state.pop("blt_check_pdf_parsed_fp", None)
+        st.session_state.pop("blt_check_pdf_parse_note", None)
+    parse_note = st.session_state.get("blt_check_pdf_parse_note")
+    if parse_note:
+        st.info(parse_note)
     names = blt_check_user_names()
     st.selectbox("Pilot/user name", names, key="blt_check_user")
     st.text_input("Job or field", key="blt_check_job")
@@ -1164,7 +1527,6 @@ def show_blt_check_log():
         st.selectbox(
             "Application month",
             BLT_CHECK_MONTHS,
-            index=max(0, now.month - 1),
             key="blt_check_month",
         )
     with year_col:
@@ -1172,13 +1534,11 @@ def show_blt_check_log():
             "Application year",
             min_value=2020,
             max_value=2100,
-            value=now.year,
             step=1,
             key="blt_check_year",
         )
     st.radio("Result", BLT_CHECK_RESULTS, key="blt_check_result")
     st.text_area("Result notes (optional)", key="blt_check_notes")
-    st.file_uploader("Bulletin PDF (optional)", type=["pdf"], key="blt_check_pdf")
     if st.button("Save BLT check", key="blt_check_save", use_container_width=True, type="primary"):
         user = _cell(st.session_state.get("blt_check_user"))
         if not user:
