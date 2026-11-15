@@ -4522,6 +4522,9 @@ class HeaderAndEquipmentPageTests(unittest.TestCase):
         # Scoped to the BL2 widget key; other primary/link buttons stay as they were.
         self.assertNotIn(".stLinkButton a[data-baseweb=\"button\"][kind=\"primary\"] { background-color: #1d4ed8", css)
         self.assertNotIn(".stButton button[data-baseweb=\"button\"][kind=\"primary\"] { background-color: #1d4ed8", css)
+        self.assertIn('header[data-testid="stHeader"]', css)
+        self.assertIn("align-items: flex-start", css)
+        self.assertIn("word-break: normal", css)
 
         labels = []
         for el in at._tree:
@@ -4555,18 +4558,21 @@ class HeaderAndEquipmentPageTests(unittest.TestCase):
         self.assertLess(labels.index("🚨 Emergency"), labels.index("Bulletins Live Two"))
         employees_label = next(label for label in labels if label.endswith("EMPLOYEES"))
         self.assertLess(labels.index("Bulletins Live Two"), labels.index(employees_label))
+        self.assertIn("Log a BL2 check", labels)
+        self.assertLess(labels.index(employees_label), labels.index("Log a BL2 check"))
 
     def test_blt_check_log_form_saves_to_blt_checks_tab_only(self):
         from streamlit.testing.v1 import AppTest
         at = AppTest.from_string(equipment_offline_app(), default_timeout=30).run()
         self.assertFalse(list(at.exception))
-        self.assertTrue(any((m.value or "") == "**Bulletins Live Two check log**" for m in at.markdown))
         self.assertTrue(any(b.label == "Log a BL2 check" for b in at.button))
+        self.assertFalse(any((m.value or "") == "**Bulletins Live Two check log**" for m in at.markdown))
         # Form widgets stay hidden until the log is opened.
         self.assertFalse(any(s.label == "Pilot/user name" for s in at.selectbox))
         at.button(key="blt_check_toggle").click().run()
         self.assertFalse(list(at.exception))
         self.assertTrue(any(b.label == "Close check log" for b in at.button))
+        self.assertTrue(any((m.value or "") == "**Bulletins Live Two check log**" for m in at.markdown))
         self.assertTrue(any(s.label == "Pilot/user name" for s in at.selectbox))
         self.assertTrue(any(t.label == "Job or field" for t in at.text_input))
         self.assertTrue(any(t.label == "County" for t in at.text_input))
