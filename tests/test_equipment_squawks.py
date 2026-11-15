@@ -4530,12 +4530,31 @@ class HeaderAndEquipmentPageTests(unittest.TestCase):
                 labels.append(el.label or "")
             elif typ == "link_button":
                 labels.append(el.proto.label or "")
-        # BLT is rendered in the same column, immediately after Emergency.
-        # EMPLOYEES stays in the top header, so it is on screen above both.
+        # All main nav buttons live in the header, in this order. BL2 stays
+        # between Emergency and EMPLOYEES.
+        nav_labels = [label for label in labels if label in {
+            "🛩️ Pilot", "🚚 Driver", "🚨 Emergency", "Bulletins Live Two",
+            "Monthly Safety Meeting", "Yearly Items", "Equipment", "DOM", "EMPLOYEES",
+        } or (label or "").endswith("EMPLOYEES") or (label or "").endswith("Monthly Safety Meeting") or (label or "").endswith("Yearly Items") or (label or "").endswith("Equipment") or (label or "").endswith("DOM")]
+        # Strip the active-page "● " prefix used by section header buttons.
+        normalized = [label[2:] if label.startswith("● ") else label for label in nav_labels]
+        self.assertEqual(normalized, [
+            "🛩️ Pilot",
+            "🚚 Driver",
+            "🚨 Emergency",
+            "Bulletins Live Two",
+            "Monthly Safety Meeting",
+            "Yearly Items",
+            "Equipment",
+            "DOM",
+            "EMPLOYEES",
+        ])
         self.assertIn("🚨 Emergency", labels)
         self.assertIn("Bulletins Live Two", labels)
         self.assertTrue(any(label.endswith("EMPLOYEES") for label in labels))
         self.assertLess(labels.index("🚨 Emergency"), labels.index("Bulletins Live Two"))
+        employees_label = next(label for label in labels if label.endswith("EMPLOYEES"))
+        self.assertLess(labels.index("Bulletins Live Two"), labels.index(employees_label))
 
     def test_blt_check_log_form_saves_to_blt_checks_tab_only(self):
         from streamlit.testing.v1 import AppTest
