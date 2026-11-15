@@ -106,6 +106,23 @@ BLT_CHECK_TABLE_COLUMNS = [
 # Button Colors and compact wrapping header buttons for phones
 st.markdown("""
 <style>
+    /* Hide Streamlit chrome so the company logo is the first thing at the top left. */
+    header[data-testid="stHeader"] {
+        display: none !important;
+        height: 0 !important;
+        min-height: 0 !important;
+    }
+    div[data-testid="stToolbar"],
+    div[data-testid="stDecoration"],
+    div[data-testid="stStatusWidget"],
+    .stAppDeployButton,
+    .stDeployButton {
+        display: none !important;
+    }
+    [data-testid="stMainBlockContainer"],
+    .block-container {
+        padding-top: 0.45rem !important;
+    }
     .stButton button[kind="primary"],
     .stButton button[data-testid="stBaseButton-primary"],
     .stButton button[data-baseweb="button"][kind="primary"] { background-color: #007BFF !important; color: white !important; } /* Blue - Pilot / active header */
@@ -115,7 +132,7 @@ st.markdown("""
     .stButton button[kind="tertiary"],
     .stButton button[data-testid="stBaseButton-tertiary"],
     .stButton button[data-baseweb="button"][kind="tertiary"] { background-color: #DC3545 !important; color: white !important; } /* Red - Emergency */
-    .stButton button, .stButton button * { white-space: normal !important; line-height: 1.15; height: auto; min-height: 2.75rem; overflow: visible !important; text-overflow: clip !important; }
+    .stButton button, .stButton button * { white-space: normal !important; line-height: 1.15; height: auto; min-height: 2.4rem; overflow: visible !important; text-overflow: clip !important; word-break: normal !important; overflow-wrap: normal !important; hyphens: none !important; }
     /* Blue fill on the BL2 link only. Do not recolor other buttons or link buttons. */
     .st-key-nav_blt a,
     .st-key-nav_blt button,
@@ -128,26 +145,45 @@ st.markdown("""
         white-space: normal !important;
         line-height: 1.15;
         height: auto;
-        min-height: 2.75rem;
+        min-height: 2.4rem;
         overflow: visible !important;
         text-overflow: clip !important;
+        word-break: normal !important;
+        overflow-wrap: normal !important;
+        hyphens: none !important;
     }
     .st-key-nav_blt a *, .st-key-nav_blt button * {
         white-space: normal !important;
         overflow: visible !important;
         text-overflow: clip !important;
+        word-break: normal !important;
+        overflow-wrap: normal !important;
+        hyphens: none !important;
     }
-    /* Keep the flag logo on the left of the button grid on phones.
-       The grid itself is explicit rows of columns (not one wide row). */
-    [data-testid="stMainBlockContainer"] [data-testid="stHorizontalBlock"]:has(img),
+    /* Logo top-left, buttons to its right. Do not wrap the logo below the buttons. */
+    [data-testid="stVerticalBlock"]:has(#cvh-app-header) > [data-testid="stHorizontalBlock"]:has(img),
+    [data-testid="stMainBlockContainer"] [data-testid="stHorizontalBlock"]:has(img) {
+        flex-direction: row !important;
+        flex-wrap: nowrap !important;
+        align-items: flex-start !important;
+        gap: 0.35rem !important;
+    }
+    [data-testid="stVerticalBlock"]:has(#cvh-app-header) > [data-testid="stHorizontalBlock"]:has(img) [data-testid="stHorizontalBlock"],
     [data-testid="stMainBlockContainer"] [data-testid="stHorizontalBlock"]:has(img) [data-testid="stHorizontalBlock"] {
         flex-direction: row !important;
         flex-wrap: nowrap !important;
-        align-items: center !important;
-        gap: 0.35rem !important;
+        align-items: stretch !important;
+        gap: 0.3rem !important;
     }
     [data-testid="stMainBlockContainer"] [data-testid="stHorizontalBlock"]:has(img) div {
         min-width: 0 !important;
+    }
+    [data-testid="stVerticalBlock"]:has(#cvh-app-header) > [data-testid="stHorizontalBlock"]:has(img) > div:first-child {
+        flex: 0 0 auto !important;
+        max-width: 6.2rem !important;
+    }
+    [data-testid="stVerticalBlock"]:has(#cvh-app-header) > [data-testid="stHorizontalBlock"]:has(img) > div:last-child {
+        flex: 1 1 auto !important;
     }
     [data-testid="stMainBlockContainer"] [data-testid="stHorizontalBlock"]:has(img) [data-testid="stHorizontalBlock"] > div {
         flex: 1 1 0 !important;
@@ -160,12 +196,33 @@ st.markdown("""
     [data-testid="stMainBlockContainer"] [data-testid="stHorizontalBlock"]:has(img) .st-key-nav_blt a,
     [data-testid="stMainBlockContainer"] [data-testid="stHorizontalBlock"]:has(img) .st-key-nav_blt a *,
     [data-testid="stMainBlockContainer"] [data-testid="stHorizontalBlock"]:has(img) .st-key-nav_blt button {
-        font-size: 0.75rem;
-        min-height: 2.35rem;
-        padding: 0.25rem 0.25rem;
+        font-size: 0.68rem;
+        min-height: 2.15rem;
+        padding: 0.2rem 0.16rem;
         white-space: normal !important;
         overflow: visible !important;
         text-overflow: clip !important;
+        word-break: normal !important;
+        overflow-wrap: normal !important;
+        hyphens: none !important;
+    }
+    [data-testid="stVerticalBlock"]:has(#cvh-app-header) img {
+        max-width: 90px;
+        height: auto;
+    }
+    @media (max-width: 430px) {
+        [data-testid="stMainBlockContainer"] [data-testid="stHorizontalBlock"]:has(img) .stButton button,
+        [data-testid="stMainBlockContainer"] [data-testid="stHorizontalBlock"]:has(img) .stButton button *,
+        [data-testid="stMainBlockContainer"] [data-testid="stHorizontalBlock"]:has(img) .st-key-nav_blt a,
+        [data-testid="stMainBlockContainer"] [data-testid="stHorizontalBlock"]:has(img) .st-key-nav_blt a *,
+        [data-testid="stMainBlockContainer"] [data-testid="stHorizontalBlock"]:has(img) .st-key-nav_blt button {
+            font-size: 0.6rem;
+            min-height: 2.05rem;
+            padding: 0.16rem 0.1rem;
+        }
+        [data-testid="stVerticalBlock"]:has(#cvh-app-header) img {
+            max-width: 72px;
+        }
     }
 </style>
 """, unsafe_allow_html=True)
@@ -173,7 +230,8 @@ st.markdown("""
 if "current_mode" not in st.session_state:
     st.session_state.current_mode = "Pilot"
 
-header_left, header_right = st.columns([0.8, 2.4], vertical_alignment="center")
+st.markdown('<div id="cvh-app-header"></div>', unsafe_allow_html=True)
+header_left, header_right = st.columns([0.8, 2.4], vertical_alignment="top")
 with header_left:
     try:
         st.image(LOGO_URL, width=90)
@@ -193,7 +251,8 @@ with header_right:
             st.rerun()
     # Three wrapping rows so the header fits a phone-width screen.
     # Order: Pilot, Driver, Emergency, Bulletins Live Two, then the section buttons,
-    # with BL2 between Emergency and EMPLOYEES.
+    # with BL2 between Emergency and EMPLOYEES. Log a BL2 check sits in the
+    # same header, immediately under that grid.
     r1c1, r1c2, r1c3 = st.columns(3)
     with r1c1:
         if st.button("🛩️ Pilot", use_container_width=True, type="primary"):
@@ -226,6 +285,11 @@ with header_right:
         _header_btn("DOM", "DOM", "nav_dom")
     with r3c3:
         _header_btn("EMPLOYEES", "EMPLOYEES", "nav_employees")
+    opened_blt_log = bool(st.session_state.get("blt_check_show_form"))
+    blt_log_toggle = "Close check log" if opened_blt_log else "Log a BL2 check"
+    if st.button(blt_log_toggle, key="blt_check_toggle", use_container_width=True):
+        st.session_state.blt_check_show_form = not opened_blt_log
+        st.rerun()
 
 # ────────────────────────────────────────────────
 # Session State
@@ -1670,19 +1734,14 @@ def show_saved_blt_checks(spreadsheet=None):
 
 
 def show_blt_check_log():
-    """Check-log section under the Bulletins Live Two button.
+    """Check-log form under the header toggle.
 
-    The form stays hidden until opened so these widgets do not appear on
-    every page.
+    The toggle button lives in the top header. The form stays hidden until
+    opened so these widgets do not appear on every page.
     """
-    st.markdown("**Bulletins Live Two check log**")
-    opened = bool(st.session_state.get("blt_check_show_form"))
-    toggle = "Close check log" if opened else "Log a BL2 check"
-    if st.button(toggle, key="blt_check_toggle", use_container_width=True):
-        st.session_state.blt_check_show_form = not opened
-        st.rerun()
     if not st.session_state.get("blt_check_show_form"):
         return
+    st.markdown("**Bulletins Live Two check log**")
     st.caption("Date and time are recorded automatically in Pacific Time when you save.")
     url, token = blt_checks_apps_script_config()
     if url and token:
