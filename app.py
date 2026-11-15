@@ -1632,7 +1632,7 @@ def show_blt_check_log():
     """
     st.markdown("**Bulletins Live Two check log**")
     opened = bool(st.session_state.get("blt_check_show_form"))
-    toggle = "Close check log" if opened else "Log a BLT check"
+    toggle = "Close check log" if opened else "Log a BL2 check"
     if st.button(toggle, key="blt_check_toggle", use_container_width=True):
         st.session_state.blt_check_show_form = not opened
         st.rerun()

@@ -4542,7 +4542,7 @@ class HeaderAndEquipmentPageTests(unittest.TestCase):
         at = AppTest.from_string(equipment_offline_app(), default_timeout=30).run()
         self.assertFalse(list(at.exception))
         self.assertTrue(any((m.value or "") == "**Bulletins Live Two check log**" for m in at.markdown))
-        self.assertTrue(any(b.label == "Log a BLT check" for b in at.button))
+        self.assertTrue(any(b.label == "Log a BL2 check" for b in at.button))
         # Form widgets stay hidden until the log is opened.
         self.assertFalse(any(s.label == "Pilot/user name" for s in at.selectbox))
         at.button(key="blt_check_toggle").click().run()
