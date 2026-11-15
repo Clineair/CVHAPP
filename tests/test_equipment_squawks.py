@@ -19,7 +19,7 @@ def _exec_equipment_helpers():
         "GREASE_CHECKPOINT_OFFSETS", "GREASE_AMBER_HOURS", "N480ML_MAINT_SHEET_TITLE",
         "EQUIPMENT_INFO_COLUMNS", "EQUIPMENT_INFO_ENTRY_COLUMNS", "EQUIPMENT_COLUMNS", "EQUIPMENT_EDIT_COLUMNS", "SQUAWK_COLUMNS", "EQUIPMENT_TYPES",
         "SQUAWK_CATEGORIES", "SQUAWK_SEVERITIES", "SEVERITY_GROUNDED", "STATUS_OPEN",
-        "STATUS_RESOLVED", "REPORTERS", "ACTIVE_VALUES", "HEADER_PAGES",
+        "STATUS_RESOLVED", "REPORTERS", "ACTIVE_VALUES", "HEADER_PAGES", "BLT_LABEL", "BLT_URL", "BLT_HELP", "BLT_COLOR",
         "OFFICIAL_EQUIPMENT_NAMES", "REGISTRATION_EXPIRE_COL", "ANNUAL_MAINT_COL",
         "TONNAGE_APPLIES_COL", "TONNAGE_EXPIRE_COL", "TONNAGE_DEFAULT_UNITS", "DATE_STATUS_COLORS",
         "IFTA_UNITS", "DRIVERS", "EMPLOYEES", "IFTA_TRIPS_SHEET_TITLE", "IFTA_FUEL_SHEET_TITLE", "IFTA_TRIPS_COLUMNS", "IFTA_FUEL_COLUMNS", "IFTA_RECEIPT_COLUMN", "IFTA_DEFAULT_JURISDICTION", "IFTA_JURISDICTIONS",
@@ -817,6 +817,17 @@ class PlaceholderAndLogicTests(unittest.TestCase):
             self.s["HEADER_PAGES"],
             ["Monthly Safety Meeting", "Yearly Items", "Equipment", "DOM", "EMPLOYEES"],
         )
+        self.assertEqual(self.s["BLT_LABEL"], "BL2")
+        self.assertEqual(
+            self.s["BLT_URL"],
+            "https://www.epa.gov/endangered-species/bulletins-live-two-view-bulletins",
+        )
+        self.assertEqual(
+            self.s["BLT_HELP"],
+            "EPA Bulletins Live! Two – check pesticide use limitations",
+        )
+        self.assertEqual(self.s["BLT_COLOR"], "#15803d")
+        self.assertEqual(self.s["BLT_COLOR"], self.s["DATE_STATUS_COLORS"]["ok"])
 
 
 
@@ -3705,6 +3716,13 @@ def frat_sheet_url():
     return stub + "\n" + ast.unparse(tree)
 
 
+
+def css_without_blt_rule(markup):
+    """Drop the scoped BL2 nav rule so other button-color checks stay precise."""
+    import re
+    return re.sub(r"\.st-key-nav_blt[\s\S]*?\}", "", markup)
+
+
 class HeaderAndEquipmentPageTests(unittest.TestCase):
     def test_equipment_list_has_one_squawk_button_per_item_and_form(self):
         from streamlit.testing.v1 import AppTest
@@ -3785,8 +3803,12 @@ class HeaderAndEquipmentPageTests(unittest.TestCase):
         self.assertIn(".st-key-info_btn_Heli2", md)
         self.assertIn(".st-key-info_btn_FS-Truck", md)
         # Official seed leaves info blank; Tonnage Applies Yes on Heli2 still counts as no entry.
+        # The always-on BL2 button is green; exclude that scoped rule here.
+        compact = css_without_blt_rule(md).replace(" ", "")
         self.assertIn("background-color:#b91c1c", compact)
         self.assertNotIn("background-color:#15803d", compact)
+        self.assertIn("background-color:#15803d", md.replace(" ", ""))
+        self.assertIn(".st-key-nav_blt", md)
         self.assertNotIn(".st-key-ifta_btn_", md)
         self.assertNotIn(".st-key-squawk_btn_", md)
         # The injected CSS should not recolor IFTA or Squawk buttons.
@@ -3834,7 +3856,47 @@ class HeaderAndEquipmentPageTests(unittest.TestCase):
         frat_visible = any("FRAT" in (getattr(x, "value", None) or getattr(x, "label", None) or "") for x in list(at.tabs) + list(at.subheader) + list(at.title))
         self.assertTrue(frat_visible)
 
+    def test_blt_link_sits_below_emergency_on_home_menu(self):
+        from streamlit.testing.v1 import AppTest
+        at = AppTest.from_string(equipment_offline_app(), default_timeout=30).run()
+        self.assertFalse(list(at.exception))
+
+        emergency = next(b for b in at.button if b.label == "🚨 Emergency")
+        employees = next(b for b in at.button if (b.label or "").endswith("EMPLOYEES"))
+        blt = next((b for b in at.link_button if b.proto.label == "BL2"), None)
+        self.assertIsNotNone(blt)
+        self.assertEqual(
+            blt.proto.url,
+            "https://www.epa.gov/endangered-species/bulletins-live-two-view-bulletins",
+        )
+        self.assertEqual(blt.proto.help, "EPA Bulletins Live! Two – check pesticide use limitations")
+        self.assertEqual(blt.proto.type, "primary")
+        self.assertEqual(blt.key, "nav_blt")
+
+        css = " ".join(m.value or "" for m in at.markdown)
+        self.assertIn(".st-key-nav_blt", css)
+        self.assertIn("background-color: #15803d", css)
+        self.assertIn("color: #ffffff", css)
+        # Scoped to the BLT widget key; other primary/link buttons stay as they were.
+        self.assertNotIn(".stLinkButton a[data-baseweb=\"button\"][kind=\"primary\"] { background-color: #15803d", css)
+        self.assertNotIn(".stButton button[data-baseweb=\"button\"][kind=\"primary\"] { background-color: #15803d", css)
+
+        labels = []
+        for el in at._tree:
+            typ = getattr(el, "type", None)
+            if typ == "button":
+                labels.append(el.label or "")
+            elif typ == "link_button":
+                labels.append(el.proto.label or "")
+        # BLT is rendered in the same column, immediately after Emergency.
+        # EMPLOYEES stays in the top header, so it is on screen above both.
+        self.assertIn("🚨 Emergency", labels)
+        self.assertIn("BL2", labels)
+        self.assertTrue(any(label.endswith("EMPLOYEES") for label in labels))
+        self.assertLess(labels.index("🚨 Emergency"), labels.index("BL2"))
+
     def test_employees_header_navigation_and_blank_placeholders(self):
+
         from streamlit.testing.v1 import AppTest
         expected = [
             "Ron Cline",
@@ -4613,7 +4675,8 @@ class HeaderAndEquipmentPageTests(unittest.TestCase):
         md = " ".join(m.value or "" for m in at.markdown)
         self.assertIn(".st-key-nav_monthly_safety", md)
         self.assertIn("#b91c1c", md)
-        self.assertNotIn("background-color:#15803d", md.replace(" ", ""))
+        self.assertNotIn("background-color:#15803d", css_without_blt_rule(md).replace(" ", ""))
+        self.assertIn(".st-key-nav_blt", md)
 
         at.button(key="nav_monthly_safety").click().run()
         self.assertFalse(list(at.exception))
@@ -4627,7 +4690,7 @@ class HeaderAndEquipmentPageTests(unittest.TestCase):
             self.assertIn(label, md)
         self.assertIn("#b91c1c", md)
         self.assertIn("#6b7280", md)
-        self.assertNotIn("#15803d", md)
+        self.assertNotIn("#15803d", css_without_blt_rule(md))
         self.assertIn(".st-key-nav_monthly_safety", md)
         self.assertIn("#b91c1c", md)
 
@@ -4643,7 +4706,7 @@ class HeaderAndEquipmentPageTests(unittest.TestCase):
         # March meeting is not the current Pacific month, so the header stays red.
         md = " ".join((m.value or "").replace(" ", "") for m in at.markdown)
         self.assertIn("background-color:#b91c1c", md)
-        self.assertNotIn("background-color:#15803d", md)
+        self.assertNotIn("background-color:#15803d", css_without_blt_rule(md))
         strip = " ".join(m.value or "" for m in at.markdown)
         self.assertIn("safety-month-strip", strip)
         self.assertIn("#15803d", strip)
