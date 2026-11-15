@@ -56,7 +56,7 @@ HEADER_PAGES = ["Monthly Safety Meeting", "Yearly Items", "Equipment", "DOM", "E
 BLT_LABEL = "BL2"
 BLT_URL = "https://www.epa.gov/endangered-species/bulletins-live-two-view-bulletins"
 BLT_HELP = "EPA Bulletins Live! Two – check pesticide use limitations"
-BLT_COLOR = "#15803d"
+BLT_COLOR = "#1d4ed8"
 
 # Button Colors and compact wrapping header buttons for phones
 st.markdown("""
@@ -65,14 +65,14 @@ st.markdown("""
     .stButton button[data-baseweb="button"][kind="secondary"] { background-color: #FFC107 !important; color: black !important; } /* Yellow - Driver */
     .stButton button[data-baseweb="button"][kind="tertiary"] { background-color: #DC3545 !important; color: white !important; } /* Red - Emergency */
     .stButton button { white-space: normal; line-height: 1.15; height: auto; min-height: 2.75rem; }
-    /* Green fill on the BLT link only. Do not recolor other buttons or link buttons. */
+    /* Blue fill on the BL2 link only. Do not recolor other buttons or link buttons. */
     .st-key-nav_blt a,
     .st-key-nav_blt button,
     .st-key-nav_blt a[data-baseweb="button"],
     .st-key-nav_blt button[data-baseweb="button"] {
-        background-color: #15803d !important;
+        background-color: #1d4ed8 !important;
         color: #ffffff !important;
-        border-color: #15803d !important;
+        border-color: #1d4ed8 !important;
         white-space: normal;
         line-height: 1.15;
         height: auto;
