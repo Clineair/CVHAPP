@@ -53,6 +53,10 @@ st.markdown("""
 # CVH Logo and header navigation (logo left, header buttons right)
 LOGO_URL = "flaglogo.png"
 HEADER_PAGES = ["Monthly Safety Meeting", "Yearly Items", "Equipment", "DOM", "EMPLOYEES"]
+BLT_LABEL = "BL2"
+BLT_URL = "https://www.epa.gov/endangered-species/bulletins-live-two-view-bulletins"
+BLT_HELP = "EPA Bulletins Live! Two – check pesticide use limitations"
+BLT_COLOR = "#15803d"
 
 # Button Colors and compact wrapping header buttons for phones
 st.markdown("""
@@ -61,6 +65,19 @@ st.markdown("""
     .stButton button[data-baseweb="button"][kind="secondary"] { background-color: #FFC107 !important; color: black !important; } /* Yellow - Driver */
     .stButton button[data-baseweb="button"][kind="tertiary"] { background-color: #DC3545 !important; color: white !important; } /* Red - Emergency */
     .stButton button { white-space: normal; line-height: 1.15; height: auto; min-height: 2.75rem; }
+    /* Green fill on the BLT link only. Do not recolor other buttons or link buttons. */
+    .st-key-nav_blt a,
+    .st-key-nav_blt button,
+    .st-key-nav_blt a[data-baseweb="button"],
+    .st-key-nav_blt button[data-baseweb="button"] {
+        background-color: #15803d !important;
+        color: #ffffff !important;
+        border-color: #15803d !important;
+        white-space: normal;
+        line-height: 1.15;
+        height: auto;
+        min-height: 2.75rem;
+    }
     /* Keep the flag logo and the header buttons on one row on phones. */
     [data-testid="stMainBlockContainer"] [data-testid="stHorizontalBlock"]:has(img),
     [data-testid="stMainBlockContainer"] [data-testid="stHorizontalBlock"]:has(img) [data-testid="stHorizontalBlock"] {
@@ -8501,6 +8518,14 @@ with col2:
 with col3:
     if st.button("🚨 Emergency", use_container_width=True, type="tertiary"):
         st.session_state.current_mode = "Emergency"
+    st.link_button(
+        BLT_LABEL,
+        BLT_URL,
+        key="nav_blt",
+        help=BLT_HELP,
+        type="primary",
+        width="stretch",
+    )
 st.markdown("---")
 
 # ────────────────────────────────────────────────
