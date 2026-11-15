@@ -76,21 +76,19 @@ BLT_CHECK_MONTHS = [
     "July", "August", "September", "October", "November", "December",
 ]
 BLT_CHECK_PDF_NOTE = (
-    "If a bulletin PDF is attached and a Drive folder is configured, "
-    "the file is uploaded and the Drive link is stored in the Bulletin PDF column."
+    "If a bulletin PDF is attached and Apps Script upload is configured, "
+    "the file is saved to Drive under clineair891 and the link is stored "
+    "in the Bulletin PDF column."
 )
 BLT_CHECK_PDF_FALLBACK_NOTE = (
-    "No Drive folder is configured, so only the PDF filename is stored. "
-    "Add [blt_checks] drive_folder_id in Streamlit secrets to store the file in Drive."
+    "No Apps Script upload is configured, so only the PDF filename is stored. "
+    "Add [blt_checks] apps_script_url and upload_token in Streamlit secrets "
+    "to store the file in Drive."
 )
 BLT_CHECK_PDF_UPLOAD_FAILED_NOTE = (
     "The PDF could not be uploaded to Google Drive, so only the filename was stored."
 )
-BLT_CHECK_DRIVE_SCOPES = (
-    "https://www.googleapis.com/auth/drive.file",
-    "https://www.googleapis.com/auth/drive",
-)
-BLT_CHECK_DRIVE_UPLOAD_URL = "https://www.googleapis.com/upload/drive/v3/files"
+BLT_CHECK_PDF_MAX_BYTES = 15 * 1024 * 1024
 
 # Button Colors and compact wrapping header buttons for phones
 st.markdown("""
@@ -945,98 +943,97 @@ def blt_check_pdf_bytes(uploaded):
     return bytes(data) if isinstance(data, (bytes, bytearray)) else b""
 
 
-def blt_checks_drive_folder_id(secrets=None):
-    """Read [blt_checks] drive_folder_id. Empty when missing. Never logs the value."""
+def blt_checks_apps_script_config(secrets=None):
+    """Return (apps_script_url, upload_token), or ("", ""). Never logs the values."""
     try:
         source = secrets if secrets is not None else st.secrets
         section = source.get("blt_checks") if hasattr(source, "get") else None
     except Exception:
-        return ""
-    if not section:
-        return ""
+        return "", ""
+    if not section or not hasattr(section, "get"):
+        return "", ""
     try:
-        return _cell(section.get("drive_folder_id")) if hasattr(section, "get") else ""
+        url = _cell(section.get("apps_script_url"))
+        token = _cell(section.get("upload_token"))
     except Exception:
-        return ""
+        return "", ""
+    if not url or not token:
+        return "", ""
+    return url, token
 
 
-def blt_checks_gcp_service_account_info(secrets=None):
-    """Return the service account mapping, or None. Never logs the values."""
+def _blt_check_response_looks_like_json(resp):
     try:
-        source = secrets if secrets is not None else st.secrets
-        if "gcp_service_account" not in source:
-            return None
-        info = source.get("gcp_service_account")
+        content_type = _cell((getattr(resp, "headers", None) or {}).get("Content-Type")).lower()
     except Exception:
-        return None
-    if not info:
-        return None
+        content_type = ""
+    if "json" in content_type:
+        return True
+    text = _cell(getattr(resp, "text", ""))
+    return text.startswith("{")
+
+
+def _blt_check_apps_script_link(resp):
+    """Read {ok, fileId, url} from an Apps Script JSON response. Never logs secrets."""
     try:
-        return dict(info)
+        payload = resp.json() if hasattr(resp, "json") else None
     except Exception:
-        return None
-
-
-def blt_check_drive_session(secrets=None):
-    """Authorized Drive session from the existing gcp_service_account secret."""
-    from google.oauth2.service_account import Credentials
-    from google.auth.transport.requests import AuthorizedSession
-    info = blt_checks_gcp_service_account_info(secrets)
-    if not info:
-        raise RuntimeError("Google Drive service account is not configured")
-    creds = Credentials.from_service_account_info(info, scopes=list(BLT_CHECK_DRIVE_SCOPES))
-    return AuthorizedSession(creds)
-
-
-def upload_blt_check_pdf_to_drive(pdf_bytes, filename, folder_id, secrets=None, session=None):
-    """Upload a PDF into the configured folder. Always sets supportsAllDrives.
-
-    That flag is required for Shared Drives and is safe for a user-owned
-    folder shared with the service account. Service accounts have no My
-    Drive quota, so a file cannot be stored in the service account's own Drive.
-    """
-    import json
-    folder_id = _cell(folder_id)
-    filename = _cell(filename)
-    if not folder_id or not filename or not pdf_bytes:
-        raise ValueError("A PDF, filename, and Drive folder are required")
-    authed = session or blt_check_drive_session(secrets)
-    metadata = json.dumps({
-        "name": filename,
-        "parents": [folder_id],
-        "mimeType": "application/pdf",
-    })
-    boundary = "blt_check_pdf_boundary"
-    marker = b"--" + boundary.encode("ascii")
-    body = (
-        marker + b"\r\n"
-        b"Content-Type: application/json; charset=UTF-8\r\n\r\n"
-        + metadata.encode("utf-8") + b"\r\n"
-        + marker + b"\r\n"
-        b"Content-Type: application/pdf\r\n\r\n"
-        + bytes(pdf_bytes) + b"\r\n"
-        + marker + b"--"
-    )
-    resp = authed.post(
-        BLT_CHECK_DRIVE_UPLOAD_URL,
-        params={
-            "uploadType": "multipart",
-            "supportsAllDrives": "true",
-            "fields": "id,webViewLink,webContentLink",
-        },
-        headers={"Content-Type": "multipart/related; boundary=" + boundary},
-        data=body,
-        timeout=60,
-    )
-    resp.raise_for_status()
-    payload = resp.json() if hasattr(resp, "json") else {}
-    link = _cell((payload or {}).get("webViewLink"))
-    file_id = _cell((payload or {}).get("id"))
+        payload = None
+    if not isinstance(payload, dict) or not payload.get("ok"):
+        raise RuntimeError("Apps Script upload was not accepted")
+    link = _cell(payload.get("url"))
+    file_id = _cell(payload.get("fileId"))
     if link:
         return link
     if file_id:
         return "https://drive.google.com/file/d/" + file_id + "/view"
-    raise RuntimeError("Drive upload did not return a file link")
+    raise RuntimeError("Apps Script upload did not return a file link")
+
+
+def upload_blt_check_pdf_via_apps_script(pdf_bytes, filename, url, token, session=None):
+    """POST the PDF to the Apps Script web app and follow a 302 result redirect.
+
+    Apps Script often replies 302 to script.googleusercontent.com after it has
+    already run doPost. requests would convert that 302 into a GET and drop
+    the body if allow_redirects=True on the first POST, so the first call
+    does not follow redirects. A 302/303 is then fetched with GET; 307/308
+    are retried as POST.
+    """
+    import base64
+    import requests as requests_lib
+    from urllib.parse import urljoin
+
+    url = _cell(url)
+    token = _cell(token)
+    filename = _cell(filename)
+    if not url or not token or not filename or not pdf_bytes:
+        raise ValueError("A PDF, filename, Apps Script URL, and token are required")
+    if len(bytes(pdf_bytes)) > BLT_CHECK_PDF_MAX_BYTES:
+        raise ValueError("PDF is larger than 15 MB")
+    payload = {
+        "token": token,
+        "filename": filename,
+        "base64": base64.b64encode(bytes(pdf_bytes)).decode("ascii"),
+    }
+    client = session or requests_lib
+    resp = client.post(url, json=payload, timeout=30, allow_redirects=False)
+    if _blt_check_response_looks_like_json(resp):
+        if hasattr(resp, "raise_for_status"):
+            resp.raise_for_status()
+        return _blt_check_apps_script_link(resp)
+    if getattr(resp, "status_code", None) in (301, 302, 303, 307, 308):
+        headers = getattr(resp, "headers", None) or {}
+        location = headers.get("Location") or headers.get("location")
+        if not location:
+            raise RuntimeError("Apps Script upload redirected without a Location")
+        location = urljoin(url, location)
+        if resp.status_code in (307, 308):
+            resp = client.post(location, json=payload, timeout=30, allow_redirects=True)
+        else:
+            resp = client.get(location, timeout=30, allow_redirects=True)
+    if hasattr(resp, "raise_for_status"):
+        resp.raise_for_status()
+    return _blt_check_apps_script_link(resp)
 
 
 def store_blt_check_pdf(
@@ -1045,30 +1042,30 @@ def store_blt_check_pdf(
     county,
     chemical,
     job,
-    folder_id=None,
     uploader=None,
     secrets=None,
+    session=None,
 ):
     """Return (Bulletin PDF column value, user notice).
 
-    Prefers a Drive link when the folder secret is set and upload works.
-    If the secret is missing or upload fails, stores the filename only and
-    does not raise.
+    Prefers a Drive link when the Apps Script URL and token are set and the
+    upload works. If those secrets are missing or the call fails, stores the
+    filename only and does not raise.
     """
     if uploaded is None:
         return "", ""
     original = blt_check_pdf_filename(uploaded)
     stored_name = blt_check_pdf_drive_filename(when, county, chemical, job)
     fallback = original or stored_name
-    folder = folder_id if folder_id is not None else blt_checks_drive_folder_id(secrets)
-    if not folder:
+    url, token = blt_checks_apps_script_config(secrets)
+    if not url or not token:
         return fallback, BLT_CHECK_PDF_FALLBACK_NOTE
     try:
         data = blt_check_pdf_bytes(uploaded)
         if not data:
             return fallback, BLT_CHECK_PDF_UPLOAD_FAILED_NOTE
-        upload = uploader or upload_blt_check_pdf_to_drive
-        link = _cell(upload(data, stored_name, folder, secrets=secrets))
+        upload = uploader or upload_blt_check_pdf_via_apps_script
+        link = _cell(upload(data, stored_name, url, token, session=session))
         if not link:
             return fallback, BLT_CHECK_PDF_UPLOAD_FAILED_NOTE
         return link, ""
@@ -1150,7 +1147,8 @@ def show_blt_check_log():
     if not st.session_state.get("blt_check_show_form"):
         return
     st.caption("Date and time are recorded automatically in Pacific Time when you save.")
-    if blt_checks_drive_folder_id():
+    url, token = blt_checks_apps_script_config()
+    if url and token:
         st.caption(BLT_CHECK_PDF_NOTE)
     else:
         st.caption(BLT_CHECK_PDF_FALLBACK_NOTE)
