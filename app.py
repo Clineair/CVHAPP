@@ -50,7 +50,7 @@ st.markdown("""
     <link rel="icon" href="https://img.icons8.com/color/48/000000/helicopter.png" type="image/png">
 """, unsafe_allow_html=True)
 
-# CVH Logo and header navigation (logo left, header buttons right)
+# CVH Logo and header navigation (logo left, all main buttons right)
 LOGO_URL = "flaglogo.png"
 HEADER_PAGES = ["Monthly Safety Meeting", "Yearly Items", "Equipment", "DOM", "EMPLOYEES"]
 BLT_LABEL = "Bulletins Live Two"
@@ -106,24 +106,39 @@ BLT_CHECK_TABLE_COLUMNS = [
 # Button Colors and compact wrapping header buttons for phones
 st.markdown("""
 <style>
+    .stButton button[kind="primary"],
+    .stButton button[data-testid="stBaseButton-primary"],
     .stButton button[data-baseweb="button"][kind="primary"] { background-color: #007BFF !important; color: white !important; } /* Blue - Pilot / active header */
+    .stButton button[kind="secondary"],
+    .stButton button[data-testid="stBaseButton-secondary"],
     .stButton button[data-baseweb="button"][kind="secondary"] { background-color: #FFC107 !important; color: black !important; } /* Yellow - Driver */
+    .stButton button[kind="tertiary"],
+    .stButton button[data-testid="stBaseButton-tertiary"],
     .stButton button[data-baseweb="button"][kind="tertiary"] { background-color: #DC3545 !important; color: white !important; } /* Red - Emergency */
-    .stButton button { white-space: normal; line-height: 1.15; height: auto; min-height: 2.75rem; }
+    .stButton button, .stButton button * { white-space: normal !important; line-height: 1.15; height: auto; min-height: 2.75rem; overflow: visible !important; text-overflow: clip !important; }
     /* Blue fill on the BL2 link only. Do not recolor other buttons or link buttons. */
     .st-key-nav_blt a,
     .st-key-nav_blt button,
     .st-key-nav_blt a[data-baseweb="button"],
-    .st-key-nav_blt button[data-baseweb="button"] {
+    .st-key-nav_blt button[data-baseweb="button"],
+    .st-key-nav_blt a[data-testid="stBaseLinkButton-primary"] {
         background-color: #1d4ed8 !important;
         color: #ffffff !important;
         border-color: #1d4ed8 !important;
-        white-space: normal;
+        white-space: normal !important;
         line-height: 1.15;
         height: auto;
         min-height: 2.75rem;
+        overflow: visible !important;
+        text-overflow: clip !important;
     }
-    /* Keep the flag logo and the header buttons on one row on phones. */
+    .st-key-nav_blt a *, .st-key-nav_blt button * {
+        white-space: normal !important;
+        overflow: visible !important;
+        text-overflow: clip !important;
+    }
+    /* Keep the flag logo on the left of the button grid on phones.
+       The grid itself is explicit rows of columns (not one wide row). */
     [data-testid="stMainBlockContainer"] [data-testid="stHorizontalBlock"]:has(img),
     [data-testid="stMainBlockContainer"] [data-testid="stHorizontalBlock"]:has(img) [data-testid="stHorizontalBlock"] {
         flex-direction: row !important;
@@ -140,10 +155,17 @@ st.markdown("""
     [data-testid="stMainBlockContainer"] [data-testid="stHorizontalBlock"]:has(img) {
         overflow: hidden;
     }
-    [data-testid="stMainBlockContainer"] [data-testid="stHorizontalBlock"]:has(img) .stButton button {
+    [data-testid="stMainBlockContainer"] [data-testid="stHorizontalBlock"]:has(img) .stButton button,
+    [data-testid="stMainBlockContainer"] [data-testid="stHorizontalBlock"]:has(img) .stButton button *,
+    [data-testid="stMainBlockContainer"] [data-testid="stHorizontalBlock"]:has(img) .st-key-nav_blt a,
+    [data-testid="stMainBlockContainer"] [data-testid="stHorizontalBlock"]:has(img) .st-key-nav_blt a *,
+    [data-testid="stMainBlockContainer"] [data-testid="stHorizontalBlock"]:has(img) .st-key-nav_blt button {
         font-size: 0.75rem;
         min-height: 2.35rem;
         padding: 0.25rem 0.25rem;
+        white-space: normal !important;
+        overflow: visible !important;
+        text-overflow: clip !important;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -151,17 +173,17 @@ st.markdown("""
 if "current_mode" not in st.session_state:
     st.session_state.current_mode = "Pilot"
 
-header_left, header_right = st.columns([0.9, 2.1])
+header_left, header_right = st.columns([0.8, 2.4], vertical_alignment="center")
 with header_left:
     try:
-        st.image(LOGO_URL, width=110)
+        st.image(LOGO_URL, width=90)
         st.logo(LOGO_URL, size="medium")
     except Exception:
         st.markdown("### CVH Employee Tool ⌯✈︎")
 with header_right:
     def _header_btn(label, page, key):
         active = st.session_state.current_mode == page
-        # type="primary" (blue) for all header buttons so inactive ones are not Driver-yellow.
+        # type="primary" (blue) for section buttons so inactive ones are not Driver-yellow.
         shown = ("● " + label) if active else label
         if st.button(shown, key=key, use_container_width=True, type="primary"):
             st.session_state.current_mode = page
@@ -169,17 +191,40 @@ with header_right:
                 st.session_state.employees_selected = None
                 st.session_state.employees_show_calendar = False
             st.rerun()
-    hr1, hr2 = st.columns(2)
-    with hr1:
+    # Three wrapping rows so the header fits a phone-width screen.
+    # Order: Pilot, Driver, Emergency, Bulletins Live Two, then the section buttons,
+    # with BL2 between Emergency and EMPLOYEES.
+    r1c1, r1c2, r1c3 = st.columns(3)
+    with r1c1:
+        if st.button("🛩️ Pilot", use_container_width=True, type="primary"):
+            st.session_state.current_mode = "Pilot"
+            st.session_state.selected_heli = None
+    with r1c2:
+        if st.button("🚚 Driver", use_container_width=True, type="secondary"):
+            st.session_state.current_mode = "Driver"
+    with r1c3:
+        if st.button("🚨 Emergency", use_container_width=True, type="tertiary"):
+            st.session_state.current_mode = "Emergency"
+    r2c1, r2c2, r2c3 = st.columns(3)
+    with r2c1:
+        st.link_button(
+            BLT_LABEL,
+            BLT_URL,
+            key="nav_blt",
+            help=BLT_HELP,
+            type="primary",
+            width="stretch",
+        )
+    with r2c2:
         _header_btn("Monthly Safety Meeting", "Monthly Safety Meeting", "nav_monthly_safety")
-    with hr2:
+    with r2c3:
         _header_btn("Yearly Items", "Yearly Items", "nav_yearly_items")
-    hr3, hr4, hr5 = st.columns(3)
-    with hr3:
+    r3c1, r3c2, r3c3 = st.columns(3)
+    with r3c1:
         _header_btn("Equipment", "Equipment", "nav_equipment")
-    with hr4:
+    with r3c2:
         _header_btn("DOM", "DOM", "nav_dom")
-    with hr5:
+    with r3c3:
         _header_btn("EMPLOYEES", "EMPLOYEES", "nav_employees")
 
 # ────────────────────────────────────────────────
@@ -9395,27 +9440,8 @@ def show_frat_history():
     st.dataframe(df.iloc[::-1], use_container_width=True, hide_index=True)
     st.download_button("⬇️ Download CSV", df.to_csv(index=False).encode(), file_name=f"cvh_frat_log_{datetime.now():%Y%m%d}.csv", mime="text/csv")
 # ────────────────────────────────────────────────
-# Mode Buttons (Pilot / Driver / Emergency remain so FRAT and existing tools stay reachable)
+# BLT check log (stays under the header; nav buttons now live in the header)
 # ────────────────────────────────────────────────
-col1, col2, col3 = st.columns(3)
-with col1:
-    if st.button("🛩️ Pilot", use_container_width=True, type="primary"):
-        st.session_state.current_mode = "Pilot"
-        st.session_state.selected_heli = None
-with col2:
-    if st.button("🚚 Driver", use_container_width=True, type="secondary"):
-        st.session_state.current_mode = "Driver"
-with col3:
-    if st.button("🚨 Emergency", use_container_width=True, type="tertiary"):
-        st.session_state.current_mode = "Emergency"
-    st.link_button(
-        BLT_LABEL,
-        BLT_URL,
-        key="nav_blt",
-        help=BLT_HELP,
-        type="primary",
-        width="stretch",
-    )
 show_blt_check_log()
 st.markdown("---")
 
