@@ -826,8 +826,8 @@ class PlaceholderAndLogicTests(unittest.TestCase):
             self.s["BLT_HELP"],
             "EPA Bulletins Live! Two – check pesticide use limitations",
         )
-        self.assertEqual(self.s["BLT_COLOR"], "#15803d")
-        self.assertEqual(self.s["BLT_COLOR"], self.s["DATE_STATUS_COLORS"]["ok"])
+        self.assertEqual(self.s["BLT_COLOR"], "#1d4ed8")
+        self.assertNotEqual(self.s["BLT_COLOR"], self.s["DATE_STATUS_COLORS"]["ok"])
 
 
 
@@ -3803,11 +3803,11 @@ class HeaderAndEquipmentPageTests(unittest.TestCase):
         self.assertIn(".st-key-info_btn_Heli2", md)
         self.assertIn(".st-key-info_btn_FS-Truck", md)
         # Official seed leaves info blank; Tonnage Applies Yes on Heli2 still counts as no entry.
-        # The always-on BL2 button is green; exclude that scoped rule here.
+        # The always-on BL2 button is blue; exclude that scoped rule here.
         compact = css_without_blt_rule(md).replace(" ", "")
         self.assertIn("background-color:#b91c1c", compact)
         self.assertNotIn("background-color:#15803d", compact)
-        self.assertIn("background-color:#15803d", md.replace(" ", ""))
+        self.assertIn("background-color:#1d4ed8", md.replace(" ", ""))
         self.assertIn(".st-key-nav_blt", md)
         self.assertNotIn(".st-key-ifta_btn_", md)
         self.assertNotIn(".st-key-squawk_btn_", md)
@@ -3875,11 +3875,11 @@ class HeaderAndEquipmentPageTests(unittest.TestCase):
 
         css = " ".join(m.value or "" for m in at.markdown)
         self.assertIn(".st-key-nav_blt", css)
-        self.assertIn("background-color: #15803d", css)
+        self.assertIn("background-color: #1d4ed8", css)
         self.assertIn("color: #ffffff", css)
-        # Scoped to the BLT widget key; other primary/link buttons stay as they were.
-        self.assertNotIn(".stLinkButton a[data-baseweb=\"button\"][kind=\"primary\"] { background-color: #15803d", css)
-        self.assertNotIn(".stButton button[data-baseweb=\"button\"][kind=\"primary\"] { background-color: #15803d", css)
+        # Scoped to the BL2 widget key; other primary/link buttons stay as they were.
+        self.assertNotIn(".stLinkButton a[data-baseweb=\"button\"][kind=\"primary\"] { background-color: #1d4ed8", css)
+        self.assertNotIn(".stButton button[data-baseweb=\"button\"][kind=\"primary\"] { background-color: #1d4ed8", css)
 
         labels = []
         for el in at._tree:
