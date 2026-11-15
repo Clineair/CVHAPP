@@ -848,6 +848,10 @@ DATE_STATUS_COLORS = {
     "ok": "#15803d",
     None: "#6b7280",
 }
+# Equipment INFO/Squawk button fills. Dark text stays readable on yellow.
+EQUIPMENT_BUTTON_YELLOW = "#FFC107"
+EQUIPMENT_BUTTON_DARK_TEXT = "#111111"
+EQUIPMENT_BUTTON_LIGHT_TEXT = "#ffffff"
 
 
 def date_flag(due, today=None):
@@ -930,8 +934,20 @@ def equipment_has_info(unit):
 
 
 def equipment_info_button_color(unit):
-    """Green when the unit has info entered, red when it does not."""
-    return DATE_STATUS_COLORS["ok"] if equipment_has_info(unit) else DATE_STATUS_COLORS["expired"]
+    """Green when the unit has info entered, yellow when it does not."""
+    return DATE_STATUS_COLORS["ok"] if equipment_has_info(unit) else EQUIPMENT_BUTTON_YELLOW
+
+
+def equipment_squawk_button_color():
+    """Every Equipment Squawk button is yellow."""
+    return EQUIPMENT_BUTTON_YELLOW
+
+
+def equipment_button_text_color(background):
+    """Dark text on yellow; white text on green and other dark fills."""
+    if (background or "").lower() == EQUIPMENT_BUTTON_YELLOW.lower():
+        return EQUIPMENT_BUTTON_DARK_TEXT
+    return EQUIPMENT_BUTTON_LIGHT_TEXT
 
 
 def streamlit_widget_key_css_class(key):
@@ -940,29 +956,48 @@ def streamlit_widget_key_css_class(key):
     return "st-key-" + sanitized
 
 
+def streamlit_button_color_rule(css_class, background, text=None):
+    """Color one keyed Streamlit button with selectors that match current and older builds."""
+    text = text or equipment_button_text_color(background)
+    prefix = "." + css_class + " button"
+    button_sels = [
+        prefix,
+        prefix + "[kind='primary']",
+        prefix + "[kind='secondary']",
+        prefix + "[data-testid='stBaseButton-primary']",
+        prefix + "[data-testid='stBaseButton-secondary']",
+        prefix + "[data-baseweb='button']",
+        prefix + "[data-baseweb='button'][kind='primary']",
+        prefix + "[data-baseweb='button'][kind='secondary']",
+    ]
+    return (
+        ",".join(button_sels) + "{"
+        "background-color:" + background + " !important;"
+        "color:" + text + " !important;"
+        "border-color:" + background + " !important;"
+        "}"
+        + prefix + " *{color:" + text + " !important;}"
+    )
+
+
 def equipment_info_button_styles_css(units):
-    """CSS that colors each Equipment INFO button green or red from its info fields."""
+    """CSS that colors each Equipment INFO and Squawk button without touching other buttons."""
     css = ["<style>"]
     for unit in units or []:
         unit_id = _cell(unit.get("Unit ID"))
         if not unit_id:
             continue
         color = equipment_info_button_color(unit)
-        cls = streamlit_widget_key_css_class("info_btn_" + unit_id)
-        css.append(
-            "." + cls + " button,"
-            "." + cls + " button[data-baseweb='button'][kind='primary']{"
-            "background-color:" + color + " !important;"
-            "color:#ffffff !important;"
-            "border-color:" + color + " !important;"
-            "}"
-        )
+        info_cls = streamlit_widget_key_css_class("info_btn_" + unit_id)
+        squawk_cls = streamlit_widget_key_css_class("squawk_btn_" + unit_id)
+        css.append(streamlit_button_color_rule(info_cls, color))
+        css.append(streamlit_button_color_rule(squawk_cls, equipment_squawk_button_color()))
     css.append("</style>")
     return "".join(css)
 
 
 def apply_equipment_info_button_styles(units):
-    """Color each Equipment INFO button green when the unit has info, red when it does not."""
+    """Color each Equipment INFO button green or yellow, and every Squawk button yellow."""
     st.markdown(equipment_info_button_styles_css(units), unsafe_allow_html=True)
     return units
 
