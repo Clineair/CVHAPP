@@ -19,7 +19,7 @@ def _exec_equipment_helpers():
         "GREASE_CHECKPOINT_OFFSETS", "GREASE_AMBER_HOURS", "N480ML_MAINT_SHEET_TITLE",
         "EQUIPMENT_INFO_COLUMNS", "EQUIPMENT_INFO_ENTRY_COLUMNS", "EQUIPMENT_COLUMNS", "EQUIPMENT_EDIT_COLUMNS", "SQUAWK_COLUMNS", "EQUIPMENT_TYPES",
         "SQUAWK_CATEGORIES", "SQUAWK_SEVERITIES", "SEVERITY_GROUNDED", "STATUS_OPEN",
-        "STATUS_RESOLVED", "REPORTERS", "ACTIVE_VALUES", "HEADER_PAGES", "BLT_LABEL", "BLT_URL", "BLT_HELP", "BLT_COLOR", "BLT_CHECKS_SHEET_TITLE", "BLT_CHECKS_COLUMNS", "BLT_CHECK_RESULTS", "BLT_CHECK_MONTHS", "BLT_CHECK_PDF_NOTE", "BLT_CHECK_PDF_FALLBACK_NOTE", "BLT_CHECK_PDF_UPLOAD_FAILED_NOTE", "BLT_CHECK_DRIVE_SCOPES", "BLT_CHECK_DRIVE_UPLOAD_URL",
+        "STATUS_RESOLVED", "REPORTERS", "ACTIVE_VALUES", "HEADER_PAGES", "BLT_LABEL", "BLT_URL", "BLT_HELP", "BLT_COLOR", "BLT_CHECKS_SHEET_TITLE", "BLT_CHECKS_COLUMNS", "BLT_CHECK_RESULTS", "BLT_CHECK_MONTHS", "BLT_CHECK_PDF_NOTE", "BLT_CHECK_PDF_FALLBACK_NOTE", "BLT_CHECK_PDF_UPLOAD_FAILED_NOTE", "BLT_CHECK_PDF_MAX_BYTES",
         "OFFICIAL_EQUIPMENT_NAMES", "REGISTRATION_EXPIRE_COL", "ANNUAL_MAINT_COL",
         "TONNAGE_APPLIES_COL", "TONNAGE_EXPIRE_COL", "TONNAGE_DEFAULT_UNITS", "DATE_STATUS_COLORS",
         "IFTA_UNITS", "DRIVERS", "EMPLOYEES", "IFTA_TRIPS_SHEET_TITLE", "IFTA_FUEL_SHEET_TITLE", "IFTA_TRIPS_COLUMNS", "IFTA_FUEL_COLUMNS", "IFTA_RECEIPT_COLUMN", "IFTA_DEFAULT_JURISDICTION", "IFTA_JURISDICTIONS",
@@ -36,7 +36,7 @@ def _exec_equipment_helpers():
         "_cell", "parse_equipment_date", "format_equipment_date", "registration_due_date", "annual_maint_due_date",
         "date_flag", "date_flag_label", "date_status_markup", "tonnage_applies", "tonnage_due_date", "is_active_equipment",
         "is_open_squawk", "is_grounded_squawk", "squawks_for", "open_squawks_for",
-        "equipment_has_grounding", "equipment_has_info", "equipment_info_button_color", "streamlit_widget_key_css_class", "equipment_info_button_styles_css", "apply_equipment_info_button_styles", "records_from_worksheet", "_worksheet_or_none", "blt_check_user_names", "blt_check_application_month", "format_blt_check_timestamp", "blt_check_pdf_filename", "blt_check_pdf_token", "blt_check_pdf_drive_filename", "blt_check_pdf_bytes", "blt_checks_drive_folder_id", "blt_checks_gcp_service_account_info", "blt_check_drive_session", "upload_blt_check_pdf_to_drive", "store_blt_check_pdf", "build_blt_check_record", "ensure_blt_checks_worksheet", "save_blt_check_record",
+        "equipment_has_grounding", "equipment_has_info", "equipment_info_button_color", "streamlit_widget_key_css_class", "equipment_info_button_styles_css", "apply_equipment_info_button_styles", "records_from_worksheet", "_worksheet_or_none", "blt_check_user_names", "blt_check_application_month", "format_blt_check_timestamp", "blt_check_pdf_filename", "blt_check_pdf_token", "blt_check_pdf_drive_filename", "blt_check_pdf_bytes", "blt_checks_apps_script_config", "_blt_check_response_looks_like_json", "_blt_check_apps_script_link", "upload_blt_check_pdf_via_apps_script", "store_blt_check_pdf", "build_blt_check_record", "ensure_blt_checks_worksheet", "save_blt_check_record",
         "_write_equipment_rows", "ensure_equipment_worksheet", "ensure_equipment_info_columns",
         "ensure_squawks_worksheet", "load_equipment_records",
         "load_squawk_records", "build_squawk_record", "save_squawk_record", "resolve_squawk",
@@ -926,7 +926,8 @@ class PlaceholderAndLogicTests(unittest.TestCase):
         self.assertEqual(ws2.rows[1], [record.get(c, "") for c in custom])
         self.assertEqual(ws2.rows[0], custom)
 
-    def test_blt_check_pdf_uploads_to_drive_or_falls_back_to_filename(self):
+    def test_blt_check_pdf_uploads_via_apps_script_or_falls_back_to_filename(self):
+        import base64
         s = self.s
         when = _pacific("2026-11-15 06:43:46")
         self.assertEqual(
@@ -937,19 +938,18 @@ class PlaceholderAndLogicTests(unittest.TestCase):
             s["blt_check_pdf_drive_filename"](when, "Kittitas/West", "2,4-D", ""),
             "2026-11-15_Kittitas-West_2-4-D_Job.pdf",
         )
+        self.assertEqual(s["blt_checks_apps_script_config"]({}), ("", ""))
+        self.assertEqual(s["blt_checks_apps_script_config"]({"blt_checks": {"apps_script_url": "https://example"}}), ("", ""))
         self.assertEqual(
-            s["blt_checks_drive_folder_id"]({}),
-            "",
+            s["blt_checks_apps_script_config"]({
+                "blt_checks": {
+                    "apps_script_url": " https://script.example/exec ",
+                    "upload_token": " test-token ",
+                }
+            }),
+            ("https://script.example/exec", "test-token"),
         )
-        self.assertEqual(
-            s["blt_checks_drive_folder_id"]({"blt_checks": {"drive_folder_id": "  folder-1  "}}),
-            "folder-1",
-        )
-        self.assertIsNone(s["blt_checks_gcp_service_account_info"]({}))
-        # Confirm the expected key exists in the mapping structure without reading live secrets.
-        self.assertIsNone(s["blt_checks_gcp_service_account_info"]({"other": 1}))
-        dummy = s["blt_checks_gcp_service_account_info"]({"gcp_service_account": {"client_email": "placeholder"}})
-        self.assertEqual(set(dummy), {"client_email"})
+        self.assertEqual(s["BLT_CHECK_PDF_MAX_BYTES"], 15 * 1024 * 1024)
 
         class Uploaded:
             name = "original.pdf"
@@ -958,81 +958,136 @@ class PlaceholderAndLogicTests(unittest.TestCase):
         uploaded = Uploaded()
 
         name, notice = s["store_blt_check_pdf"](
-            uploaded, when, "Chelan", "Zivalgo", "River field",
-            folder_id="", secrets={},
+            uploaded, when, "Chelan", "Zivalgo", "River field", secrets={},
         )
         self.assertEqual(name, "original.pdf")
-        self.assertIn("drive_folder_id", notice)
+        self.assertIn("apps_script_url", notice)
+        self.assertIn("upload_token", notice)
         self.assertIn("filename is stored", notice)
 
         posts = []
-        def fake_upload(pdf_bytes, filename, folder_id, secrets=None):
+        def fake_upload(pdf_bytes, filename, url, token, session=None):
             posts.append({
                 "filename": filename,
-                "folder_id": folder_id,
+                "url": url,
+                "token": token,
                 "pdf_bytes": pdf_bytes,
-                "secrets": secrets,
             })
             return "https://drive.google.com/file/d/abc123/view"
 
+        cfg = {
+            "blt_checks": {
+                "apps_script_url": "https://script.example/exec",
+                "upload_token": "test-token",
+            }
+        }
         link, notice = s["store_blt_check_pdf"](
             uploaded, when, "Chelan", "Zivalgo", "River field",
-            folder_id="folder-1", uploader=fake_upload, secrets={"blt_checks": {"drive_folder_id": "folder-1"}},
+            uploader=fake_upload, secrets=cfg,
         )
         self.assertEqual(link, "https://drive.google.com/file/d/abc123/view")
         self.assertEqual(notice, "")
         self.assertEqual(posts[0]["filename"], "2026-11-15_Chelan_Zivalgo_River-field.pdf")
-        self.assertEqual(posts[0]["folder_id"], "folder-1")
+        self.assertEqual(posts[0]["url"], "https://script.example/exec")
+        self.assertEqual(posts[0]["token"], "test-token")
         self.assertEqual(posts[0]["pdf_bytes"], b"%PDF-fake")
 
         def boom(*args, **kwargs):
             raise RuntimeError("no network")
         name, notice = s["store_blt_check_pdf"](
             uploaded, when, "Chelan", "Zivalgo", "River field",
-            folder_id="folder-1", uploader=boom, secrets={},
+            uploader=boom, secrets=cfg,
         )
         self.assertEqual(name, "original.pdf")
         self.assertIn("could not be uploaded", notice.lower())
 
         none_value, none_notice = s["store_blt_check_pdf"](
-            None, when, "Chelan", "Zivalgo", "River field", folder_id="folder-1",
+            None, when, "Chelan", "Zivalgo", "River field", secrets=cfg,
         )
         self.assertEqual((none_value, none_notice), ("", ""))
 
         class FakeResp:
-            def __init__(self, payload):
+            def __init__(self, payload=None, status_code=200, headers=None, text=""):
                 self.payload = payload
-                self.status = 200
+                self.status_code = status_code
+                self.headers = headers or {}
+                self.text = text
             def raise_for_status(self):
-                return None
+                if self.status_code >= 400:
+                    raise RuntimeError("http " + str(self.status_code))
             def json(self):
+                if self.payload is None:
+                    raise ValueError("no json")
                 return self.payload
 
         class FakeSession:
-            def __init__(self, payload):
-                self.payload = payload
+            def __init__(self):
                 self.posts = []
-            def post(self, url, params=None, headers=None, data=None, timeout=None):
-                self.posts.append({"url": url, "params": params, "headers": headers, "data": data, "timeout": timeout})
-                return FakeResp(self.payload)
+                self.gets = []
+                self.redirect_payload = {
+                    "ok": True,
+                    "fileId": "file1",
+                    "url": "https://drive.google.com/file/d/file1/view",
+                }
+            def post(self, url, json=None, timeout=None, allow_redirects=None):
+                self.posts.append({
+                    "url": url,
+                    "json": json,
+                    "timeout": timeout,
+                    "allow_redirects": allow_redirects,
+                })
+                if allow_redirects is False:
+                    return FakeResp(
+                        status_code=302,
+                        headers={"Location": "https://script.googleusercontent.com/macros/echo?foo=1"},
+                    )
+                return FakeResp(payload=self.redirect_payload)
+            def get(self, url, timeout=None, allow_redirects=None):
+                self.gets.append({
+                    "url": url,
+                    "timeout": timeout,
+                    "allow_redirects": allow_redirects,
+                })
+                return FakeResp(payload=self.redirect_payload)
 
-        session = FakeSession({"id": "file1", "webViewLink": "https://drive.google.com/file/d/file1/view"})
-        link = s["upload_blt_check_pdf_to_drive"](
-            b"%PDF-fake", "2026-11-15_Chelan_Zivalgo_River-field.pdf", "folder-1", session=session,
+        session = FakeSession()
+        link = s["upload_blt_check_pdf_via_apps_script"](
+            b"%PDF-fake",
+            "2026-11-15_Chelan_Zivalgo_River-field.pdf",
+            "https://script.example/exec",
+            "test-token",
+            session=session,
         )
         self.assertEqual(link, "https://drive.google.com/file/d/file1/view")
         self.assertEqual(len(session.posts), 1)
-        self.assertEqual(session.posts[0]["params"]["supportsAllDrives"], "true")
-        self.assertEqual(session.posts[0]["params"]["uploadType"], "multipart")
-        self.assertEqual(session.posts[0]["url"], s["BLT_CHECK_DRIVE_UPLOAD_URL"])
-        self.assertIn(b"2026-11-15_Chelan_Zivalgo_River-field.pdf", session.posts[0]["data"])
-        self.assertIn(b"folder-1", session.posts[0]["data"])
-        self.assertIn(b"%PDF-fake", session.posts[0]["data"])
-        self.assertIn("https://www.googleapis.com/auth/drive.file", s["BLT_CHECK_DRIVE_SCOPES"])
+        self.assertEqual(session.posts[0]["allow_redirects"], False)
+        self.assertEqual(session.posts[0]["timeout"], 30)
+        self.assertEqual(session.posts[0]["json"]["token"], "test-token")
+        self.assertEqual(session.posts[0]["json"]["filename"], "2026-11-15_Chelan_Zivalgo_River-field.pdf")
+        self.assertEqual(session.posts[0]["json"]["base64"], base64.b64encode(b"%PDF-fake").decode("ascii"))
+        self.assertEqual(len(session.gets), 1)
+        self.assertEqual(session.gets[0]["url"], "https://script.googleusercontent.com/macros/echo?foo=1")
+        self.assertEqual(session.gets[0]["timeout"], 30)
+        self.assertTrue(session.gets[0]["allow_redirects"])
 
-        session2 = FakeSession({"id": "file2"})
-        link2 = s["upload_blt_check_pdf_to_drive"](b"%PDF-fake", "x.pdf", "folder-1", session=session2)
+        session_direct = FakeSession()
+        def post_json(self, url, json=None, timeout=None, allow_redirects=None):
+            self.posts.append({
+                "url": url,
+                "json": json,
+                "timeout": timeout,
+                "allow_redirects": allow_redirects,
+            })
+            return FakeResp(
+                payload={"ok": True, "fileId": "file2"},
+                headers={"Content-Type": "application/json"},
+            )
+        session_direct.post = post_json.__get__(session_direct, FakeSession)
+        link2 = s["upload_blt_check_pdf_via_apps_script"](
+            b"%PDF-fake", "x.pdf", "https://script.example/exec", "test-token", session=session_direct,
+        )
         self.assertEqual(link2, "https://drive.google.com/file/d/file2/view")
+        self.assertEqual(session_direct.gets, [])
 
         record = s["build_blt_check_record"](
             user="Ronald A Cline", job="River field", county="Chelan", chemical="Zivalgo",
@@ -1040,6 +1095,23 @@ class PlaceholderAndLogicTests(unittest.TestCase):
             notes="", pdf_name="https://drive.google.com/file/d/abc123/view", when=when,
         )
         self.assertEqual(record["Bulletin PDF"], "https://drive.google.com/file/d/abc123/view")
+
+        script_dir = Path(__file__).resolve().parents[1] / "apps_script" / "blt_upload"
+        manifest = (script_dir / "appsscript.json").read_text()
+        source = (script_dir / "Code.gs").read_text()
+        self.assertIn('"executeAs": "USER_DEPLOYING"', manifest)
+        self.assertIn('"access": "ANYONE_ANONYMOUS"', manifest)
+        self.assertIn("https://www.googleapis.com/auth/drive", manifest)
+        self.assertNotIn("drive.file", manifest)
+        self.assertIn("function doPost(e)", source)
+        self.assertIn('getProperty("UPLOAD_TOKEN")', source)
+        self.assertIn('getProperty("FOLDER_ID")', source)
+        self.assertIn("0x25", source)
+        self.assertIn("15 * 1024 * 1024", source)
+        self.assertNotIn("1m4yapRPCqmpC4QiBmWg683I4TZsfmpsa", source)
+        self.assertIn("PropertiesService.getScriptProperties()", source)
+        self.assertNotIn("UPLOAD_TOKEN =", source)
+        self.assertNotIn("FOLDER_ID =", source)
 
     def test_timesheet_roster_week_calcs_initials_and_exports(self):
 
@@ -4132,7 +4204,8 @@ class HeaderAndEquipmentPageTests(unittest.TestCase):
         captions = " ".join(c.value or "" for c in at.caption)
         self.assertIn("Pacific Time", captions)
         self.assertIn("filename is stored", captions)
-        self.assertIn("drive_folder_id", captions)
+        self.assertIn("apps_script_url", captions)
+        self.assertIn("upload_token", captions)
 
         next(s for s in at.selectbox if s.label == "Pilot/user name").select("Ronald A Cline")
         next(t for t in at.text_input if t.label == "Job or field").set_value("River field")
