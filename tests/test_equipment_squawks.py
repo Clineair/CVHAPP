@@ -4550,7 +4550,7 @@ class HeaderAndEquipmentPageTests(unittest.TestCase):
         self.assertTrue(all((b.label or "").endswith("No data") for b in annual))
         self.assertFalse(any("Coming soon - Ron to define contents" in (i.value or "") for i in at.info))
         # Existing FRAT path remains one tap away.
-        next(b for b in at.button if b.label == "🛩️ Pilot").click().run()
+        next(b for b in at.button if b.label == "🚁 Pilot").click().run()
         self.assertFalse(list(at.exception))
         self.assertTrue(any("Pilot Performance" in (t.value or "") for t in at.title))
         frat_visible = any("FRAT" in (getattr(x, "value", None) or getattr(x, "label", None) or "") for x in list(at.tabs) + list(at.subheader) + list(at.title))
@@ -4594,13 +4594,13 @@ class HeaderAndEquipmentPageTests(unittest.TestCase):
         # All main nav buttons live in the header, in this order. BL2 stays
         # between Emergency and EMPLOYEES.
         nav_labels = [label for label in labels if label in {
-            "🛩️ Pilot", "🚚 Driver", "🚨 Emergency", "Bulletins Live Two",
+            "🚁 Pilot", "🚚 Driver", "🚨 Emergency", "Bulletins Live Two",
             "Monthly Safety Meeting", "Yearly Items", "Equipment", "DOM", "EMPLOYEES",
         } or (label or "").endswith("EMPLOYEES") or (label or "").endswith("Monthly Safety Meeting") or (label or "").endswith("Yearly Items") or (label or "").endswith("Equipment") or (label or "").endswith("DOM")]
         # Strip the active-page "● " prefix used by section header buttons.
         normalized = [label[2:] if label.startswith("● ") else label for label in nav_labels]
         self.assertEqual(normalized, [
-            "🛩️ Pilot",
+            "🚁 Pilot",
             "🚚 Driver",
             "🚨 Emergency",
             "Bulletins Live Two",
@@ -4926,7 +4926,7 @@ class HeaderAndEquipmentPageTests(unittest.TestCase):
         book = at.session_state.get("_workbook")
         if book is not None:
             self.assertEqual(set(book.sheets), {"Sheet1"})
-        next(b for b in at.button if b.label == "🛩️ Pilot").click().run()
+        next(b for b in at.button if b.label == "🚁 Pilot").click().run()
         self.assertFalse(list(at.exception))
         self.assertTrue(any("Pilot Performance" in (t.value or "") for t in at.title))
 

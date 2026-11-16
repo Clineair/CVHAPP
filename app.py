@@ -6,6 +6,8 @@ import requests
 from datetime import datetime, date, time as dt_time, timedelta
 import time as time_module
 import uuid
+import base64
+from pathlib import Path
 import timesheet_mail
 import timesheet_company_mail
 import timesheet_pin
@@ -39,15 +41,70 @@ _ensure_current_mail_modules()
 # ────────────────────────────────────────────────
 # Page Config & CVH Logo
 # ────────────────────────────────────────────────
+def _bundled_file_path(filename):
+    """Locate a file shipped next to app.py, even when tests run from a temp copy."""
+    roots = []
+    file_global = globals().get("__file__")
+    if file_global:
+        roots.append(Path(file_global).resolve().parent)
+    here = Path.cwd().resolve()
+    for _ in range(6):
+        roots.append(here)
+        if here.parent == here:
+            break
+        here = here.parent
+    seen = set()
+    for root in roots:
+        try:
+            root = root.resolve()
+        except OSError:
+            continue
+        if root in seen:
+            continue
+        seen.add(root)
+        path = root / filename
+        if path.is_file():
+            return path
+    return None
+
+
+def _init_helicopter_icon():
+    path = _bundled_file_path("helicopter.png")
+    if path is None:
+        return None, None, "🚁"
+    try:
+        data = path.read_bytes()
+        with Image.open(path) as preview:
+            preview.load()
+    except Exception:
+        return None, None, "🚁"
+    uri = "data:image/png;base64," + base64.b64encode(data).decode("ascii")
+    return path, uri, str(path)
+
+
+HELICOPTER_ICON_PATH, HELICOPTER_DATA_URI, HELICOPTER_PAGE_ICON = _init_helicopter_icon()
+
+
+def helicopter_inline_img(height="1.2em"):
+    """Inline helicopter image for markdown/HTML; falls back to an emoji."""
+    if not HELICOPTER_DATA_URI:
+        return "🚁"
+    return (
+        f'<img src="{HELICOPTER_DATA_URI}" alt="" '
+        f'style="height:{height};width:auto;vertical-align:-0.15em;" />'
+    )
+
+
 st.set_page_config(
     page_title="CVH Employee Tool",
-    page_icon="⌯✈︎",
+    page_icon=HELICOPTER_PAGE_ICON,
     layout="wide",
     initial_sidebar_state="auto"
 )
-st.markdown("""
+_favicon_href = HELICOPTER_DATA_URI or "https://img.icons8.com/color/48/000000/helicopter.png"
+st.markdown(f"""
     <meta name="theme-color" content="#4CAF50">
-    <link rel="icon" href="https://img.icons8.com/color/48/000000/helicopter.png" type="image/png">
+    <link rel="icon" href="{_favicon_href}" type="image/png">
 """, unsafe_allow_html=True)
 
 # CVH Logo and header navigation (logo left, all main buttons right)
@@ -237,7 +294,7 @@ with header_left:
         st.image(LOGO_URL, width=90)
         st.logo(LOGO_URL, size="medium")
     except Exception:
-        st.markdown("### CVH Employee Tool ⌯✈︎")
+        st.markdown("### CVH Employee Tool " + helicopter_inline_img(), unsafe_allow_html=True)
 with header_right:
     def _header_btn(label, page, key):
         active = st.session_state.current_mode == page
@@ -255,7 +312,7 @@ with header_right:
     # same header, immediately under that grid.
     r1c1, r1c2, r1c3 = st.columns(3)
     with r1c1:
-        if st.button("🛩️ Pilot", use_container_width=True, type="primary"):
+        if st.button("🚁 Pilot", use_container_width=True, type="primary"):
             st.session_state.current_mode = "Pilot"
             st.session_state.selected_heli = None
     with r1c2:
@@ -9622,7 +9679,14 @@ apply_monthly_safety_header_style()
 # Pilot Mode
 # ────────────────────────────────────────────────
 if st.session_state.current_mode == "Pilot":
-    st.title("🛩️ Pilot Performance Calculator")
+    if HELICOPTER_ICON_PATH is not None:
+        title_icon, title_text = st.columns([1, 6], vertical_alignment="center")
+        with title_icon:
+            st.image(str(HELICOPTER_ICON_PATH), width=120)
+        with title_text:
+            st.title("Pilot Performance Calculator")
+    else:
+        st.title("🚁 Pilot Performance Calculator")
     st.button("Reset / New Assessment", key="pilot_reset_request", on_click=request_assessment_reset)
     st.caption("Clears unsaved assessment only; saved records are kept.")
     if st.session_state.get("pilot_reset_pending", False):
@@ -10017,4 +10081,11 @@ elif st.session_state.current_mode == "Emergency":
     st.markdown("[Call 911 (Emergency)](tel:911)", unsafe_allow_html=True)
     st.info("Quick-reference only. Follow your company Emergency Response Plan.")
 
-st.caption("**Safe flying & have a Blessed day** ⌯✈︎")
+st.markdown(
+    '<div style="color:rgba(49,51,63,0.6);font-size:0.875rem;">'
+    "<strong>Safe flying &amp; have a Blessed day</strong> "
+    + helicopter_inline_img()
+    + "</div>",
+    unsafe_allow_html=True,
+)
+
