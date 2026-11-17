@@ -23,7 +23,7 @@ def _exec_equipment_helpers():
         "OFFICIAL_EQUIPMENT_NAMES", "REGISTRATION_EXPIRE_COL", "ANNUAL_MAINT_COL",
         "TONNAGE_APPLIES_COL", "TONNAGE_EXPIRE_COL", "TONNAGE_DEFAULT_UNITS", "DATE_STATUS_COLORS", "EQUIPMENT_BUTTON_YELLOW", "EQUIPMENT_BUTTON_DARK_TEXT", "EQUIPMENT_BUTTON_LIGHT_TEXT",
         "IFTA_UNITS", "DRIVERS", "EMPLOYEES", "IFTA_TRIPS_SHEET_TITLE", "IFTA_FUEL_SHEET_TITLE", "IFTA_TRIPS_COLUMNS", "IFTA_FUEL_COLUMNS", "IFTA_RECEIPT_COLUMN", "IFTA_DEFAULT_JURISDICTION", "IFTA_JURISDICTIONS",
-        "DOM_AIRCRAFT", "DOM_ACTION_ANNUAL", "YEARLY_ITEMS_SHEET_TITLE", "YEARLY_ITEMS_COLUMNS", "YEARLY_ITEM_GROUPS", "TIME_OFF_SHEET_TITLE", "TIME_OFF_COLUMNS", "TIME_OFF_TYPES", "TIME_OFF_TYPE_FULL", "TIME_OFF_TYPE_PARTIAL", "TIME_OFF_TYPE_VACATION", "TIME_OFF_TYPE_PROJECT", "TIME_OFF_TYPE_HOLIDAY", "TIME_OFF_ALL_EMPLOYEES", "TIME_OFF_PROJECTS", "TIME_OFF_STATUS_ACTIVE", "TIME_OFF_STATUS_CANCELLED", "TIME_OFF_ACTION_CREATE", "TIME_OFF_ACTION_CANCEL", "TIME_OFF_MAX_PAST_DAYS", "TIME_OFF_MAX_FUTURE_DAYS", "TIME_OFF_MAX_SPAN_DAYS", "TIMESHEET_EMPLOYEES", "TIMESHEET_SHEET_TITLE", "TIMESHEET_DAYS", "TIMESHEET_DAY_FIELDS", "TIMESHEET_WORKED_HOUR_FIELDS", "TIMESHEET_TOTAL_HOUR_ROWS", "TIMESHEET_LEAVE_FIELDS", "TIMESHEET_LEAVE_HOURS_MAX", "TIMESHEET_EMAIL_TO", "TIMESHEET_IRS_BUSINESS_MILEAGE_RATES", "TIMESHEET_IRS_MILEAGE_RATES_START", "TIMESHEET_IRS_MILEAGE_RATES_END", "TIMESHEET_IRS_MILEAGE_SOURCE_URL", "TIMESHEET_MILEAGE_SHEET_TITLE", "TIMESHEET_MILEAGE_COLUMNS", "TIMESHEET_MILEAGE_SOURCE_IRS", "TIMESHEET_MILEAGE_SOURCE_COMPANY", "TIMESHEET_MILEAGE_SOURCE_SAVED",
+        "DOM_AIRCRAFT", "DOM_ACTION_ANNUAL", "DOM_ACTION_SYSTEM_MAINT", "SYSTEM_MAINT_SHEET_TITLE", "SYSTEM_MAINT_COLUMNS", "YEARLY_ITEMS_SHEET_TITLE", "YEARLY_ITEMS_COLUMNS", "YEARLY_ITEM_GROUPS", "TIME_OFF_SHEET_TITLE", "TIME_OFF_COLUMNS", "TIME_OFF_TYPES", "TIME_OFF_TYPE_FULL", "TIME_OFF_TYPE_PARTIAL", "TIME_OFF_TYPE_VACATION", "TIME_OFF_TYPE_PROJECT", "TIME_OFF_TYPE_HOLIDAY", "TIME_OFF_ALL_EMPLOYEES", "TIME_OFF_PROJECTS", "TIME_OFF_STATUS_ACTIVE", "TIME_OFF_STATUS_CANCELLED", "TIME_OFF_ACTION_CREATE", "TIME_OFF_ACTION_CANCEL", "TIME_OFF_MAX_PAST_DAYS", "TIME_OFF_MAX_FUTURE_DAYS", "TIME_OFF_MAX_SPAN_DAYS", "TIMESHEET_EMPLOYEES", "TIMESHEET_SHEET_TITLE", "TIMESHEET_DAYS", "TIMESHEET_DAY_FIELDS", "TIMESHEET_WORKED_HOUR_FIELDS", "TIMESHEET_TOTAL_HOUR_ROWS", "TIMESHEET_LEAVE_FIELDS", "TIMESHEET_LEAVE_HOURS_MAX", "TIMESHEET_EMAIL_TO", "TIMESHEET_IRS_BUSINESS_MILEAGE_RATES", "TIMESHEET_IRS_MILEAGE_RATES_START", "TIMESHEET_IRS_MILEAGE_RATES_END", "TIMESHEET_IRS_MILEAGE_SOURCE_URL", "TIMESHEET_MILEAGE_SHEET_TITLE", "TIMESHEET_MILEAGE_COLUMNS", "TIMESHEET_MILEAGE_SOURCE_IRS", "TIMESHEET_MILEAGE_SOURCE_COMPANY", "TIMESHEET_MILEAGE_SOURCE_SAVED",
         "ANTHONY_TIMESHEET_EMPLOYEE", "ANTHONY_TIMESHEET_SHEET_TITLE", "ANTHONY_TIMESHEET_TEMPLATE", "ANTHONY_TIMESHEET_DAYS", "ANTHONY_TIMESHEET_DAY_FIELDS", "ANTHONY_TIMESHEET_GRID_ROWS", "ANTHONY_TIMESHEET_WEEK_ROWS", "ANTHONY_TIMESHEET_NUMERIC_FIELDS",
         "TIMESHEET_AUTH_REQUIRED_KEYS", "TIMESHEET_AUTH_SHARED_KEYS", "TIMESHEET_AUTH_PROVIDER_KEYS",
         "TIMESHEET_GOOGLE_ISSUERS", "TIMESHEET_MICROSOFT_ISSUER_PREFIXES", "TIMESHEET_EMPLOYEE_EMAILS_SECTION",
@@ -60,6 +60,9 @@ def _exec_equipment_helpers():
         "n480ml_maint_columns", "grease_due_hobbs", "format_grease_hobbs_date",
         "is_grease_checkpoint_done", "grease_done_markup", "grease_amber_hours",
         "ensure_n480ml_maint_worksheet", "load_n480ml_maint_records",
+        "ensure_system_maint_worksheet", "load_system_maint_records",
+        "build_system_maint_record", "save_system_maint_record",
+        "_system_maint_sort_key",
         "load_aircraft_maint_records_readonly", "load_n480ml_maint_records_readonly",
         "combine_maint_status", "n893pc_annual_status", "n480ml_annual_status",
         "aircraft_annual_status", "aircraft_annual_button_label", "aircraft_annual_button_color",
@@ -466,6 +469,11 @@ class PlaceholderAndLogicTests(unittest.TestCase):
         ids = [a["id"] for a in self.s["DOM_AIRCRAFT"]]
         self.assertEqual(ids, ["N893PC", "N480ML"])
         self.assertEqual(self.s["DOM_ACTION_ANNUAL"], "Annual/100 Hr")
+        self.assertEqual(self.s["DOM_ACTION_SYSTEM_MAINT"], "System Maintenance")
+        self.assertEqual(self.s["SYSTEM_MAINT_SHEET_TITLE"], "System Maint")
+        self.assertEqual(self.s["SYSTEM_MAINT_COLUMNS"], [
+            "Timestamp", "Aircraft", "Date", "Hobbs", "System", "Work Done", "Initials",
+        ])
         self.assertTrue(all("id" in aircraft for aircraft in self.s["DOM_AIRCRAFT"]))
 
     def test_format_equipment_date(self):
@@ -3641,6 +3649,107 @@ class FakeSheetBehaviorTests(unittest.TestCase):
         self._assert_frat_untouched()
         self.assertNotIn("Aircraft Maint", self.book.sheets)
 
+    def test_build_system_maint_requires_date_system_work_and_initials(self):
+        from datetime import date
+        build = self.s["build_system_maint_record"]
+        when = _pacific("2026-11-17 08:15:00")
+        with self.assertRaisesRegex(ValueError, "Date"):
+            build("N893PC", "", "1200", "Hydraulics", "Replaced seal", "RC", when=when)
+        with self.assertRaisesRegex(ValueError, "System"):
+            build("N893PC", date(2026, 11, 17), "1200", "  ", "Replaced seal", "RC", when=when)
+        with self.assertRaisesRegex(ValueError, "Work done"):
+            build("N893PC", date(2026, 11, 17), "1200", "Hydraulics", "   ", "RC", when=when)
+        with self.assertRaisesRegex(ValueError, "Initials"):
+            build("N893PC", date(2026, 11, 17), "1200", "Hydraulics", "Replaced seal", "  ", when=when)
+        with self.assertRaisesRegex(ValueError, "Aircraft"):
+            build("  ", date(2026, 11, 17), "1200", "Hydraulics", "Replaced seal", "RC", when=when)
+        record = build(
+            "N893PC", date(2026, 11, 17), "1,205.5", " Hydraulics ",
+            " Replaced seal ", " rc ", when=when,
+        )
+        self.assertEqual(record, {
+            "Timestamp": "2026-11-17 08:15:00",
+            "Aircraft": "N893PC",
+            "Date": "2026-11-17",
+            "Hobbs": "1205.5",
+            "System": "Hydraulics",
+            "Work Done": "Replaced seal",
+            "Initials": "rc",
+        })
+        blank_hobbs = build(
+            "N480ML", date(2026, 11, 17), "not a number", "Electrical",
+            "Checked connectors", "AR", when=when,
+        )
+        self.assertEqual(blank_hobbs["Hobbs"], "")
+        self.assertEqual(list(record), self.s["SYSTEM_MAINT_COLUMNS"])
+
+    def test_system_maint_tab_creates_header_appends_and_filters_by_aircraft(self):
+        from datetime import date
+
+        self.s["ensure_aircraft_maint_worksheet"](self.book)
+        aircraft_ws = self.book.sheets["Aircraft Maint"]
+        aircraft_header = list(aircraft_ws.rows[0])
+        aircraft_writes = list(aircraft_ws.writes)
+        frat_before = [list(r) for r in self.book.sheet1.rows]
+        frat_writes = list(self.book.sheet1.writes)
+
+        ws, created = self.s["ensure_system_maint_worksheet"](self.book)
+        self.assertTrue(created)
+        self.assertEqual(ws.rows[0], self.s["SYSTEM_MAINT_COLUMNS"])
+        ws2, created2 = self.s["ensure_system_maint_worksheet"](self.book)
+        self.assertFalse(created2)
+        self.assertIs(ws2, ws)
+        self.assertEqual(ws.rows[0], self.s["SYSTEM_MAINT_COLUMNS"])
+
+        first = self.s["build_system_maint_record"](
+            "N893PC", date(2026, 11, 10), "1190", "Hydraulics",
+            "Replaced filter", "RC", when=_pacific("2026-11-10 09:00:00"),
+        )
+        second = self.s["build_system_maint_record"](
+            "N480ML", date(2026, 11, 11), "1020", "Electrical",
+            "Inspected wiring", "AR", when=_pacific("2026-11-11 10:00:00"),
+        )
+        third = self.s["build_system_maint_record"](
+            "N893PC", date(2026, 11, 12), "1195", "Fuel",
+            "Cleaned nozzle", "RC", when=_pacific("2026-11-12 11:00:00"),
+        )
+        self.s["save_system_maint_record"](first, spreadsheet=self.book)
+        self.s["save_system_maint_record"](second, spreadsheet=self.book)
+        self.s["save_system_maint_record"](third, spreadsheet=self.book)
+
+        all_rows = self.s["load_system_maint_records"](self.book)
+        self.assertEqual(len(all_rows), 3)
+        n893 = self.s["load_system_maint_records"](self.book, aircraft_id="N893PC")
+        self.assertEqual([r["Date"] for r in n893], ["2026-11-10", "2026-11-12"])
+        self.assertTrue(all(r["Aircraft"] == "N893PC" for r in n893))
+        n480 = self.s["load_system_maint_records"](self.book, aircraft_id="N480ML")
+        self.assertEqual(len(n480), 1)
+        self.assertEqual(n480[0]["System"], "Electrical")
+        newest_first = sorted(n893, key=self.s["_system_maint_sort_key"], reverse=True)
+        self.assertEqual([r["Date"] for r in newest_first], ["2026-11-12", "2026-11-10"])
+
+        self.assertEqual(self.book.sheets["System Maint"].rows[0], self.s["SYSTEM_MAINT_COLUMNS"])
+        self.assertEqual(self.book.sheets["Aircraft Maint"].rows[0], aircraft_header)
+        self.assertEqual(self.book.sheets["Aircraft Maint"].writes, aircraft_writes)
+        self.assertEqual(self.book.sheet1.rows, frat_before)
+        self.assertEqual(self.book.sheet1.writes, frat_writes)
+        self._assert_frat_untouched()
+        self.assertNotIn("N480ML Maint", self.book.sheets)
+        self.assertEqual(set(self.book.sheets), {"Sheet1", "Aircraft Maint", "System Maint"})
+
+    def test_system_maint_ensure_does_not_alter_an_existing_custom_header(self):
+        ws = self.book.add_worksheet("System Maint", 20, 8)
+        ws.append_row(["Timestamp", "Aircraft", "Custom"])
+        writes = list(ws.writes)
+        out, created = self.s["ensure_system_maint_worksheet"](self.book)
+        self.assertFalse(created)
+        self.assertIs(out, ws)
+        self.assertEqual(ws.rows[0], ["Timestamp", "Aircraft", "Custom"])
+        self.assertEqual(ws.writes, writes)
+        self._assert_frat_untouched()
+        self.assertNotIn("Aircraft Maint", self.book.sheets)
+        self.assertNotIn("N480ML Maint", self.book.sheets)
+
 
 
 
@@ -4548,6 +4657,10 @@ class HeaderAndEquipmentPageTests(unittest.TestCase):
         annual = [b for b in at.button if (b.label or "").startswith("Annual/100 Hr")]
         self.assertEqual(len(annual), 2)
         self.assertTrue(all((b.label or "").endswith("No data") for b in annual))
+        sysmaint = [b for b in at.button if b.label == "System Maintenance"]
+        self.assertEqual(len(sysmaint), 2)
+        self.assertEqual(at.button(key="dom_sysmaint_N893PC").label, "System Maintenance")
+        self.assertEqual(at.button(key="dom_sysmaint_N480ML").label, "System Maintenance")
         self.assertFalse(any("Coming soon - Ron to define contents" in (i.value or "") for i in at.info))
         # Existing FRAT path remains one tap away.
         next(b for b in at.button if b.label == "🚁 Pilot").click().run()
@@ -6169,6 +6282,112 @@ class HeaderAndEquipmentPageTests(unittest.TestCase):
         self.assertEqual(rows[2][header.index("Grease 50 Done")], "")
         self.assertNotIn("Aircraft Maint", book.sheets)
         self.assertEqual(book.sheets["Sheet1"].rows, [])
+
+    def test_dom_system_maint_form_saves_and_lists_entries_newest_first(self):
+        from datetime import date
+        from streamlit.testing.v1 import AppTest
+        at = AppTest.from_string(equipment_offline_app(), default_timeout=30).run()
+        at.button(key="nav_dom").click().run()
+        self.assertFalse(list(at.exception))
+        annual = [b for b in at.button if (b.label or "").startswith("Annual/100 Hr")]
+        sysmaint = [b for b in at.button if b.label == "System Maintenance"]
+        self.assertEqual(len(annual), 2)
+        self.assertEqual(len(sysmaint), 2)
+        labels = [b.label for b in at.button if (b.label or "").startswith("Annual/100 Hr") or b.label == "System Maintenance"]
+        self.assertEqual(labels, [
+            "Annual/100 Hr — No data", "System Maintenance",
+            "Annual/100 Hr — No data", "System Maintenance",
+        ])
+        at.button(key="dom_sysmaint_N893PC").click().run()
+        self.assertFalse(list(at.exception))
+        self.assertTrue(any(t.value == "DOM" for t in at.title))
+        self.assertTrue(any(t.value == "System Maintenance — N893PC" for t in at.subheader))
+        self.assertTrue(any(b.label == "Back" for b in at.button))
+        self.assertTrue(any(d.label == "Date" for d in at.date_input))
+        self.assertTrue(any(t.label == "Hobbs" for t in at.text_input))
+        self.assertTrue(any(t.label == "System" for t in at.text_input))
+        self.assertTrue(any(t.label == "Work Done" for t in at.text_area))
+        self.assertTrue(any(t.label == "Initials" for t in at.text_input))
+        self.assertTrue(any(b.label == "Save" for b in at.button))
+        self.assertTrue(any("No system maintenance entries recorded" in (i.value or "") for i in at.info))
+
+        next(b for b in at.button if b.label == "Save").click().run()
+        self.assertFalse(list(at.exception))
+        errors = " ".join(e.value or "" for e in at.error)
+        self.assertIn("System is required", errors)
+        self.assertIn("Work done is required", errors)
+        self.assertIn("Initials are required", errors)
+        book = at.session_state["_workbook"]
+        self.assertIn("System Maint", book.sheets)
+        self.assertEqual(len(book.sheets["System Maint"].rows), 1)
+
+        next(d for d in at.date_input if d.label == "Date").set_value(date(2026, 11, 10))
+        next(t for t in at.text_input if t.label == "Hobbs").set_value("1,190")
+        next(t for t in at.text_input if t.label == "System").set_value("Hydraulics")
+        next(t for t in at.text_area if t.label == "Work Done").set_value("Replaced filter")
+        next(t for t in at.text_input if t.label == "Initials").set_value("RC")
+        next(b for b in at.button if b.label == "Save").click().run()
+        self.assertFalse(list(at.exception))
+        self.assertTrue(any("Saved System Maintenance entry for N893PC" in (s.value or "") for s in at.success))
+        self.assertFalse(any("No system maintenance entries recorded" in (i.value or "") for i in at.info))
+        self.assertTrue(any(e.label and e.label.startswith("2026-11-10") and "Hydraulics" in e.label and "Hobbs 1190" in e.label for e in at.expander))
+
+        next(d for d in at.date_input if d.label == "Date").set_value(date(2026, 11, 12))
+        next(t for t in at.text_input if t.label == "Hobbs").set_value("1195")
+        next(t for t in at.text_input if t.label == "System").set_value("Fuel")
+        next(t for t in at.text_area if t.label == "Work Done").set_value("Cleaned nozzle")
+        next(t for t in at.text_input if t.label == "Initials").set_value("RC")
+        next(b for b in at.button if b.label == "Save").click().run()
+        self.assertFalse(list(at.exception))
+        expander_labels = [e.label for e in at.expander]
+        self.assertEqual(len(expander_labels), 2)
+        self.assertTrue(expander_labels[0].startswith("2026-11-12"))
+        self.assertIn("Fuel", expander_labels[0])
+        self.assertTrue(expander_labels[1].startswith("2026-11-10"))
+        self.assertIn("Hydraulics", expander_labels[1])
+        md = " ".join(m.value or "" for m in at.markdown)
+        self.assertIn("Cleaned nozzle", md)
+        self.assertIn("Replaced filter", md)
+
+        book = at.session_state["_workbook"]
+        rows = book.sheets["System Maint"].rows
+        self.assertEqual(rows[0], [
+            "Timestamp", "Aircraft", "Date", "Hobbs", "System", "Work Done", "Initials",
+        ])
+        self.assertEqual(len(rows), 3)
+        self.assertEqual(rows[1][rows[0].index("Aircraft")], "N893PC")
+        self.assertEqual(rows[1][rows[0].index("Hobbs")], "1190")
+        self.assertEqual(rows[2][rows[0].index("System")], "Fuel")
+        self.assertEqual(book.sheets["Sheet1"].rows, [])
+        self.assertNotIn("Aircraft Maint", book.sheets)
+        self.assertNotIn("N480ML Maint", book.sheets)
+        self.assertNotIn("Equipment", book.sheets)
+        self.assertNotIn("Squawks", book.sheets)
+        self.assertNotIn("Safety Meetings", book.sheets)
+
+        next(b for b in at.button if b.label == "Back").click().run()
+        self.assertFalse(list(at.exception))
+        self.assertTrue(any(t.value == "DOM" for t in at.title))
+        self.assertEqual(at.button(key="dom_sysmaint_N893PC").label, "System Maintenance")
+        at.button(key="dom_sysmaint_N480ML").click().run()
+        self.assertFalse(list(at.exception))
+        self.assertTrue(any(t.value == "System Maintenance — N480ML" for t in at.subheader))
+        self.assertTrue(any("No system maintenance entries recorded" in (i.value or "") for i in at.info))
+        self.assertFalse(any(e.label and "Hydraulics" in e.label for e in at.expander))
+        next(d for d in at.date_input if d.label == "Date").set_value(date(2026, 11, 11))
+        next(t for t in at.text_input if t.label == "Hobbs").set_value("1020")
+        next(t for t in at.text_input if t.label == "System").set_value("Electrical")
+        next(t for t in at.text_area if t.label == "Work Done").set_value("Inspected wiring")
+        next(t for t in at.text_input if t.label == "Initials").set_value("AR")
+        next(b for b in at.button if b.label == "Save").click().run()
+        self.assertFalse(list(at.exception))
+        self.assertTrue(any("Saved System Maintenance entry for N480ML" in (s.value or "") for s in at.success))
+        self.assertTrue(any(e.label and "Electrical" in e.label and "Hobbs 1020" in e.label for e in at.expander))
+        self.assertFalse(any(e.label and "Hydraulics" in (e.label or "") for e in at.expander))
+        rows = at.session_state["_workbook"].sheets["System Maint"].rows
+        self.assertEqual(len(rows), 4)
+        aircraft = [row[rows[0].index("Aircraft")] for row in rows[1:]]
+        self.assertEqual(aircraft, ["N893PC", "N893PC", "N480ML"])
 
     def test_info_edit_form_is_phone_friendly_and_saves_on_fake_sheet(self):
         from datetime import date

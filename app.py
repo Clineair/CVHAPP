@@ -558,6 +558,10 @@ AIRCRAFT_MAINT_COLUMNS = [
 GREASE_CHECKPOINT_OFFSETS = (25, 50, 75, 100)
 GREASE_AMBER_HOURS = 2
 N480ML_MAINT_SHEET_TITLE = "N480ML Maint"
+SYSTEM_MAINT_SHEET_TITLE = "System Maint"
+SYSTEM_MAINT_COLUMNS = [
+    "Timestamp", "Aircraft", "Date", "Hobbs", "System", "Work Done", "Initials",
+]
 AIRCRAFT_MAINT_PROFILES = {
     "N893PC": {
         "id": "N893PC",
@@ -7441,6 +7445,7 @@ DOM_AIRCRAFT = [
     {"id": "N480ML"},
 ]
 DOM_ACTION_ANNUAL = "Annual/100 Hr"
+DOM_ACTION_SYSTEM_MAINT = "System Maintenance"
 
 
 def aircraft_maint_profile(aircraft_id):
@@ -8266,6 +8271,199 @@ def apply_dom_annual_button_styles(statuses):
     return statuses
 
 
+def ensure_system_maint_worksheet(spreadsheet):
+    """Create the System Maint tab with a header when it is missing.
+
+    Never alters an existing header, and never writes Aircraft Maint,
+    N480ML Maint, FRAT, Equipment, Squawks, or Safety Meetings.
+    """
+    cols = list(SYSTEM_MAINT_COLUMNS)
+    ws = _worksheet_or_none(spreadsheet, SYSTEM_MAINT_SHEET_TITLE)
+    created = False
+    if ws is None:
+        ws = spreadsheet.add_worksheet(title=SYSTEM_MAINT_SHEET_TITLE, rows=200, cols=max(len(cols), 8))
+        ws.append_row(cols, value_input_option="RAW")
+        created = True
+    else:
+        header = [_cell(c) for c in ws.row_values(1)]
+        if not header:
+            ws.append_row(cols, value_input_option="RAW")
+            created = True
+    return ws, created
+
+
+def _system_maint_sort_key(record):
+    """Sort by entry date, then timestamp, so same-second saves still stay ordered."""
+    entry = parse_equipment_date(record.get("Date"))
+    if entry is not None:
+        entry_dt = datetime(entry.year, entry.month, entry.day)
+    else:
+        entry_dt = datetime.min
+    text_value = _cell(record.get("Timestamp"))
+    stamp_dt = datetime.min
+    if text_value:
+        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y/%m/%d %H:%M:%S", "%m/%d/%Y %H:%M:%S"):
+            try:
+                stamp_dt = datetime.strptime(text_value, fmt)
+                break
+            except ValueError:
+                continue
+        else:
+            stamp = parse_equipment_date(text_value[:10])
+            if stamp is not None:
+                stamp_dt = datetime(stamp.year, stamp.month, stamp.day)
+    return (entry_dt, stamp_dt)
+
+
+def load_system_maint_records(spreadsheet=None, aircraft_id=None):
+    ws, _created = ensure_system_maint_worksheet(spreadsheet or _gsheets_spreadsheet())
+    records = records_from_worksheet(ws, SYSTEM_MAINT_COLUMNS)
+    if aircraft_id:
+        wanted = _cell(aircraft_id)
+        records = [r for r in records if _cell(r.get("Aircraft")) == wanted]
+    return records
+
+
+def build_system_maint_record(aircraft_id, entry_date, hobbs, system, work_done, initials, when=None):
+    aircraft_id = _cell(aircraft_id)
+    if not aircraft_id:
+        raise ValueError("Aircraft is required")
+    date_text = format_equipment_date(entry_date)
+    if not date_text:
+        raise ValueError("Date is required")
+    system = _cell(system)
+    if not system:
+        raise ValueError("System is required")
+    work_done = _cell(work_done)
+    if not work_done:
+        raise ValueError("Work done is required")
+    initials = _cell(initials)
+    if not initials:
+        raise ValueError("Initials are required")
+    when = when or datetime.now(ZoneInfo("America/Los_Angeles"))
+    return {
+        "Timestamp": when.strftime("%Y-%m-%d %H:%M:%S"),
+        "Aircraft": aircraft_id,
+        "Date": date_text,
+        "Hobbs": format_hobbs(hobbs),
+        "System": system,
+        "Work Done": work_done,
+        "Initials": initials,
+    }
+
+
+def save_system_maint_record(record, spreadsheet=None):
+    """Append one system maintenance entry to the System Maint tab only."""
+    ws, _created = ensure_system_maint_worksheet(spreadsheet or _gsheets_spreadsheet())
+    header = [_cell(c) for c in ws.row_values(1)]
+    if not header:
+        raise RuntimeError("System Maint worksheet has no header")
+    ws.append_row([str(record.get(c, "")) for c in header], value_input_option="RAW")
+    return "Google Sheets (System Maint)"
+
+
+def clear_system_maint_widgets(aircraft_id):
+    aid = _cell(aircraft_id)
+    if not aid:
+        return
+    for suffix in ("date", "hobbs", "system", "work", "initials"):
+        st.session_state.pop("sysmaint_" + suffix + "_" + aid, None)
+
+
+def show_system_maint_page(aircraft_id, spreadsheet=None):
+    """Phone-friendly System Maintenance log for one aircraft, with past entries."""
+    aid = _cell(aircraft_id)
+    st.title("DOM")
+    st.subheader(DOM_ACTION_SYSTEM_MAINT + " — " + aid)
+    if st.button("Back", key="dom_sysmaint_back", use_container_width=True):
+        clear_system_maint_widgets(aid)
+        st.session_state.dom_system_maint_aircraft = None
+        st.rerun()
+
+    today = datetime.now(ZoneInfo("America/Los_Angeles")).date()
+    try:
+        spreadsheet = spreadsheet or _gsheets_spreadsheet()
+        history = load_system_maint_records(spreadsheet, aircraft_id=aid)
+    except Exception as exc:
+        st.error(f"Could not load system maintenance: {exc}")
+        return
+
+    if st.session_state.get("system_maint_saved"):
+        st.success(st.session_state.pop("system_maint_saved"))
+
+    def _init(key, value):
+        if key not in st.session_state:
+            st.session_state[key] = value
+
+    _init("sysmaint_date_" + aid, today)
+    st.date_input("Date", format="YYYY-MM-DD", key="sysmaint_date_" + aid)
+    _init("sysmaint_hobbs_" + aid, "")
+    st.text_input("Hobbs", key="sysmaint_hobbs_" + aid)
+    _init("sysmaint_system_" + aid, "")
+    st.text_input("System", key="sysmaint_system_" + aid)
+    _init("sysmaint_work_" + aid, "")
+    st.text_area("Work Done", key="sysmaint_work_" + aid)
+    _init("sysmaint_initials_" + aid, "")
+    st.text_input("Initials", key="sysmaint_initials_" + aid)
+
+    if st.button("Save", type="primary", key="sysmaint_save_" + aid, use_container_width=True):
+        missing = []
+        if not format_equipment_date(st.session_state.get("sysmaint_date_" + aid)):
+            missing.append("Date is required")
+        if not _cell(st.session_state.get("sysmaint_system_" + aid)):
+            missing.append("System is required")
+        if not _cell(st.session_state.get("sysmaint_work_" + aid)):
+            missing.append("Work done is required")
+        if not _cell(st.session_state.get("sysmaint_initials_" + aid)):
+            missing.append("Initials are required")
+        if missing:
+            for message in missing:
+                st.error(message)
+        else:
+            try:
+                record = build_system_maint_record(
+                    aid,
+                    st.session_state.get("sysmaint_date_" + aid),
+                    st.session_state.get("sysmaint_hobbs_" + aid),
+                    st.session_state.get("sysmaint_system_" + aid),
+                    st.session_state.get("sysmaint_work_" + aid),
+                    st.session_state.get("sysmaint_initials_" + aid),
+                )
+                save_system_maint_record(record, spreadsheet=spreadsheet)
+            except ValueError as exc:
+                st.error(str(exc))
+            except Exception as exc:
+                st.error(f"Could not save system maintenance: {exc}")
+            else:
+                clear_system_maint_widgets(aid)
+                st.session_state.system_maint_saved = "Saved System Maintenance entry for " + aid + "."
+                st.rerun()
+
+    st.markdown("---")
+    st.subheader("Past entries")
+    if not history:
+        st.info("No system maintenance entries recorded for this aircraft.")
+        return
+    for item in sorted(history, key=_system_maint_sort_key, reverse=True):
+        entry_date = _cell(item.get("Date")) or "Entry"
+        title = entry_date
+        if _cell(item.get("Hobbs")):
+            title = title + " — Hobbs " + _cell(item.get("Hobbs"))
+        system = _cell(item.get("System"))
+        if system:
+            title = title + " — " + system
+        with st.expander(title):
+            lines = [
+                ("Date", item.get("Date")),
+                ("Hobbs", item.get("Hobbs")),
+                ("System", item.get("System")),
+                ("Work Done", item.get("Work Done")),
+                ("Initials", item.get("Initials")),
+            ]
+            for label, raw in lines:
+                st.markdown("**" + label + ":** " + (_cell(raw) if _cell(raw) else "—"))
+
+
 def show_dom_annual_panel(aircraft_id):
     """Open the Annual/100 Hr form when a profile exists; otherwise a placeholder."""
     profile = aircraft_maint_profile(aircraft_id)
@@ -8289,6 +8487,10 @@ def show_dom_page():
     if selected:
         show_dom_annual_panel(selected)
         return
+    selected_sys = _cell(st.session_state.get("dom_system_maint_aircraft"))
+    if selected_sys:
+        show_system_maint_page(selected_sys)
+        return
     st.title("DOM")
     try:
         statuses = dom_annual_statuses()
@@ -8306,6 +8508,9 @@ def show_dom_page():
             button_label = aircraft_annual_button_label(statuses.get(aid))
         if st.button(button_label, key="dom_annual_" + aid, use_container_width=True, type="primary"):
             st.session_state.dom_annual_aircraft = aid
+            st.rerun()
+        if st.button(DOM_ACTION_SYSTEM_MAINT, key="dom_sysmaint_" + aid, use_container_width=True):
+            st.session_state.dom_system_maint_aircraft = aid
             st.rerun()
     if statuses is not None:
         apply_dom_annual_button_styles(statuses)
