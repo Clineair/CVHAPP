@@ -19,7 +19,7 @@ def _exec_equipment_helpers():
         "GREASE_CHECKPOINT_OFFSETS", "GREASE_AMBER_HOURS", "N480ML_MAINT_SHEET_TITLE",
         "EQUIPMENT_INFO_COLUMNS", "EQUIPMENT_INFO_ENTRY_COLUMNS", "EQUIPMENT_COLUMNS", "EQUIPMENT_EDIT_COLUMNS", "SQUAWK_COLUMNS", "EQUIPMENT_TYPES",
         "SQUAWK_CATEGORIES", "SQUAWK_SEVERITIES", "SEVERITY_GROUNDED", "STATUS_OPEN",
-        "STATUS_RESOLVED", "REPORTERS", "ACTIVE_VALUES", "HEADER_PAGES", "BLT_LABEL", "BLT_URL", "BLT_HELP", "BLT_COLOR", "BLT_CHECKS_SHEET_TITLE", "BLT_CHECKS_COLUMNS", "BLT_CHECK_RESULTS", "BLT_CHECK_MONTHS", "BLT_CHECK_PDF_NOTE", "BLT_CHECK_PDF_FALLBACK_NOTE", "BLT_CHECK_PDF_UPLOAD_FAILED_NOTE", "BLT_CHECK_PDF_MAX_BYTES", "BLT_CHECKS_CACHE_TTL_SECONDS", "BLT_CHECK_TABLE_COLUMNS",
+        "STATUS_RESOLVED", "REPORTERS", "ACTIVE_VALUES", "HEADER_PAGES", "BLT_LABEL", "BLT_URL", "BLT_HELP", "BLT_COLOR", "BLT_CHECKS_SHEET_TITLE", "BLT_CHECKS_COLUMNS", "BLT_CHECK_RESULTS", "BLT_CHECK_MONTHS", "BLT_CHECK_PDF_NOTE", "BLT_CHECK_PDF_FALLBACK_NOTE", "BLT_CHECK_PDF_UPLOAD_FAILED_NOTE", "BLT_CHECK_PDF_MAX_BYTES", "BLT_CHECKS_CACHE_TTL_SECONDS", "BLT_CHECK_TABLE_COLUMNS", "SHEETS_DATA_TTL_SECONDS", "SHEETS_RETRY_ATTEMPTS", "SHEETS_RETRY_DELAYS", "SHEETS_BUSY_MESSAGE", "FRAT_CACHE_KEY",
         "OFFICIAL_EQUIPMENT_NAMES", "REGISTRATION_EXPIRE_COL", "ANNUAL_MAINT_COL",
         "TONNAGE_APPLIES_COL", "TONNAGE_EXPIRE_COL", "TONNAGE_DEFAULT_UNITS", "DATE_STATUS_COLORS", "EQUIPMENT_BUTTON_YELLOW", "EQUIPMENT_BUTTON_DARK_TEXT", "EQUIPMENT_BUTTON_LIGHT_TEXT",
         "IFTA_UNITS", "DRIVERS", "EMPLOYEES", "IFTA_TRIPS_SHEET_TITLE", "IFTA_FUEL_SHEET_TITLE", "IFTA_TRIPS_COLUMNS", "IFTA_FUEL_COLUMNS", "IFTA_RECEIPT_COLUMN", "IFTA_DEFAULT_JURISDICTION", "IFTA_JURISDICTIONS",
@@ -36,7 +36,7 @@ def _exec_equipment_helpers():
         "_cell", "parse_equipment_date", "format_equipment_date", "registration_due_date", "annual_maint_due_date",
         "date_flag", "date_flag_label", "date_status_markup", "tonnage_applies", "tonnage_due_date", "is_active_equipment",
         "is_open_squawk", "is_grounded_squawk", "squawks_for", "open_squawks_for",
-        "equipment_has_grounding", "equipment_has_info", "equipment_info_button_color", "equipment_squawk_button_color", "equipment_button_text_color", "streamlit_widget_key_css_class", "streamlit_button_color_rule", "equipment_info_button_styles_css", "apply_equipment_info_button_styles", "records_from_worksheet", "_worksheet_or_none", "blt_check_user_names", "blt_check_application_month", "format_blt_check_timestamp", "blt_check_pdf_filename", "blt_check_pdf_token", "blt_check_pdf_drive_filename", "blt_check_pdf_bytes", "blt_checks_apps_script_config", "_blt_check_response_looks_like_json", "_blt_check_apps_script_link", "upload_blt_check_pdf_via_apps_script", "store_blt_check_pdf", "build_blt_check_record", "ensure_blt_checks_worksheet", "save_blt_check_record", "load_blt_check_records_readonly", "_blt_check_sort_key", "sort_blt_check_records", "filter_blt_check_records", "blt_check_pdf_is_link", "blt_check_record_display_row", "blt_checks_table_rows", "read_blt_checks_cache", "extract_blt_bulletin_text", "parse_blt_bulletin_text", "parse_blt_bulletin_pdf", "blt_check_pdf_fingerprint", "apply_blt_bulletin_fields_to_session", "_blt_bulletin_canonical_month", "_blt_bulletin_header_block",
+        "equipment_has_grounding", "equipment_has_info", "equipment_info_button_color", "equipment_squawk_button_color", "equipment_button_text_color", "streamlit_widget_key_css_class", "streamlit_button_color_rule", "equipment_info_button_styles_css", "apply_equipment_info_button_styles", "is_sheets_quota_error", "friendly_sheets_error_message", "sheets_retry", "_records_cache_store", "read_sheet_records_cache", "spreadsheet_is_cacheable", "clear_sheet_records_cache", "load_cached_sheet_records", "load_records_with_ensure", "load_records_readonly", "worksheet_map", "remember_worksheet", "begin_ensure_worksheet", "finish_ensure_worksheet", "sheet_all_values", "sheet_row_values", "records_from_values", "values_batch_get_sheets", "load_equipment_and_squawk_records", "clear_blt_checks_cache", "records_from_worksheet", "_worksheet_or_none", "blt_check_user_names", "blt_check_application_month", "format_blt_check_timestamp", "blt_check_pdf_filename", "blt_check_pdf_token", "blt_check_pdf_drive_filename", "blt_check_pdf_bytes", "blt_checks_apps_script_config", "_blt_check_response_looks_like_json", "_blt_check_apps_script_link", "upload_blt_check_pdf_via_apps_script", "store_blt_check_pdf", "build_blt_check_record", "ensure_blt_checks_worksheet", "save_blt_check_record", "load_blt_check_records_readonly", "_blt_check_sort_key", "sort_blt_check_records", "filter_blt_check_records", "blt_check_pdf_is_link", "blt_check_record_display_row", "blt_checks_table_rows", "read_blt_checks_cache", "extract_blt_bulletin_text", "parse_blt_bulletin_text", "parse_blt_bulletin_pdf", "blt_check_pdf_fingerprint", "apply_blt_bulletin_fields_to_session", "_blt_bulletin_canonical_month", "_blt_bulletin_header_block",
         "_write_equipment_rows", "ensure_equipment_worksheet", "ensure_equipment_info_columns",
         "ensure_squawks_worksheet", "load_equipment_records",
         "load_squawk_records", "build_squawk_record", "save_squawk_record", "resolve_squawk",
@@ -6456,6 +6456,142 @@ class HeaderAndEquipmentPageTests(unittest.TestCase):
         at = AppTest.from_string(offline_app(), default_timeout=30).run()
         self.assertFalse(list(at.exception))
         self.assertTrue(any("Pilot Performance" in (t.value or "") for t in at.title))
+
+
+class FakeQuotaError(Exception):
+    def __init__(self, message="[429]: Quota exceeded for quota metric 'Read requests' and limit 'Read requests per minute per user' of service 'sheets.googleapis.com'"):
+        self.response = type("Resp", (), {"status_code": 429, "status": 429})()
+        super().__init__(message)
+
+
+class SheetsQuotaAndCacheTests(unittest.TestCase):
+    def setUp(self):
+        self.s = _exec_equipment_helpers()
+        self.book = FakeSpreadsheet(sheet1_header=self.s["FRAT_COLUMNS"])
+        self.book._cvh_cacheable = True
+
+    def test_sheets_retry_retries_429_then_succeeds(self):
+        s = self.s
+        calls = {"n": 0}
+        slept = []
+
+        def flaky():
+            calls["n"] += 1
+            if calls["n"] < 3:
+                raise FakeQuotaError()
+            return "ok"
+
+        result = s["sheets_retry"](flaky, sleep=slept.append, jitter=0)
+        self.assertEqual(result, "ok")
+        self.assertEqual(calls["n"], 3)
+        self.assertEqual(slept, [2, 4])
+
+    def test_sheets_retry_gives_up_after_four_429s(self):
+        s = self.s
+        calls = {"n": 0}
+
+        def always_busy():
+            calls["n"] += 1
+            raise FakeQuotaError()
+
+        with self.assertRaises(FakeQuotaError):
+            s["sheets_retry"](always_busy, sleep=lambda _delay: None, jitter=0)
+        self.assertEqual(calls["n"], 4)
+
+    def test_non_quota_errors_are_not_retried(self):
+        s = self.s
+        calls = {"n": 0}
+
+        def boom():
+            calls["n"] += 1
+            raise RuntimeError("worksheet headers do not match this app")
+
+        with self.assertRaises(RuntimeError):
+            s["sheets_retry"](boom, sleep=lambda _delay: None, jitter=0)
+        self.assertEqual(calls["n"], 1)
+
+    def test_friendly_quota_message_hides_raw_api_error(self):
+        s = self.s
+        self.assertTrue(s["is_sheets_quota_error"](FakeQuotaError()))
+        self.assertEqual(
+            s["friendly_sheets_error_message"](FakeQuotaError()),
+            s["SHEETS_BUSY_MESSAGE"],
+        )
+        self.assertEqual(s["SHEETS_BUSY_MESSAGE"], "Google Sheets is busy, please try again in a minute")
+        self.assertEqual(
+            s["friendly_sheets_error_message"](RuntimeError("Equipment worksheet not found")),
+            "Equipment worksheet not found",
+        )
+
+    def test_read_cache_expires_and_force_reloads(self):
+        s = self.s
+        calls = {"n": 0}
+
+        def loader():
+            calls["n"] += 1
+            return [{"Unit ID": "Heli1"}]
+
+        cache = {}
+        first = s["read_sheet_records_cache"](cache, "Equipment", loader, now=1000, ttl=60)
+        second = s["read_sheet_records_cache"](cache, "Equipment", loader, now=1059, ttl=60)
+        self.assertEqual(first, [{"Unit ID": "Heli1"}])
+        self.assertEqual(second, first)
+        self.assertEqual(calls["n"], 1)
+        third = s["read_sheet_records_cache"](cache, "Equipment", loader, now=1060, ttl=60)
+        self.assertEqual(calls["n"], 2)
+        fourth = s["read_sheet_records_cache"](cache, "Equipment", loader, now=1061, ttl=60, force=True)
+        self.assertEqual(calls["n"], 3)
+        self.assertEqual(third, fourth)
+
+    def test_save_squawk_clears_cache_so_reload_sees_the_write(self):
+        s = self.s
+        book = self.book
+        s["ensure_squawks_worksheet"](book)
+        unit = {"Unit ID": "Heli1", "Name": "Heli1", "Type": ""}
+        first = s["build_squawk_record"](
+            unit, "Ronald A Cline", _pacific("2026-11-17 12:00:00"),
+            "Mechanical", "Low", "Loose cover",
+        )
+        s["save_squawk_record"](first, book)
+        loaded = s["load_squawk_records"](book)
+        self.assertEqual(len(loaded), 1)
+
+        sneak = s["build_squawk_record"](
+            unit, "Anthony Root", _pacific("2026-11-17 12:05:00"),
+            "Electrical", "Low", "Light out",
+        )
+        book.sheets["Squawks"].rows.append([str(sneak.get(c, "")) for c in s["SQUAWK_COLUMNS"]])
+        cached = s["load_squawk_records"](book)
+        self.assertEqual(len(cached), 1)
+        self.assertEqual(cached[0]["Description"], "Loose cover")
+
+        third = s["build_squawk_record"](
+            unit, "Ronald A Cline", _pacific("2026-11-17 12:10:00"),
+            "Mechanical", "Low", "Rattle",
+        )
+        s["save_squawk_record"](third, book)
+        fresh = s["load_squawk_records"](book)
+        self.assertEqual(len(fresh), 3)
+        self.assertEqual([row["Description"] for row in fresh], ["Loose cover", "Light out", "Rattle"])
+
+    def test_update_equipment_clears_equipment_cache(self):
+        s = self.s
+        book = self.book
+        s["ensure_equipment_worksheet"](book)
+        first = s["load_equipment_records"](book)
+        self.assertTrue(first)
+        heli = next(row for row in first if row["Unit ID"] == "Heli1")
+        self.assertEqual(heli["Year"], "")
+        # Change the sheet behind the cache.
+        ws = book.sheets["Equipment"]
+        header = ws.rows[0]
+        ws.rows[1][header.index("Year")] = "1999"
+        cached = s["load_equipment_records"](book)
+        self.assertEqual(next(row for row in cached if row["Unit ID"] == "Heli1")["Year"], "")
+        s["update_equipment_record"]("Heli1", {"Year": "2018"}, book)
+        fresh = s["load_equipment_records"](book)
+        self.assertEqual(next(row for row in fresh if row["Unit ID"] == "Heli1")["Year"], "2018")
+
 
 
 if __name__ == "__main__":
