@@ -12,8 +12,9 @@ of each file are checked against its type.
 ## Script Properties
 
 - `UPLOAD_TOKEN`: the same value as Streamlit secret `[receipts] upload_token`
-- `RECEIPTS_FOLDER_ID`: the Drive folder id of the receipts folder (for
-  example a new `CVH Receipts` folder in clineair891's My Drive)
+- `RECEIPTS_FOLDER_ID`: `1rbnnAFHWNWbN3I_9WL25sm_5RVDnZ-dO`, the
+  `CVH Receipts` folder in clineair891's My Drive
+  (https://drive.google.com/drive/folders/1rbnnAFHWNWbN3I_9WL25sm_5RVDnZ-dO)
 
 Do not put these values in `Code.gs`.
 

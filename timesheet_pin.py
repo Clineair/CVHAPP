@@ -25,6 +25,12 @@ PIN_EMPLOYEES = (
     "Skylar Fingerle",
 )
 
+# Office staff who sign in with a PIN but have no time sheet. A phone remembered
+# as one of these can open office pages (Receipts summary) and no time sheet.
+PIN_OFFICE_USERS = (
+    "Patti",
+)
+
 PINS_SECTION = "timesheet_pins"
 PIN_SECTION = "timesheet_pin"
 COOKIE_NAME = "cvh_timesheet_device"
@@ -46,7 +52,13 @@ SALT_LEN = 16
 
 
 def employee_allowed(name):
+    """True only for time-sheet employees. Office users are not employees."""
     return _cell(name) in PIN_EMPLOYEES
+
+
+def identity_allowed(name):
+    """True for anyone who may sign in with a PIN: employees and office users."""
+    return employee_allowed(name) or _cell(name) in PIN_OFFICE_USERS
 
 
 def _cell(value):
@@ -82,8 +94,8 @@ def cookie_secret(secrets):
 
 
 def pin_hash_for(secrets, employee):
-    """The stored scrypt hash for one employee, or empty."""
-    if not employee_allowed(employee):
+    """The stored scrypt hash for one employee or office user, or empty."""
+    if not identity_allowed(employee):
         return ""
     section = _section(secrets, PINS_SECTION)
     if section is None:
@@ -220,8 +232,8 @@ def _secret_bytes(secret):
 def sign_device_cookie(employee, secret, now=None, ttl=None):
     """HMAC-signed device cookie. Payload is the employee key and expiry, never the PIN."""
     name = _cell(employee)
-    if not employee_allowed(name):
-        raise ValueError("That employee does not have a time sheet.")
+    if not identity_allowed(name):
+        raise ValueError("That person cannot sign in with a PIN.")
     if len(_cell(secret).strip()) < MIN_COOKIE_SECRET_LEN:
         raise ValueError("Timesheet PIN cookie secret is not configured.")
     issued = int(now if now is not None else time.time())
@@ -271,7 +283,7 @@ def device_cookie_claims(token, secret, now=None):
     if int(body.get("v") or 0) != COOKIE_VERSION:
         return None
     employee = _cell(body.get("employee"))
-    if not employee_allowed(employee):
+    if not identity_allowed(employee):
         return None
     try:
         exp = int(body.get("exp") or 0)

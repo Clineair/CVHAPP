@@ -36,12 +36,16 @@ import timesheet_mail as tm
 
 PACIFIC = ZoneInfo("America/Los_Angeles")
 
-# ── Categories: edit this one list to add, remove, or reorder categories. ──
-# The first three match the timesheet hour columns (CVH, Forestry, BNSF).
-RECEIPT_CATEGORIES = (
+# ── Two menus. Edit these lists to add, remove, or reorder choices. ──
+# Job: who the receipt is charged to. The first three match the timesheet hour columns.
+RECEIPT_JOBS = (
     "CVH",
     "BNSF",
     "Forestry",
+    "Other",
+)
+# Expense type: what was bought.
+RECEIPT_EXPENSE_TYPES = (
     "Fuel",
     "Parts",
     "Meals",
@@ -50,9 +54,9 @@ RECEIPT_CATEGORIES = (
     "Other",
 )
 
-# Employees who see the "Receipts summary email to Patti" office panel on their own
-# Receipts page (after their PIN). Everyone else sees only their own receipts.
-RECEIPTS_OFFICE_EMPLOYEES = ("Ron Cline",)
+# People who may open the "Receipts summary" office page (EMPLOYEES -> Receipts summary)
+# after their PIN. Patti is an office PIN user (timesheet_pin.PIN_OFFICE_USERS), not an employee.
+RECEIPTS_OFFICE_USERS = ("Ron Cline", "Patti")
 
 RECEIPTS_SHEET_TITLE = "Receipts"
 RECEIPTS_COLUMNS = [
@@ -64,7 +68,8 @@ RECEIPTS_COLUMNS = [
     "Receipt Number",
     "Vendor",
     "Purpose",
-    "Category",
+    "Job",
+    "Expense Type",
     "Photo Link",
     "Photo File",
     "Notes",
@@ -75,6 +80,7 @@ RECEIPTS_MAIL_COLUMNS = [
     "Period Start",
     "Period End",
     "Trigger",
+    "Sent By",
     "Status",
     "To",
     "From",
@@ -592,11 +598,14 @@ def validate_receipt(fields):
     return problems
 
 
-def build_receipt_record(employee, fields, category, photo_link="", photo_file="", when=None, entry_id=None):
+def build_receipt_record(employee, fields, job, expense_type, photo_link="", photo_file="", when=None, entry_id=None):
     when = _as_pacific(when)
-    category = _cell(category)
-    if category not in RECEIPT_CATEGORIES:
-        raise ValueError("Choose a category from the list")
+    job = _cell(job)
+    expense_type = _cell(expense_type)
+    if job not in RECEIPT_JOBS:
+        raise ValueError("Choose a job from the list")
+    if expense_type not in RECEIPT_EXPENSE_TYPES:
+        raise ValueError("Choose an expense type from the list")
     receipt_date = parse_receipt_date(fields.get("date"))
     return {
         "Saved At": format_saved_at(when),
@@ -607,7 +616,8 @@ def build_receipt_record(employee, fields, category, photo_link="", photo_file="
         "Receipt Number": _cell(fields.get("number")),
         "Vendor": _cell(fields.get("vendor")),
         "Purpose": _cell(fields.get("purpose")),
-        "Category": category,
+        "Job": job,
+        "Expense Type": expense_type,
         "Photo Link": _cell(photo_link),
         "Photo File": _cell(photo_file),
         "Notes": _cell(fields.get("notes")),
@@ -736,16 +746,51 @@ def in_period(record, start, end):
 
 # ── Totals and summary ──
 
-def category_totals(records):
-    """{category: total} in RECEIPT_CATEGORIES order, only categories with receipts, plus unknowns last."""
+def _ordered(totals, order):
+    out = {k: totals[k] for k in order if k in totals}
+    for key in sorted(k for k in totals if k not in out):
+        out[key] = totals[key]
+    return out
+
+
+def receipt_job(record):
+    return _cell(record.get("Job")) or "Other"
+
+
+def receipt_expense_type(record):
+    return _cell(record.get("Expense Type")) or "Other"
+
+
+def expense_type_totals(records):
+    """{expense type: total} in RECEIPT_EXPENSE_TYPES order, only types that have receipts."""
     totals = {}
     for rec in records or []:
-        cat = _cell(rec.get("Category")) or "Other"
-        totals[cat] = round(totals.get(cat, 0.0) + (parse_amount(rec.get("Amount")) or 0.0), 2)
-    ordered = {c: totals[c] for c in RECEIPT_CATEGORIES if c in totals}
-    for cat in sorted(c for c in totals if c not in ordered):
-        ordered[cat] = totals[cat]
-    return ordered
+        key = receipt_expense_type(rec)
+        totals[key] = round(totals.get(key, 0.0) + (parse_amount(rec.get("Amount")) or 0.0), 2)
+    return _ordered(totals, RECEIPT_EXPENSE_TYPES)
+
+
+def job_expense_totals(records):
+    """{job: {"total": x, "types": {expense type: y}}} in menu order, only jobs that have receipts."""
+    by_job = {}
+    for rec in records or []:
+        by_job.setdefault(receipt_job(rec), []).append(rec)
+    out = {}
+    for job, mine in _ordered(by_job, RECEIPT_JOBS).items():
+        out[job] = {"total": grand_total(mine), "types": expense_type_totals(mine)}
+    return out
+
+
+def totals_rows(records):
+    """Rows for a Job / Expense type / Total table: each job's types, then the job subtotal, then the grand total."""
+    rows = []
+    for job, info in job_expense_totals(records).items():
+        for kind, amount in info["types"].items():
+            rows.append({"Job": job, "Expense type": kind, "Total": amount})
+        rows.append({"Job": job + " total", "Expense type": "", "Total": info["total"]})
+    if rows:
+        rows.append({"Job": "All jobs", "Expense type": "", "Total": grand_total(records)})
+    return rows
 
 
 def grand_total(records):
@@ -766,7 +811,8 @@ def build_summary(records, start, end, employees=None):
             continue
         people.append({
             "employee": name,
-            "totals": category_totals(mine),
+            "jobs": job_expense_totals(mine),
+            "types": expense_type_totals(mine),
             "total": grand_total(mine),
             "items": list(reversed(mine)),
         })
@@ -794,14 +840,18 @@ def summary_text(summary):
         lines.append("No receipts were saved in this period.")
     for person in summary["employees"]:
         lines.append(person["employee"] + " – " + format_money(person["total"]))
-        for cat, amount in person["totals"].items():
-            lines.append("  " + cat + ": " + format_money(amount))
+        for job, info in person["jobs"].items():
+            lines.append("  " + job + ": " + format_money(info["total"]))
+            for kind, amount in info["types"].items():
+                lines.append("    " + kind + ": " + format_money(amount))
+        lines.append("  By expense type (all jobs): " + ", ".join(
+            kind + " " + format_money(amount) for kind, amount in person["types"].items()))
         lines.append("  Receipts:")
         for rec in person["items"]:
             bits = [
                 rec.get("Date") or "no date",
                 format_money(rec.get("Amount")),
-                rec.get("Category") or "",
+                receipt_job(rec) + " / " + receipt_expense_type(rec),
                 rec.get("Purpose") or "",
             ]
             if rec.get("Vendor"):
@@ -825,19 +875,27 @@ def summary_html(summary):
     cell = 'style="border:1px solid #ccc;padding:4px 6px;text-align:left"'
     for person in summary["employees"]:
         out.append("<h3>" + escape(person["employee"]) + " – " + escape(format_money(person["total"])) + "</h3>")
-        out.append('<table style="border-collapse:collapse"><tr><th ' + cell + ">Category</th><th " + cell + ">Total</th></tr>")
-        for cat, amount in person["totals"].items():
-            out.append("<tr><td " + cell + ">" + escape(cat) + "</td><td " + cell + ">" + escape(format_money(amount)) + "</td></tr>")
-        out.append("</table><br>")
+        out.append('<table style="border-collapse:collapse"><tr><th ' + cell + ">Job</th><th " + cell
+                   + ">Expense type</th><th " + cell + ">Total</th></tr>")
+        for job, info in person["jobs"].items():
+            for kind, amount in info["types"].items():
+                out.append("<tr><td " + cell + ">" + escape(job) + "</td><td " + cell + ">" + escape(kind) + "</td><td "
+                           + cell + ">" + escape(format_money(amount)) + "</td></tr>")
+            out.append("<tr><td " + cell + "><b>" + escape(job) + " total</b></td><td " + cell + "></td><td " + cell
+                       + "><b>" + escape(format_money(info["total"])) + "</b></td></tr>")
+        out.append("</table>")
+        out.append("<p>By expense type (all jobs): " + escape(", ".join(
+            kind + " " + format_money(amount) for kind, amount in person["types"].items())) + "</p>")
         out.append('<table style="border-collapse:collapse"><tr>' + "".join(
-            "<th " + cell + ">" + h + "</th>" for h in ("Date", "Amount", "Category", "Purpose", "Vendor", "Receipt #", "Photo")
+            "<th " + cell + ">" + h + "</th>" for h in ("Date", "Amount", "Job", "Expense type", "Purpose", "Vendor", "Receipt #", "Photo")
         ) + "</tr>")
         for rec in person["items"]:
             link = _cell(rec.get("Photo Link"))
             photo = ('<a href="' + escape(link, quote=True) + '">Open photo</a>') if link.startswith("http") else escape(
                 "not on Drive" + (" (" + rec.get("Photo File") + ")" if rec.get("Photo File") else ""))
             out.append("<tr>" + "".join("<td " + cell + ">" + v + "</td>" for v in (
-                escape(rec.get("Date") or ""), escape(format_money(rec.get("Amount"))), escape(rec.get("Category") or ""),
+                escape(rec.get("Date") or ""), escape(format_money(rec.get("Amount"))), escape(receipt_job(rec)),
+                escape(receipt_expense_type(rec)),
                 escape(rec.get("Purpose") or ""), escape(rec.get("Vendor") or ""), escape(rec.get("Receipt Number") or ""), photo,
             )) + "</tr>")
         out.append("</table>")
@@ -948,12 +1006,13 @@ def send_summary(summary, secrets, *, trigger="Manual", audit_records=None, allo
     return result
 
 
-def build_mail_audit_record(summary, result, when=None):
+def build_mail_audit_record(summary, result, when=None, sent_by=""):
     return {
         "Timestamp": format_saved_at(when),
         "Period Start": summary["start"].isoformat(),
         "Period End": summary["end"].isoformat(),
         "Trigger": _cell(result.get("trigger")),
+        "Sent By": _cell(sent_by) or ("Schedule" if result.get("trigger") == "Automatic" else ""),
         "Status": _cell(result.get("status")),
         "To": _cell(result.get("to")),
         "From": _cell(result.get("from")),

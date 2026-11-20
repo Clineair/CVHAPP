@@ -71,8 +71,8 @@ class Book:
         return WS(self, title)
 
 
-def _rec(employee, amount, category, saved="2026-11-18 10:00:00 PST", day="2026-11-18", link="https://drive.google.com/file/d/X/view"):
-    return {"Employee": employee, "Amount": amount, "Category": category, "Saved At": saved, "Date": day,
+def _rec(employee, amount, kind, saved="2026-11-18 10:00:00 PST", day="2026-11-18", link="https://drive.google.com/file/d/X/view", job="CVH"):
+    return {"Employee": employee, "Amount": amount, "Job": job, "Expense Type": kind, "Saved At": saved, "Date": day,
             "Purpose": "p", "Photo Link": link, "Vendor": "", "Receipt Number": "", "Photo File": "f.jpg"}
 
 
@@ -246,7 +246,7 @@ class SheetTests(unittest.TestCase):
         book = Book({"Sheet1": [list(frat_header)], "Time Sheets": [["Employee"]]})
         when = datetime(2026, 11, 20, 9, 0, tzinfo=PT)
         rec = er.build_receipt_record("Carl Mulvaney", {"date": date(2026, 11, 18), "amount": "61.12", "number": "004417",
-                                                       "purpose": "Fuel", "vendor": "Shell"}, "Fuel",
+                                                       "purpose": "Fuel", "vendor": "Shell"}, "BNSF", "Fuel",
                                       photo_link="https://drive.google.com/file/d/A/view", photo_file="a.jpg", when=when, entry_id="RC-1")
         er.save_receipt_record(rec, book)
         self.assertEqual(book.created, ["Receipts"])
@@ -257,13 +257,14 @@ class SheetTests(unittest.TestCase):
         self.assertEqual(saved["Saved At"], "2026-11-20 09:00:00 PST")
         self.assertEqual(saved["Date"], "2026-11-18")
         self.assertEqual(saved["Amount"], "61.12")
+        self.assertEqual((saved["Job"], saved["Expense Type"]), ("BNSF", "Fuel"))
         er.save_receipt_record(rec, book)
         self.assertEqual(book.created, ["Receipts"])
         self.assertEqual(len(book.tabs["Receipts"]), 3)
 
     def test_existing_header_order_is_respected(self):
-        book = Book({"Receipts": [["Employee", "Amount", "Category"]]})
-        er.save_receipt_record({"Employee": "A", "Amount": "1.00", "Category": "CVH", "Date": "x"}, book)
+        book = Book({"Receipts": [["Employee", "Amount", "Job"]]})
+        er.save_receipt_record({"Employee": "A", "Amount": "1.00", "Job": "CVH", "Date": "x"}, book)
         self.assertEqual(book.tabs["Receipts"][1], ["A", "1.00", "CVH"])
 
     def test_read_is_read_only_and_filters_employee(self):
@@ -277,9 +278,13 @@ class SheetTests(unittest.TestCase):
         self.assertEqual([r["Entry ID"] for r in rows], ["2"])
         self.assertEqual(book.writes, [])
 
-    def test_category_required_and_from_list(self):
+    def test_job_and_expense_type_required_and_from_lists(self):
+        f = {"date": "2026-11-18", "amount": "1", "purpose": "x"}
         with self.assertRaises(ValueError):
-            er.build_receipt_record("A", {"date": "2026-11-18", "amount": "1", "purpose": "x"}, "Candy")
+            er.build_receipt_record("A", f, "Candy", "Fuel")
+        with self.assertRaises(ValueError):
+            er.build_receipt_record("A", f, "CVH", "")
+        self.assertEqual(er.build_receipt_record("A", f, "Other", "Other")["Job"], "Other")
 
     def test_validate(self):
         self.assertEqual(len(er.validate_receipt({})), 3)
@@ -288,15 +293,30 @@ class SheetTests(unittest.TestCase):
 
 
 class TotalsAndPeriodTests(unittest.TestCase):
-    def test_category_totals_in_list_order(self):
-        recs = [_rec("A", "10", "Parts"), _rec("A", "2.50", "CVH"), _rec("A", "5", "Parts"), _rec("A", "1", "Weird")]
-        self.assertEqual(er.category_totals(recs), {"CVH": 2.5, "Parts": 15.0, "Weird": 1.0})
-        self.assertEqual(er.grand_total(recs), 18.5)
+    def test_totals_by_expense_type_within_each_job(self):
+        recs = [_rec("A", "10", "Parts", job="BNSF"), _rec("A", "2.50", "Fuel", job="CVH"),
+                _rec("A", "5", "Parts", job="BNSF"), _rec("A", "1", "Meals", job="BNSF"), _rec("A", "3", "Fuel", job="BNSF")]
+        self.assertEqual(er.job_expense_totals(recs), {
+            "CVH": {"total": 2.5, "types": {"Fuel": 2.5}},
+            "BNSF": {"total": 19.0, "types": {"Fuel": 3.0, "Parts": 15.0, "Meals": 1.0}},
+        })
+        self.assertEqual(er.expense_type_totals(recs), {"Fuel": 5.5, "Parts": 15.0, "Meals": 1.0})
+        self.assertEqual(er.grand_total(recs), 21.5)
+        rows = er.totals_rows(recs)
+        self.assertEqual([(r["Job"], r["Expense type"]) for r in rows], [
+            ("CVH", "Fuel"), ("CVH total", ""), ("BNSF", "Fuel"), ("BNSF", "Parts"), ("BNSF", "Meals"),
+            ("BNSF total", ""), ("All jobs", "")])
+        self.assertEqual(rows[-1]["Total"], 21.5)
 
-    def test_categories_list(self):
-        self.assertEqual(er.RECEIPT_CATEGORIES[:3], ("CVH", "BNSF", "Forestry"))
-        for cat in ("Fuel", "Parts", "Meals", "Lodging", "Supplies", "Other"):
-            self.assertIn(cat, er.RECEIPT_CATEGORIES)
+    def test_menus(self):
+        self.assertEqual(er.RECEIPT_JOBS, ("CVH", "BNSF", "Forestry", "Other"))
+        self.assertEqual(er.RECEIPT_EXPENSE_TYPES, ("Fuel", "Parts", "Meals", "Lodging", "Supplies", "Other"))
+        self.assertEqual(er.RECEIPTS_OFFICE_USERS, ("Ron Cline", "Patti"))
+
+    def test_counts_by_day_entered_not_receipt_date(self):
+        old_receipt_entered_late = _rec("A", "5", "Fuel", saved="2026-11-29 07:00:00 PST", day="2026-11-10")
+        self.assertFalse(er.in_period(old_receipt_entered_late, date(2026, 11, 15), date(2026, 11, 28)))
+        self.assertTrue(er.in_period(old_receipt_entered_late, date(2026, 11, 29), date(2026, 12, 12)))
 
     def test_periods(self):
         self.assertEqual(er.RECEIPTS_PERIOD_ANCHOR.weekday(), 6)  # Sunday
@@ -314,7 +334,7 @@ class TotalsAndPeriodTests(unittest.TestCase):
     def test_summary_groups_by_employee_and_period(self):
         recs = [
             _rec("Carl Mulvaney", "10", "Fuel", saved="2026-11-16 08:00:00 PST"),
-            _rec("Carl Mulvaney", "4", "Meals", saved="2026-11-28 20:00:00 PST"),
+            _rec("Carl Mulvaney", "4", "Meals", saved="2026-11-28 20:00:00 PST", job="BNSF"),
             _rec("Gary Grant", "7", "Parts", saved="2026-11-20 08:00:00 PST", link=""),
             _rec("Gary Grant", "99", "Parts", saved="2026-11-29 08:00:00 PST"),
         ]
@@ -322,13 +342,18 @@ class TotalsAndPeriodTests(unittest.TestCase):
         self.assertEqual([p["employee"] for p in s["employees"]], ["Carl Mulvaney", "Gary Grant"])
         self.assertEqual(s["count"], 3)
         self.assertEqual(s["total"], 21.0)
-        self.assertEqual(s["employees"][0]["totals"], {"Fuel": 10.0, "Meals": 4.0})
+        self.assertEqual(s["employees"][0]["jobs"], {"CVH": {"total": 10.0, "types": {"Fuel": 10.0}},
+                                                     "BNSF": {"total": 4.0, "types": {"Meals": 4.0}}})
         text = er.summary_text(s)
         self.assertIn("Carl Mulvaney – $14.00", text)
+        self.assertIn("  BNSF: $4.00\n    Meals: $4.00", text)
+        self.assertIn("By expense type (all jobs): Fuel $10.00, Meals $4.00", text)
+        self.assertIn("CVH / Fuel", text)
         self.assertIn("Photo: https://drive.google.com/file/d/X/view", text)
         self.assertIn("not on Drive (f.jpg)", text)
         html = er.summary_html(s)
         self.assertIn('href="https://drive.google.com/file/d/X/view"', html)
+        self.assertIn("<b>BNSF total</b>", html)
         self.assertEqual(er.summary_subject(s), "CVH employee receipts: Nov 15 – Nov 28, 2026")
 
     def test_summary_escapes_html(self):
@@ -382,7 +407,9 @@ class MailTests(unittest.TestCase):
         self.assertNotIn("pw-test", repr(r))
 
     def test_scheduled_run_gates(self):
-        book = Book({"Receipts": [er.RECEIPTS_COLUMNS, ["2026-11-16 08:00:00 PST", "1", "Carl Mulvaney", "2026-11-16", "10.00", "", "", "p", "Fuel", "", "f", ""]]})
+        row = {"Saved At": "2026-11-16 08:00:00 PST", "Entry ID": "1", "Employee": "Carl Mulvaney", "Date": "2026-11-16",
+               "Amount": "10.00", "Purpose": "p", "Job": "CVH", "Expense Type": "Fuel", "Photo File": "f"}
+        book = Book({"Receipts": [er.RECEIPTS_COLUMNS, [row.get(c, "") for c in er.RECEIPTS_COLUMNS]]})
         sent = []
         smtp = lambda u, p, m: sent.append(m["Subject"])  # noqa: E731
         status, _ = er.run_scheduled_send(book, SECRETS_MAIL, today=date(2026, 11, 30), smtp_send=smtp)
@@ -394,8 +421,29 @@ class MailTests(unittest.TestCase):
         self.assertEqual(status, er.STATUS_SENT)
         self.assertEqual(sent, ["CVH employee receipts: Nov 15 – Nov 28, 2026"])
         self.assertEqual(book.tabs["Receipts Mail"][0], er.RECEIPTS_MAIL_COLUMNS)
+        self.assertEqual(dict(zip(er.RECEIPTS_MAIL_COLUMNS, book.tabs["Receipts Mail"][1]))["Sent By"], "Schedule")
         status, _ = er.run_scheduled_send(book, on, today=date(2026, 11, 30), smtp_send=smtp)
         self.assertEqual((status, len(sent)), (er.STATUS_DUPLICATE, 1))
+
+
+class OfficePinTests(unittest.TestCase):
+    def test_patti_is_a_pin_identity_but_not_an_employee(self):
+        import timesheet_pin as pin
+        self.assertIn("Patti", pin.PIN_OFFICE_USERS)
+        self.assertNotIn("Patti", pin.PIN_EMPLOYEES)
+        self.assertTrue(pin.identity_allowed("Patti"))
+        self.assertFalse(pin.employee_allowed("Patti"))
+        secret = "test-cookie-secret-0123456789"
+        token = pin.sign_device_cookie("Patti", secret, now=1_800_000_000)
+        self.assertEqual(pin.verify_device_cookie(token, secret, now=1_800_000_001), "Patti")
+        h = pin.make_pin_hash("4321")
+        s = {"timesheet_pin": {"cookie_secret": secret}, "timesheet_pins": {"Patti": h}}
+        self.assertEqual(pin.attempt_pin("Patti", "4321", s, 0), ("ok", 0))
+        self.assertFalse(pin.identity_allowed("Somebody"))
+
+    def test_patti_cannot_open_a_time_sheet(self):
+        src = (ROOT / "app.py").read_text()
+        self.assertIn("timesheet_pin.employee_allowed(identity) and identity == employee", src)
 
 
 class WiringTests(unittest.TestCase):
@@ -406,6 +454,9 @@ class WiringTests(unittest.TestCase):
         fn = {n.name: ast.get_source_segment(self.SOURCE, n) for n in tree.body if isinstance(n, ast.FunctionDef)}
         self.assertIn('show_employee_section_switch(selected) == "Receipts"', fn["show_employees_page"])
         self.assertIn("show_timesheet_pin_gate(employee", fn["show_employee_receipts"])
+        self.assertIn("show_receipts_summary_page()", fn["show_employees_page"])
+        self.assertIn("show_receipts_office_gate()", fn["show_receipts_summary_page"])
+        self.assertNotIn("show_receipts_summary_office", fn["show_employee_receipts"])
         self.assertIn("st.camera_input", fn["show_receipt_entry"])
         self.assertIn("st.file_uploader", fn["show_receipt_entry"])
 

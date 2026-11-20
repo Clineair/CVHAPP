@@ -15,6 +15,7 @@ import streamlit as st
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 import employee_receipts  # noqa: E402
 import timesheet_company_mail  # noqa: E402
+import timesheet_pin  # noqa: E402
 from datetime import datetime, date, timedelta  # noqa: E402
 from zoneinfo import ZoneInfo  # noqa: E402
 
@@ -84,6 +85,8 @@ real_store = employee_receipts.store_receipt_file
 
 def fake_store(data, name, employee, d, amount, secrets, when=None):
     def uploader(data, filename, mime, emp, url, token, session=None):
+        if os.environ.get("RECEIPTS_UI_UPLOAD_FAIL"):
+            raise ConnectionError("Drive is down")
         st.session_state["uploads"].append((emp, filename, mime, len(data)))
         return "https://drive.google.com/file/d/FAKE/view"
     return real_store(data, name, employee, d, amount, secrets, when=when, uploader=uploader)
@@ -100,7 +103,11 @@ real_send = employee_receipts.send_summary
 mod_proxy.send_summary = lambda summary, secrets, **kw: real_send(
     summary, secrets, smtp_send=lambda u, p, m: st.session_state["mails"].append(m["Subject"]), **kw)
 
+_hash = st.session_state.get("_patti_hash") or timesheet_pin.make_pin_hash("4321")
+st.session_state["_patti_hash"] = _hash
 secrets = {
+    "timesheet_pin": {"cookie_secret": "test-cookie-secret-0123456789"},
+    "timesheet_pins": {"Patti": _hash} if os.environ.get("RECEIPTS_UI_PATTI_PIN", "1") == "1" else {},
     "receipts": {"apps_script_url": "https://script.example/exec", "upload_token": "t0ken-for-tests"},
     "timesheet_company_mail": {"enabled": os.environ.get("RECEIPTS_UI_MAIL", "1") == "1", "backend": "gmail_smtp",
                                "username": "clineair891@gmail.com", "password": "pw-test"},
@@ -112,7 +119,7 @@ want = {
     "cached_receipt_records", "clear_receipts_cache", "receipt_records_for_view", "receipt_totals_rows",
     "receipt_table_rows", "_reset_receipt_entry", "apply_receipt_fields_to_session", "show_receipt_entry",
     "show_receipt_list", "receipt_summary_period_options", "show_receipts_summary_office",
-    "show_employee_receipts", "employee_button_key", "_cell",
+    "show_employee_receipts", "employee_button_key", "_cell", "show_receipts_office_gate", "show_receipts_summary_page",
 }
 nodes = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in want]
 nodes += [n for n in tree.body if isinstance(n, ast.Assign) and any(
@@ -123,6 +130,15 @@ ns = {
     "_mail_runtime_secrets": lambda: secrets,
     "_receipts_spreadsheet": lambda: FakeBook(store),
     "show_timesheet_pin_gate": lambda employee, key: os.environ.get("RECEIPTS_UI_PIN", "1") == "1",
+    "timesheet_verified_pin_employee": lambda s=None: st.session_state.get("timesheet_pin_employee") or os.environ.get("RECEIPTS_UI_REMEMBERED", ""),
+    "show_timesheet_switch_control": lambda key_prefix="": None,
+    "_timesheet_pin_failures": lambda: int(st.session_state.get("timesheet_pin_failures") or 0),
+    "_timesheet_queue_cookie": lambda who, secret: st.session_state.__setitem__("queued_cookie", who),
+    "timesheet_access_message": lambda state: "locked",
+    "timesheet_pin": timesheet_pin,
 }
 exec(compile(ast.Module(body=nodes, type_ignores=[]), "app", "exec"), ns)
-ns["show_employee_receipts"](EMPLOYEE)
+if os.environ.get("RECEIPTS_UI_PAGE") == "summary":
+    ns["show_receipts_summary_page"]()
+else:
+    ns["show_employee_receipts"](EMPLOYEE)

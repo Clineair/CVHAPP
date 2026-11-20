@@ -306,6 +306,7 @@ with header_right:
             if page == "EMPLOYEES":
                 st.session_state.employees_selected = None
                 st.session_state.employees_show_calendar = False
+                st.session_state.employees_show_receipts_summary = False
             st.rerun()
     # Three wrapping rows so the header fits a phone-width screen.
     # Order: Pilot, Driver, Emergency, Bulletins Live Two, then the section buttons,
@@ -5619,7 +5620,7 @@ def timesheet_verified_pin_employee(secrets=None):
     except Exception:
         cached = ""
     secret = timesheet_pin.cookie_secret(secrets)
-    if cached and timesheet_pin.employee_allowed(cached):
+    if cached and timesheet_pin.identity_allowed(cached):
         _timesheet_refresh_cookie_if_stale(cached, secret)
         return cached
     if not secret:
@@ -5689,7 +5690,9 @@ def show_timesheet_pin_gate(employee, key_prefix="ts_pin"):
             remembered = _cell(st.session_state.get("timesheet_pin_employee"))
         except Exception:
             remembered = ""
-        if remembered:
+        if remembered and not timesheet_pin.employee_allowed(remembered):
+            st.info("This phone is remembered as " + remembered + " (office). Switch employee to open a time sheet or receipts.")
+        elif remembered:
             st.info("This phone is remembered as " + remembered + ". You can only open that time sheet.")
         else:
             st.info(timesheet_access_message(access))
@@ -7409,11 +7412,9 @@ def receipt_records_for_view(records, view, today=None):
 
 
 def receipt_totals_rows(records):
-    rows = [{"Category": cat, "Total": employee_receipts.format_money(amount)}
-            for cat, amount in employee_receipts.category_totals(records).items()]
-    if rows:
-        rows.append({"Category": "All categories", "Total": employee_receipts.format_money(employee_receipts.grand_total(records))})
-    return rows
+    """Job / Expense type / Total rows: each job's expense types, the job subtotal, then all jobs."""
+    return [dict(row, Total=employee_receipts.format_money(row["Total"]))
+            for row in employee_receipts.totals_rows(records)]
 
 
 def receipt_table_rows(records):
@@ -7423,7 +7424,8 @@ def receipt_table_rows(records):
         rows.append({
             "Date": rec.get("Date", ""),
             "Amount": employee_receipts.format_money(rec.get("Amount")),
-            "Category": rec.get("Category", ""),
+            "Job": rec.get("Job", ""),
+            "Expense type": rec.get("Expense Type", ""),
             "Purpose": rec.get("Purpose", ""),
             "Vendor": rec.get("Vendor", ""),
             "Receipt #": rec.get("Receipt Number", ""),
@@ -7510,10 +7512,14 @@ def show_receipt_entry(employee, p, secrets):
     if not st.session_state.get(w + "complete"):
         return
 
-    st.markdown("**3. Category**")
-    category = st.selectbox(
-        "Allocate to category", list(employee_receipts.RECEIPT_CATEGORIES), index=None,
-        placeholder="Choose a category", key=w + "category",
+    st.markdown("**3. Allocate**")
+    job = st.selectbox(
+        "Job", list(employee_receipts.RECEIPT_JOBS), index=None,
+        placeholder="Choose a job", key=w + "job",
+    )
+    expense_type = st.selectbox(
+        "Expense type", list(employee_receipts.RECEIPT_EXPENSE_TYPES), index=None,
+        placeholder="Choose an expense type", key=w + "expense_type",
     )
     if st.button("Save receipt", key=w + "save", use_container_width=True, type="primary"):
         problems = employee_receipts.validate_receipt(fields)
@@ -7522,15 +7528,18 @@ def show_receipt_entry(employee, p, secrets):
             for problem in problems:
                 st.error(problem)
             return
-        if not category:
-            st.error("Choose a category.")
+        if not job or not expense_type:
+            if not job:
+                st.error("Choose a job.")
+            if not expense_type:
+                st.error("Choose an expense type.")
             return
         when = datetime.now(ZoneInfo("America/Los_Angeles"))
         link, stored, notice = employee_receipts.store_receipt_file(
             data, name, employee, fields.get("date"), fields.get("amount"), secrets, when=when,
         )
         record = employee_receipts.build_receipt_record(
-            employee, fields, category, photo_link=link, photo_file=stored or name, when=when,
+            employee, fields, job, expense_type, photo_link=link, photo_file=stored or name, when=when,
         )
         try:
             employee_receipts.save_receipt_record(record, _receipts_spreadsheet())
@@ -7540,7 +7549,7 @@ def show_receipt_entry(employee, p, secrets):
             return
         clear_receipts_cache()
         st.session_state[p + "saved"] = (
-            "Saved " + employee_receipts.format_money(record["Amount"]) + " to " + category + ".",
+            "Saved " + employee_receipts.format_money(record["Amount"]) + " to " + job + " / " + expense_type + ".",
             notice,
             link,
         )
@@ -7565,7 +7574,7 @@ def show_receipt_list(employee, p):
     if not shown:
         st.caption("No receipts yet.")
         return
-    st.markdown("Totals by category")
+    st.markdown("Totals by job and expense type")
     st.dataframe(pd.DataFrame(receipt_totals_rows(shown)), hide_index=True, use_container_width=True)
     st.dataframe(
         pd.DataFrame(receipt_table_rows(shown)),
@@ -7586,9 +7595,69 @@ def receipt_summary_period_options(today=None, count=6):
     return options + [current]
 
 
-def show_receipts_summary_office(p, secrets):
-    """Preview and manual send of Patti's receipts summary. Office employees only."""
-    with st.expander("Receipts summary email to Patti", expanded=False):
+def show_receipts_office_gate(key_prefix="rc_office"):
+    """Return the signed-in office user (Ron Cline or Patti), or "" after showing the PIN prompt.
+
+    Uses the same PIN hashes ([timesheet_pins]) and remembered-phone cookie as the time sheets.
+    """
+    secrets = _mail_runtime_secrets()
+    allowed = list(employee_receipts.RECEIPTS_OFFICE_USERS)
+    identity = _cell(timesheet_verified_pin_employee(secrets))
+    if identity in allowed:
+        show_timesheet_switch_control(key_prefix)
+        return identity
+    if identity:
+        st.info("This phone is remembered as " + identity + ". Only " + " or ".join(allowed) + " can open the receipts summary.")
+        show_timesheet_switch_control(key_prefix + "_other")
+        return ""
+    failures = _timesheet_pin_failures()
+    if failures >= timesheet_pin.MAX_ATTEMPTS:
+        st.error(timesheet_access_message("pin_locked"))
+        return ""
+    who = st.selectbox("Who are you?", allowed, key=key_prefix + "_who")
+    if not timesheet_pin.employee_pin_ready(secrets, who):
+        st.info("PIN not set up yet - ask the office")
+        return ""
+    st.caption("Enter your PIN once. This phone will remember you.")
+    pin = st.text_input("PIN", type="password", key=key_prefix + "_pin")
+    if st.button("Continue", key=key_prefix + "_continue", use_container_width=True):
+        status, failures = timesheet_pin.attempt_pin(who, pin, secrets, failures)
+        st.session_state["timesheet_pin_failures"] = failures
+        if status == "ok":
+            st.session_state["timesheet_pin_employee"] = _cell(who)
+            st.session_state.pop(key_prefix + "_pin", None)
+            try:
+                _timesheet_queue_cookie(who, timesheet_pin.cookie_secret(secrets))
+            except Exception:
+                st.session_state["timesheet_pin_cookie_token"] = ""
+            st.rerun()
+        elif status == "locked":
+            st.rerun()
+        elif status == "empty":
+            st.error("Enter your PIN.")
+        elif status == "not_configured":
+            st.info("PIN not set up yet - ask the office")
+        else:
+            left = timesheet_pin.MAX_ATTEMPTS - int(failures or 0)
+            st.error("That PIN is not right. " + str(left) + " tries left on this visit.")
+    return ""
+
+
+def show_receipts_summary_page():
+    """Receipts summary for Patti: preview and manual send. Ron Cline and Patti only."""
+    st.title("Receipts summary")
+    user = show_receipts_office_gate()
+    if not user:
+        return
+    show_receipts_summary_office("rc_office_", _mail_runtime_secrets(), user)
+
+
+def show_receipts_summary_office(p, secrets, user=""):
+    """Preview and manual send of Patti's receipts summary. Office users only."""
+    if _cell(user) not in employee_receipts.RECEIPTS_OFFICE_USERS:
+        return
+    with st.container():
+        st.subheader("Receipts summary email to Patti")
         options = receipt_summary_period_options()
         labels = [employee_receipts.period_label(s, e) + (" (in progress)" if i == len(options) - 1 else "")
                   for i, (s, e) in enumerate(options)]
@@ -7627,7 +7696,7 @@ def show_receipts_summary_office(p, secrets):
             )
             try:
                 employee_receipts.save_mail_audit_record(
-                    employee_receipts.build_mail_audit_record(summary, result), _receipts_spreadsheet(),
+                    employee_receipts.build_mail_audit_record(summary, result, sent_by=user), _receipts_spreadsheet(),
                 )
             except Exception:
                 st.caption("The send was not logged to the Receipts Mail tab.")
@@ -7660,8 +7729,6 @@ def show_employee_receipts(employee):
         st.session_state[p + "step"] = "photo"
         st.rerun()
     show_receipt_list(employee, p)
-    if _cell(employee) in employee_receipts.RECEIPTS_OFFICE_EMPLOYEES:
-        show_receipts_summary_office(p, secrets)
 
 
 def show_employee_section_switch(selected):
@@ -7696,17 +7763,33 @@ def show_employees_page():
                 if st.button(shown, key=employee_button_key(name), use_container_width=True, type="primary"):
                     st.session_state.employees_selected = name
                     st.session_state.employees_show_calendar = False
+                    st.session_state.employees_show_receipts_summary = False
                     st.session_state.employees_section = "Time Sheet"
                     st.rerun()
 
-    cal_label = "● Calendar" if show_cal else "Calendar"
-    if st.button(cal_label, key="employees_calendar", use_container_width=True, type="primary"):
-        st.session_state.employees_show_calendar = True
-        st.session_state.employees_selected = None
-        st.rerun()
+    show_summary = bool(st.session_state.get("employees_show_receipts_summary"))
+    cal_col, sum_col = st.columns(2)
+    with cal_col:
+        cal_label = "● Calendar" if show_cal else "Calendar"
+        if st.button(cal_label, key="employees_calendar", use_container_width=True, type="primary"):
+            st.session_state.employees_show_calendar = True
+            st.session_state.employees_show_receipts_summary = False
+            st.session_state.employees_selected = None
+            st.rerun()
+    with sum_col:
+        sum_label = ("● " if show_summary else "") + "Receipts summary"
+        if st.button(sum_label, key="employees_receipts_summary", use_container_width=True, type="primary",
+                     help="Ron and Patti: preview and send the receipts email"):
+            st.session_state.employees_show_receipts_summary = True
+            st.session_state.employees_show_calendar = False
+            st.session_state.employees_selected = None
+            st.rerun()
 
     if show_cal:
         show_time_off_calendar_page()
+        return
+    if show_summary:
+        show_receipts_summary_page()
         return
 
     if selected:
