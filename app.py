@@ -11,6 +11,7 @@ from pathlib import Path
 import timesheet_mail
 import timesheet_company_mail
 import timesheet_pin
+import employee_receipts
 from zoneinfo import ZoneInfo
 
 
@@ -7367,6 +7368,319 @@ def show_timesheet_email_section(employee, preview, saved=None, form_ok=False, p
         )
 
 
+# ────────────────────────────────────────────────
+# Employee receipts (photo kept on Drive, one row per receipt in the Receipts tab)
+# Logic lives in employee_receipts.py. Categories: employee_receipts.RECEIPT_CATEGORIES.
+# ────────────────────────────────────────────────
+RECEIPTS_CACHE_TTL_SECONDS = 60
+RECEIPT_VIEWS = ("This period", "Last period", "All")
+
+
+def _receipts_spreadsheet():
+    return _gsheets_spreadsheet()
+
+
+def cached_receipt_records(employee=None, force=False):
+    """Read the Receipts tab with a brief per-session cache to keep Sheets reads low."""
+    key = "_receipts_cache_" + (_cell(employee) or "*")
+    now = time_module.time()
+    cache = st.session_state.get(key)
+    if not force and cache and now - cache[0] < RECEIPTS_CACHE_TTL_SECONDS:
+        return list(cache[1])
+    records = employee_receipts.load_receipts_readonly(_receipts_spreadsheet(), employee=employee)
+    st.session_state[key] = (now, list(records))
+    return records
+
+
+def clear_receipts_cache():
+    for name in [k for k in list(st.session_state.keys()) if str(k).startswith("_receipts_cache_")]:
+        st.session_state.pop(name, None)
+
+
+def receipt_records_for_view(records, view, today=None):
+    today = today or datetime.now(ZoneInfo("America/Los_Angeles")).date()
+    if view == "All":
+        return list(records or [])
+    if view == "Last period":
+        start, end = employee_receipts.previous_period(today)
+    else:
+        start, end = employee_receipts.period_for(today)
+    return [r for r in (records or []) if employee_receipts.in_period(r, start, end)]
+
+
+def receipt_totals_rows(records):
+    rows = [{"Category": cat, "Total": employee_receipts.format_money(amount)}
+            for cat, amount in employee_receipts.category_totals(records).items()]
+    if rows:
+        rows.append({"Category": "All categories", "Total": employee_receipts.format_money(employee_receipts.grand_total(records))})
+    return rows
+
+
+def receipt_table_rows(records):
+    rows = []
+    for rec in records or []:
+        link = _cell(rec.get("Photo Link"))
+        rows.append({
+            "Date": rec.get("Date", ""),
+            "Amount": employee_receipts.format_money(rec.get("Amount")),
+            "Category": rec.get("Category", ""),
+            "Purpose": rec.get("Purpose", ""),
+            "Vendor": rec.get("Vendor", ""),
+            "Receipt #": rec.get("Receipt Number", ""),
+            "Photo": link if link.startswith("http") else "",
+        })
+    return rows
+
+
+def _reset_receipt_entry(p):
+    st.session_state[p + "gen"] = int(st.session_state.get(p + "gen") or 0) + 1
+    st.session_state[p + "step"] = None
+
+
+def apply_receipt_fields_to_session(session, w, fields):
+    """Put read-back fields into the form widgets. Only fields that were found."""
+    if fields.get("date"):
+        session[w + "date"] = fields["date"]
+    for name in ("amount", "number", "vendor"):
+        if fields.get(name):
+            session[w + name] = fields[name]
+
+
+def show_receipt_entry(employee, p, secrets):
+    """Photo, then the pre-filled form, then the category menu, then Save."""
+    gen = int(st.session_state.get(p + "gen") or 0)
+    w = p + str(gen) + "_"
+    today = datetime.now(ZoneInfo("America/Los_Angeles")).date()
+    st.markdown("**1. Photo of the receipt**")
+    url, token = employee_receipts.upload_config(secrets)
+    if url and token:
+        st.caption("The photo is kept on Google Drive in case of an audit.")
+    else:
+        st.warning("Receipt photo storage is not set up yet. The receipt will save, but keep the paper copy.")
+    source = st.radio(
+        "Photo", ["Take a photo", "Upload a photo or PDF"], horizontal=True, key=w + "source",
+        label_visibility="collapsed",
+    )
+    if source == "Take a photo":
+        shot = st.camera_input("Take a photo of the receipt", key=w + "camera")
+    else:
+        shot = st.file_uploader(
+            "Photo or PDF of the receipt", type=list(employee_receipts.RECEIPT_UPLOAD_TYPES), key=w + "upload",
+        )
+        st.caption("On a phone this also offers Take Photo with the full camera, which reads small print better.")
+    if st.button("Cancel", key=w + "cancel", use_container_width=True):
+        _reset_receipt_entry(p)
+        st.rerun()
+    if shot is None:
+        st.info("Take or choose a photo of the receipt first.")
+        return
+    data = shot.getvalue() if hasattr(shot, "getvalue") else b""
+    name = _cell(getattr(shot, "name", "")) or "receipt.jpg"
+    fp = employee_receipts.fingerprint(data)
+    if fp and st.session_state.get(w + "fp") != fp:
+        fields, note = employee_receipts.read_receipt(data, name)
+        apply_receipt_fields_to_session(st.session_state, w, fields)
+        st.session_state[w + "fp"] = fp
+        st.session_state[w + "note"] = note
+        st.session_state[w + "complete"] = False
+    if employee_receipts.upload_extension(name, data) not in ("pdf", "heic", "heif"):
+        try:
+            st.image(data, width=260)
+        except Exception:
+            pass
+    note = st.session_state.get(w + "note")
+    if note:
+        st.info(note)
+
+    st.markdown("**2. Check and fill in**")
+    if w + "date" not in st.session_state:
+        st.session_state[w + "date"] = today
+    st.date_input("Date", key=w + "date", format="YYYY-MM-DD")
+    st.text_input("Amount ($)", key=w + "amount", placeholder="42.50")
+    st.text_input("Receipt or invoice number", key=w + "number")
+    st.text_input("Vendor (optional)", key=w + "vendor")
+    st.text_input("Purpose", key=w + "purpose", placeholder="What it was for (job, aircraft, truck...)")
+    st.text_area("Notes (optional)", key=w + "notes")
+    fields = {k: st.session_state.get(w + k) for k in ("date", "amount", "number", "vendor", "purpose", "notes")}
+    if st.button("Receipt complete", key=w + "complete_btn", use_container_width=True, type="primary"):
+        problems = employee_receipts.validate_receipt(fields)
+        st.session_state[w + "complete"] = not problems
+        for problem in problems:
+            st.error(problem)
+    if not st.session_state.get(w + "complete"):
+        return
+
+    st.markdown("**3. Category**")
+    category = st.selectbox(
+        "Allocate to category", list(employee_receipts.RECEIPT_CATEGORIES), index=None,
+        placeholder="Choose a category", key=w + "category",
+    )
+    if st.button("Save receipt", key=w + "save", use_container_width=True, type="primary"):
+        problems = employee_receipts.validate_receipt(fields)
+        if problems:
+            st.session_state[w + "complete"] = False
+            for problem in problems:
+                st.error(problem)
+            return
+        if not category:
+            st.error("Choose a category.")
+            return
+        when = datetime.now(ZoneInfo("America/Los_Angeles"))
+        link, stored, notice = employee_receipts.store_receipt_file(
+            data, name, employee, fields.get("date"), fields.get("amount"), secrets, when=when,
+        )
+        record = employee_receipts.build_receipt_record(
+            employee, fields, category, photo_link=link, photo_file=stored or name, when=when,
+        )
+        try:
+            employee_receipts.save_receipt_record(record, _receipts_spreadsheet())
+        except Exception as exc:
+            st.error("Could not save this receipt to Google Sheets. Try again, or tell the office.")
+            st.caption("Save error: " + type(exc).__name__)
+            return
+        clear_receipts_cache()
+        st.session_state[p + "saved"] = (
+            "Saved " + employee_receipts.format_money(record["Amount"]) + " to " + category + ".",
+            notice,
+            link,
+        )
+        _reset_receipt_entry(p)
+        st.rerun()
+
+
+def show_receipt_list(employee, p):
+    st.markdown("**My receipts**")
+    view = st.radio("Show", list(RECEIPT_VIEWS), horizontal=True, key=p + "view")
+    try:
+        records = cached_receipt_records(employee)
+    except Exception:
+        st.error("Could not load receipts from Google Sheets.")
+        return
+    shown = receipt_records_for_view(records, view)
+    today = datetime.now(ZoneInfo("America/Los_Angeles")).date()
+    if view == "This period":
+        st.caption("Pay period " + employee_receipts.period_label(*employee_receipts.period_for(today)) + " (by date saved).")
+    elif view == "Last period":
+        st.caption("Pay period " + employee_receipts.period_label(*employee_receipts.previous_period(today)) + " (by date saved).")
+    if not shown:
+        st.caption("No receipts yet.")
+        return
+    st.markdown("Totals by category")
+    st.dataframe(pd.DataFrame(receipt_totals_rows(shown)), hide_index=True, use_container_width=True)
+    st.dataframe(
+        pd.DataFrame(receipt_table_rows(shown)),
+        hide_index=True,
+        use_container_width=True,
+        column_config={"Photo": st.column_config.LinkColumn("Photo", display_text="Open")},
+    )
+
+
+def receipt_summary_period_options(today=None, count=6):
+    today = today or datetime.now(ZoneInfo("America/Los_Angeles")).date()
+    start, end = employee_receipts.previous_period(today)
+    options = []
+    for _ in range(count):
+        options.append((start, end))
+        start, end = employee_receipts.previous_period(start)
+    current = employee_receipts.period_for(today)
+    return options + [current]
+
+
+def show_receipts_summary_office(p, secrets):
+    """Preview and manual send of Patti's receipts summary. Office employees only."""
+    with st.expander("Receipts summary email to Patti", expanded=False):
+        options = receipt_summary_period_options()
+        labels = [employee_receipts.period_label(s, e) + (" (in progress)" if i == len(options) - 1 else "")
+                  for i, (s, e) in enumerate(options)]
+        pick = st.selectbox("Pay period", labels, index=0, key=p + "sum_period")
+        start, end = options[labels.index(pick)]
+        try:
+            records = cached_receipt_records(None)
+            audit = employee_receipts.load_mail_audit_readonly(_receipts_spreadsheet())
+        except Exception:
+            st.error("Could not load receipts from Google Sheets.")
+            return
+        summary = employee_receipts.build_summary(records, start, end, employees=EMPLOYEES)
+        auto = employee_receipts.auto_send_enabled(secrets)
+        st.caption(
+            "Automatic email every other Monday: " + ("ON" if auto else "OFF (needs Ron's approval to turn on)") + "."
+        )
+        st.markdown("**To:** " + employee_receipts.recipient(secrets))
+        st.markdown("**From:** " + timesheet_company_mail.mailbox_address(secrets))
+        st.markdown("**Subject:** " + employee_receipts.summary_subject(summary))
+        with st.container(border=True):
+            st.html(employee_receipts.summary_html(summary))
+        ready = employee_receipts.mail_ready(secrets)
+        if not ready:
+            st.info(employee_receipts.MAIL_NOT_READY_MESSAGE)
+        sent_before = employee_receipts.already_sent(audit, summary)
+        resend = False
+        if sent_before:
+            st.warning("This period's summary was already sent to Patti.")
+            resend = st.checkbox("Send it again", key=p + "sum_resend_" + start.isoformat())
+        confirm = st.checkbox("I checked the preview. Send it to Patti.", key=p + "sum_confirm_" + start.isoformat())
+        just_sent = st.session_state.get(p + "sum_just_sent") == employee_receipts.idempotency_key(summary)
+        disabled = (not ready) or (not confirm) or (sent_before and not resend) or just_sent
+        if st.button("Send receipts summary", key=p + "sum_send", type="primary", use_container_width=True, disabled=disabled):
+            result = employee_receipts.send_summary(
+                summary, secrets, trigger="Manual", audit_records=audit, allow_resend=resend,
+            )
+            try:
+                employee_receipts.save_mail_audit_record(
+                    employee_receipts.build_mail_audit_record(summary, result), _receipts_spreadsheet(),
+                )
+            except Exception:
+                st.caption("The send was not logged to the Receipts Mail tab.")
+            if result["status"] == employee_receipts.STATUS_SENT:
+                st.session_state[p + "sum_just_sent"] = result["idempotency_key"]
+                st.success("Sent to " + result["to"] + ".")
+            else:
+                st.error(result.get("error") or result["status"])
+
+
+def show_employee_receipts(employee):
+    """Receipts for one employee, behind the same PIN as the time sheet."""
+    st.subheader("Receipts")
+    key = employee_button_key(employee)
+    if not show_timesheet_pin_gate(employee, "rc_gate_" + key):
+        return
+    secrets = _mail_runtime_secrets()
+    p = "rc_" + key + "_"
+    saved = st.session_state.pop(p + "saved", None)
+    if saved:
+        message, notice, link = saved
+        st.success(message)
+        if notice:
+            st.warning(notice)
+        elif link:
+            st.caption("Photo saved to Google Drive.")
+    if st.session_state.get(p + "step"):
+        show_receipt_entry(employee, p, secrets)
+    elif st.button("🧾 Add a receipt", key=p + "add", type="primary", use_container_width=True):
+        st.session_state[p + "step"] = "photo"
+        st.rerun()
+    show_receipt_list(employee, p)
+    if _cell(employee) in employee_receipts.RECEIPTS_OFFICE_EMPLOYEES:
+        show_receipts_summary_office(p, secrets)
+
+
+def show_employee_section_switch(selected):
+    """Time Sheet / Receipts buttons on each employee page. Returns the open section."""
+    section = st.session_state.get("employees_section") or "Time Sheet"
+    left, right = st.columns(2)
+    with left:
+        label = ("● " if section == "Time Sheet" else "") + "Time Sheet"
+        if st.button(label, key="employees_section_timesheet", use_container_width=True):
+            st.session_state.employees_section = "Time Sheet"
+            st.rerun()
+    with right:
+        label = ("● " if section == "Receipts" else "") + "🧾 Receipts"
+        if st.button(label, key="employees_section_receipts", use_container_width=True):
+            st.session_state.employees_section = "Receipts"
+            st.rerun()
+    return section
+
+
 def show_employees_page():
     """Employee buttons at the top, Calendar below, and per-person pages."""
     timesheet_verified_pin_employee()
@@ -7382,6 +7696,7 @@ def show_employees_page():
                 if st.button(shown, key=employee_button_key(name), use_container_width=True, type="primary"):
                     st.session_state.employees_selected = name
                     st.session_state.employees_show_calendar = False
+                    st.session_state.employees_section = "Time Sheet"
                     st.rerun()
 
     cal_label = "● Calendar" if show_cal else "Calendar"
@@ -7399,6 +7714,9 @@ def show_employees_page():
         if st.button("Back", key="employees_back", use_container_width=True):
             st.session_state.employees_selected = None
             st.rerun()
+        if show_employee_section_switch(selected) == "Receipts":
+            show_employee_receipts(selected)
+            return
         if employee_has_anthony_timesheet(selected):
             show_anthony_timesheet(selected)
         elif employee_has_timesheet(selected):
