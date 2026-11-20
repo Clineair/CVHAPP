@@ -30,8 +30,8 @@ def main(argv=None):
         help="PIN text. Omit this and type the PIN at the prompt so it is not stored in shell history.",
     )
     args = parser.parse_args(argv)
-    if args.employee is not None and not timesheet_pin.employee_allowed(args.employee):
-        names = ", ".join(timesheet_pin.PIN_EMPLOYEES)
+    if args.employee is not None and not timesheet_pin.identity_allowed(args.employee):
+        names = ", ".join(timesheet_pin.PIN_EMPLOYEES + timesheet_pin.PIN_OFFICE_USERS)
         print("Unknown employee. Use one of: " + names, file=sys.stderr)
         return 2
     if args.pin is not None:

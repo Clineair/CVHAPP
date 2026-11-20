@@ -1,0 +1,44 @@
+# Bi-weekly receipts summary to Patti. NOT ACTIVE.
+#
+# This file is parked here on purpose. GitHub only runs workflows under
+# .github/workflows/. To turn automatic sending on, after Ron approves:
+#   1. Copy this file to .github/workflows/receipts-summary.yml.
+#   2. Repo Settings → Secrets → Actions: add CVH_STREAMLIT_SECRETS with the
+#      full Streamlit secrets TOML (service account + company Gmail app password).
+#   3. Repo Settings → Variables → Actions: add RECEIPTS_AUTO_SEND = true.
+#   4. In Streamlit secrets (and CVH_STREAMLIT_SECRETS) set [receipts_mail] auto_send = true.
+# Any one of those missing keeps it from sending. To stop it, set
+# RECEIPTS_AUTO_SEND to false (or delete the variable).
+#
+# It runs every Monday; the script itself only sends on the Monday right after a
+# two-week period (Sunday–Saturday, counted from 2026-11-15) ends, so Patti gets
+# one email every other Monday. 15:30 UTC is 7:30 AM PST / 8:30 AM PDT.
+name: Receipts summary to Patti
+
+on:
+  schedule:
+    - cron: "30 15 * * 1"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  send:
+    if: ${{ vars.RECEIPTS_AUTO_SEND == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install gspread google-auth pypdf pillow
+      - name: Send if due
+        env:
+          CVH_STREAMLIT_SECRETS: ${{ secrets.CVH_STREAMLIT_SECRETS }}
+        run: |
+          umask 077
+          printf '%s' "$CVH_STREAMLIT_SECRETS" > "$RUNNER_TEMP/secrets.toml"
+          python tools/send_receipts_summary.py --secrets "$RUNNER_TEMP/secrets.toml" --send
+          rm -f "$RUNNER_TEMP/secrets.toml"
