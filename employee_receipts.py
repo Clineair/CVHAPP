@@ -942,12 +942,12 @@ def already_sent(audit_records, summary):
     )
 
 
-def build_message(summary, secrets):
+def build_message(summary, secrets, to=None, subject_prefix=""):
     address = company_mail.mailbox_address(secrets)
     msg = EmailMessage()
     msg["From"] = formataddr((DISPLAY_NAME, address))
-    msg["To"] = recipient(secrets)
-    msg["Subject"] = summary_subject(summary)
+    msg["To"] = to or recipient(secrets)
+    msg["Subject"] = (subject_prefix or "") + summary_subject(summary)
     msg.set_content(summary_text(summary))
     msg.add_alternative(summary_html(summary), subtype="html")
     return msg
@@ -959,13 +959,22 @@ def _default_smtp_send(username, password, message, backend="gmail_smtp"):
     return company_mail._default_office_smtp_send(username, password, message)
 
 
-def send_summary(summary, secrets, *, trigger="Manual", audit_records=None, allow_resend=False, smtp_send=None):
-    """Send the summary from the company mailbox. Inject smtp_send in tests; nothing else sends."""
+def send_summary(summary, secrets, *, trigger="Manual", audit_records=None, allow_resend=False, smtp_send=None,
+                 to=None, subject_prefix=""):
+    """Send the summary from the company mailbox. Inject smtp_send in tests; nothing else sends.
+
+    to and subject_prefix are for a one-off test send. A test send ("Test" trigger) is never
+    treated as the period's real send and skips the duplicate check.
+    """
+    to = tm._lower_email(to) if to else ""
+    is_test = trigger == "Test"
+    if is_test and not to:
+        raise ValueError("A test send needs an explicit --to address")
     result = {
         "status": STATUS_DENIED,
         "error": "",
-        "idempotency_key": idempotency_key(summary),
-        "to": recipient(secrets),
+        "idempotency_key": ("test:" if is_test else "") + idempotency_key(summary),
+        "to": to or recipient(secrets),
         "from": company_mail.mailbox_address(secrets),
         "trigger": trigger,
     }
@@ -976,7 +985,7 @@ def send_summary(summary, secrets, *, trigger="Manual", audit_records=None, allo
         result["status"] = STATUS_SKIPPED
         result["error"] = "Automatic receipts email is off."
         return result
-    if already_sent(audit_records, summary) and not allow_resend:
+    if not is_test and already_sent(audit_records, summary) and not allow_resend:
         result["status"] = STATUS_DUPLICATE
         result["error"] = "This period's receipts summary was already sent."
         return result
@@ -986,7 +995,7 @@ def send_summary(summary, secrets, *, trigger="Manual", audit_records=None, allo
     password = company_mail._secret_text(section, "password")
     backend = company_mail.company_backend(secrets)
     try:
-        message = build_message(summary, secrets)
+        message = build_message(summary, secrets, to=to or None, subject_prefix=subject_prefix)
         if smtp_send is not None:
             smtp_send(username, password, message)
         else:
