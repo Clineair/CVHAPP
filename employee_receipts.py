@@ -20,6 +20,7 @@ Mail
 from __future__ import annotations
 
 import base64
+import csv
 import hashlib
 import io
 import re
@@ -108,6 +109,29 @@ RECEIPT_MIME_TYPES = {
 # counted from this Sunday. Change it to line up with the pay period.
 RECEIPTS_PERIOD_ANCHOR = date(2026, 11, 15)
 RECEIPTS_PERIOD_DAYS = 14
+RANGE_PERIOD_TO_DATE = "Period to date"
+RANGE_THIS_MONTH = "This month"
+RANGE_PAY_PERIOD = "Pay period"
+RANGE_CUSTOM = "Custom dates"
+SUMMARY_RANGE_CHOICES = (
+    RANGE_PERIOD_TO_DATE,
+    RANGE_THIS_MONTH,
+    RANGE_PAY_PERIOD,
+    RANGE_CUSTOM,
+)
+FILTER_ALL = "All"
+OFFICE_TABLE_COLUMNS = (
+    "Saved",
+    "Employee",
+    "Receipt date",
+    "Vendor",
+    "Purpose",
+    "Receipt #",
+    "Job",
+    "Expense type",
+    "Amount",
+    "Photo",
+)
 
 UPLOAD_NOT_SET_UP_NOTE = (
     "Receipt photo storage is not set up yet, so this photo was NOT saved to "
@@ -744,6 +768,94 @@ def in_period(record, start, end):
     return day is not None and start <= day <= end
 
 
+def period_to_date(day, anchor=None):
+    """Start of the in-progress pay period through day (Pacific)."""
+    if isinstance(day, datetime):
+        day = _as_pacific(day).date()
+    start, _end = period_for(day, anchor)
+    return start, day
+
+
+def month_to_date(day):
+    """First day of day's calendar month through day (Pacific)."""
+    if isinstance(day, datetime):
+        day = _as_pacific(day).date()
+    return day.replace(day=1), day
+
+
+def _ordered_dates(start, end):
+    if start is None or end is None:
+        return start, end
+    if end < start:
+        return end, start
+    return start, end
+
+
+def resolve_summary_range(kind, today=None, period=None, custom_start=None, custom_end=None, anchor=None):
+    """(start, end) for a live-view range choice. Dates are inclusive, counted by day entered."""
+    today = today or now_pacific().date()
+    if isinstance(today, datetime):
+        today = _as_pacific(today).date()
+    if kind == RANGE_PERIOD_TO_DATE:
+        return period_to_date(today, anchor)
+    if kind == RANGE_THIS_MONTH:
+        return month_to_date(today)
+    if kind == RANGE_PAY_PERIOD:
+        if period:
+            return period[0], period[1]
+        return period_for(today, anchor)
+    start, end = _ordered_dates(custom_start, custom_end)
+    if start is None or end is None:
+        return period_to_date(today, anchor)
+    return start, end
+
+
+def summary_range_label(start, end, kind=""):
+    label = period_label(start, end)
+    if kind == RANGE_PERIOD_TO_DATE:
+        return label + " (period to date)"
+    if kind == RANGE_THIS_MONTH:
+        return label + " (this month)"
+    return label
+
+
+def _filter_value(value):
+    text = _cell(value)
+    if not text or text == FILTER_ALL:
+        return ""
+    return text
+
+
+def filter_receipts(records, start, end, employee=None, job=None, expense_type=None):
+    """Receipts saved in [start, end] (Pacific), optionally narrowed by employee, job, or expense type."""
+    employee = _filter_value(employee)
+    job = _filter_value(job)
+    expense_type = _filter_value(expense_type)
+    out = [r for r in (records or []) if in_period(r, start, end)]
+    if employee:
+        out = [r for r in out if _cell(r.get("Employee")) == employee]
+    if job:
+        out = [r for r in out if receipt_job(r) == job]
+    if expense_type:
+        out = [r for r in out if receipt_expense_type(r) == expense_type]
+    return out
+
+
+def filter_key(employee=None, job=None, expense_type=None):
+    """Stable suffix for the send-dedupe key. Empty when no filters are on."""
+    parts = []
+    employee = _filter_value(employee)
+    job = _filter_value(job)
+    expense_type = _filter_value(expense_type)
+    if employee:
+        parts.append("emp=" + employee)
+    if job:
+        parts.append("job=" + job)
+    if expense_type:
+        parts.append("type=" + expense_type)
+    return "|".join(parts)
+
+
 # ── Totals and summary ──
 
 def _ordered(totals, order):
@@ -797,9 +909,56 @@ def grand_total(records):
     return round(sum(parse_amount(r.get("Amount")) or 0.0 for r in records or []), 2)
 
 
-def build_summary(records, start, end, employees=None):
-    """Per-employee totals and line items for receipts saved in [start, end]."""
-    chosen = [r for r in (records or []) if in_period(r, start, end)]
+def employee_totals_rows(records):
+    """One row per employee, in first-seen order, then a grand total when there is more than one person."""
+    names = []
+    by_name = {}
+    for rec in records or []:
+        name = _cell(rec.get("Employee")) or "Unknown"
+        if name not in by_name:
+            names.append(name)
+            by_name[name] = []
+        by_name[name].append(rec)
+    rows = [{"Employee": name, "Receipts": len(by_name[name]), "Total": grand_total(by_name[name])} for name in names]
+    if len(rows) > 1:
+        rows.append({"Employee": "All employees", "Receipts": len(records or []), "Total": grand_total(records)})
+    return rows
+
+
+def office_table_rows(records):
+    """Rows for the live office table and CSV: saved date, employee, receipt fields, photo link."""
+    rows = []
+    for rec in sort_receipts(records):
+        link = _cell(rec.get("Photo Link"))
+        saved = _cell(rec.get("Saved At"))
+        rows.append({
+            "Saved": saved[:10] if saved else "",
+            "Employee": _cell(rec.get("Employee")),
+            "Receipt date": _cell(rec.get("Date")),
+            "Vendor": _cell(rec.get("Vendor")),
+            "Purpose": _cell(rec.get("Purpose")),
+            "Receipt #": _cell(rec.get("Receipt Number")),
+            "Job": receipt_job(rec),
+            "Expense type": receipt_expense_type(rec),
+            "Amount": format_money(rec.get("Amount")),
+            "Photo": link if link.startswith("http") else "",
+        })
+    return rows
+
+
+def summary_csv(records):
+    """CSV of the shown office rows. Amounts keep the dollar sign used on the page."""
+    buf = io.StringIO()
+    writer = csv.DictWriter(buf, fieldnames=list(OFFICE_TABLE_COLUMNS), lineterminator="\n")
+    writer.writeheader()
+    for row in office_table_rows(records):
+        writer.writerow({k: row.get(k, "") for k in OFFICE_TABLE_COLUMNS})
+    return buf.getvalue()
+
+
+def build_summary(records, start, end, employees=None, employee=None, job=None, expense_type=None, range_kind=""):
+    """Per-employee totals and line items for receipts saved in [start, end], optionally filtered."""
+    chosen = filter_receipts(records, start, end, employee=employee, job=job, expense_type=expense_type)
     names = []
     for name in list(employees or []) + [_cell(r.get("Employee")) for r in chosen]:
         if name and name not in names:
@@ -819,11 +978,26 @@ def build_summary(records, start, end, employees=None):
     return {
         "start": start,
         "end": end,
-        "label": period_label(start, end),
+        "label": summary_range_label(start, end, range_kind),
+        "range_kind": range_kind or "",
+        "employee_filter": _filter_value(employee),
+        "job_filter": _filter_value(job),
+        "expense_type_filter": _filter_value(expense_type),
         "employees": people,
         "count": len(chosen),
         "total": grand_total(chosen),
     }
+
+
+def summary_filters_label(summary):
+    parts = []
+    if summary.get("employee_filter"):
+        parts.append("Employee: " + summary["employee_filter"])
+    if summary.get("job_filter"):
+        parts.append("Job: " + summary["job_filter"])
+    if summary.get("expense_type_filter"):
+        parts.append("Expense type: " + summary["expense_type_filter"])
+    return ", ".join(parts)
 
 
 def summary_subject(summary):
@@ -834,10 +1008,13 @@ def summary_text(summary):
     lines = [
         "Employee receipts saved " + summary["label"] + ".",
         "Receipts: " + str(summary["count"]) + "   Total: " + format_money(summary["total"]),
-        "",
     ]
+    filters = summary_filters_label(summary)
+    if filters:
+        lines.append("Filters: " + filters)
+    lines.append("")
     if not summary["employees"]:
-        lines.append("No receipts were saved in this period.")
+        lines.append("No receipts were saved in this range.")
     for person in summary["employees"]:
         lines.append(person["employee"] + " – " + format_money(person["total"]))
         for job, info in person["jobs"].items():
@@ -868,10 +1045,14 @@ def summary_text(summary):
 def summary_html(summary):
     out = [
         "<p>Employee receipts saved <b>" + escape(summary["label"]) + "</b>.<br>",
-        "Receipts: " + str(summary["count"]) + " &nbsp; Total: <b>" + escape(format_money(summary["total"])) + "</b></p>",
+        "Receipts: " + str(summary["count"]) + " &nbsp; Total: <b>" + escape(format_money(summary["total"])) + "</b>",
     ]
+    filters = summary_filters_label(summary)
+    if filters:
+        out.append("<br>Filters: " + escape(filters))
+    out.append("</p>")
     if not summary["employees"]:
-        out.append("<p>No receipts were saved in this period.</p>")
+        out.append("<p>No receipts were saved in this range.</p>")
     cell = 'style="border:1px solid #ccc;padding:4px 6px;text-align:left"'
     for person in summary["employees"]:
         out.append("<h3>" + escape(person["employee"]) + " – " + escape(format_money(person["total"])) + "</h3>")
@@ -931,7 +1112,17 @@ def recipient(secrets):
 
 
 def idempotency_key(summary):
-    return "receipts:" + summary["start"].isoformat() + ":" + summary["end"].isoformat()
+    """Dedupe key for a send. Includes the date range, and any filters, so a custom range
+    or a filtered view does not clash with a different period or unfiltered send."""
+    key = "receipts:" + summary["start"].isoformat() + ":" + summary["end"].isoformat()
+    suffix = filter_key(
+        summary.get("employee_filter"),
+        summary.get("job_filter"),
+        summary.get("expense_type_filter"),
+    )
+    if suffix:
+        key += ":" + suffix
+    return key
 
 
 def already_sent(audit_records, summary):
@@ -987,7 +1178,7 @@ def send_summary(summary, secrets, *, trigger="Manual", audit_records=None, allo
         return result
     if not is_test and already_sent(audit_records, summary) and not allow_resend:
         result["status"] = STATUS_DUPLICATE
-        result["error"] = "This period's receipts summary was already sent."
+        result["error"] = "This receipts summary was already sent."
         return result
     section = _section(secrets, company_mail.COMPANY_SECTION)
     address = company_mail.mailbox_address(secrets)

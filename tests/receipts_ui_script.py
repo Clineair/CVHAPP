@@ -60,6 +60,24 @@ class FakeBook:
 
 
 store = st.session_state.setdefault("store", {})
+if os.environ.get("RECEIPTS_UI_SEED") == "1" and "Receipts" not in store:
+    recs = [
+        {"Saved At": "2026-11-16 08:00:00 PST", "Entry ID": "1", "Employee": "Carl Mulvaney",
+         "Date": "2026-11-16", "Amount": "10.00", "Receipt Number": "A1", "Vendor": "Shell",
+         "Purpose": "Fuel for truck", "Job": "BNSF", "Expense Type": "Fuel",
+         "Photo Link": "https://drive.google.com/file/d/SEED1/view", "Photo File": "a.jpg", "Notes": ""},
+        {"Saved At": "2026-11-18 10:00:00 PST", "Entry ID": "2", "Employee": "Gary Grant",
+         "Date": "2026-11-17", "Amount": "25.50", "Receipt Number": "B2", "Vendor": "NAPA",
+         "Purpose": "Filter", "Job": "CVH", "Expense Type": "Parts",
+         "Photo Link": "https://drive.google.com/file/d/SEED2/view", "Photo File": "b.jpg", "Notes": ""},
+        {"Saved At": "2026-11-01 09:00:00 PST", "Entry ID": "3", "Employee": "Carl Mulvaney",
+         "Date": "2026-11-01", "Amount": "8.00", "Receipt Number": "", "Vendor": "",
+         "Purpose": "Earlier meal", "Job": "CVH", "Expense Type": "Meals",
+         "Photo Link": "", "Photo File": "c.jpg", "Notes": ""},
+    ]
+    store["Receipts"] = [employee_receipts.RECEIPTS_COLUMNS] + [
+        [row.get(c, "") for c in employee_receipts.RECEIPTS_COLUMNS] for row in recs
+    ]
 st.session_state.setdefault("writes", [])
 st.session_state.setdefault("created", [])
 st.session_state.setdefault("uploads", [])
@@ -119,13 +137,22 @@ want = {
     "cached_receipt_records", "clear_receipts_cache", "receipt_records_for_view", "receipt_totals_rows",
     "receipt_table_rows", "_reset_receipt_entry", "apply_receipt_fields_to_session", "show_receipt_entry",
     "show_receipt_list", "receipt_summary_period_options", "show_receipts_summary_office",
-    "show_employee_receipts", "employee_button_key", "_cell", "show_receipts_office_gate", "show_receipts_summary_page",
+    "show_employee_receipts", "employee_button_key", "_cell", "show_receipts_office_gate",
+    "show_receipts_summary_page", "_receipts_office_filter_names",
 }
 nodes = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in want]
 nodes += [n for n in tree.body if isinstance(n, ast.Assign) and any(
     isinstance(t, ast.Name) and t.id in ("RECEIPTS_CACHE_TTL_SECONDS", "RECEIPT_VIEWS", "EMPLOYEES") for t in n.targets)]
+class FixedDateTime(datetime):
+    """Keep the live-receipts UI tests on a known Pacific day (Fri Nov 20, 2026)."""
+
+    @classmethod
+    def now(cls, tz=None):
+        return datetime(2026, 11, 20, 15, 30, tzinfo=tz or ZoneInfo("America/Los_Angeles"))
+
+
 ns = {
-    "st": proxy, "pd": pd, "time_module": time, "datetime": datetime, "date": date, "timedelta": timedelta,
+    "st": proxy, "pd": pd, "time_module": time, "datetime": FixedDateTime, "date": date, "timedelta": timedelta,
     "ZoneInfo": ZoneInfo, "employee_receipts": mod_proxy, "timesheet_company_mail": timesheet_company_mail,
     "_mail_runtime_secrets": lambda: secrets,
     "_receipts_spreadsheet": lambda: FakeBook(store),
