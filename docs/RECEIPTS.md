@@ -68,3 +68,20 @@ stored in separate `Job` and `Expense Type` columns.
   schedule (Mondays 7:30 AM PST). To turn it on: copy it to
   `.github/workflows/`, add repo secret `CVH_STREAMLIT_SECRETS`, set repo
   variable `RECEIPTS_AUTO_SEND = true`, and set `auto_send = true`.
+
+## Running the bi-weekly send from the Grok Bot box (current setup)
+
+GitHub Actions is parked because the repo token cannot push workflow files.
+The Monday routine runs on the box instead:
+
+    python3 /workspace/cvhapp_receipts/tools/send_receipts_summary.py --auto
+
+- Secrets: `/workspace/secrets/receipts_summary_secrets.toml` (600; service
+  account, sheet id, mailbox settings, and the `[receipts_mail] auto_send`
+  switch). The Gmail app password is read from env `CVH_TIMESHEET_GMAIL_APPPW`
+  and is never written to that file.
+- The last output line starts with `SENT`, `NOT DUE`, `OFF`, `ALREADY SENT`,
+  or `ERROR:`. Exit code is 1 only for `ERROR:`.
+- `--dry-run [--today YYYY-MM-DD]` shows what `--auto` would do. It sends nothing and writes nothing.
+- `--test-send --to ADDR [--period-start YYYY-MM-DD]` sends one copy with
+  `TEST: ` in front of the subject. It is not logged, so it never blocks the real send.

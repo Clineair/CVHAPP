@@ -40,5 +40,5 @@ jobs:
         run: |
           umask 077
           printf '%s' "$CVH_STREAMLIT_SECRETS" > "$RUNNER_TEMP/secrets.toml"
-          python tools/send_receipts_summary.py --secrets "$RUNNER_TEMP/secrets.toml" --send
+          python tools/send_receipts_summary.py --secrets "$RUNNER_TEMP/secrets.toml" --auto
           rm -f "$RUNNER_TEMP/secrets.toml"
