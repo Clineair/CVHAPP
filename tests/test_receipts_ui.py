@@ -63,14 +63,14 @@ class ReceiptsUiTests(unittest.TestCase):
         self.assertEqual(values["Receipt or invoice number"], "004417")
         self.assertEqual(values["Vendor (optional)"], "SHELL OIL")
         self.assertEqual(str(at.date_input[0].value), "2026-11-18")
-        # No category menus until the receipt is complete; purpose is required.
-        self.assertEqual(len(at.selectbox), 0)
-        _button(at, "Receipt complete").click().run()
-        self.assertTrue(any("purpose" in e.value.lower() for e in at.error))
-        self.assertEqual(len(at.selectbox), 0)
+        # Category is on the same screen as Amount and Purpose, with no extra button.
+        self.assertEqual(_select(at, "Category").options[0], "Dues")
+        self.assertFalse(any(b.label == "Receipt complete" for b in at.button))
+        labels = [t.label for t in at.text_input] + [s.label for s in at.selectbox] + [t.label for t in at.text_area]
+        self.assertLess(labels.index("Purpose"), labels.index("Category"))
+        self.assertLess(labels.index("Category"), labels.index("Notes (optional)"))
         [t for t in at.text_input if t.label == "Purpose"][0].input("Fuel for the truck, BNSF job")
         at.run()
-        _button(at, "Receipt complete").click().run()
         self.assertEqual(_select(at, "Category").options[0], "Dues")
         self.assertIn("Equipment", _select(at, "Category").options)
         self.assertIn("Paid on monthly statement account", [b.label for b in at.selectbox])
@@ -118,7 +118,6 @@ class ReceiptsUiTests(unittest.TestCase):
             at.run()
             [t for t in at.text_input if t.label == "Purpose"][0].input("Parts run")
             at.run()
-            _button(at, "Receipt complete").click().run()
             _select(at, "Category").select("Office Supplies").run()
             _button(at, "Save receipt").click().run()
         finally:
@@ -235,7 +234,6 @@ class ReceiptsUiTests(unittest.TestCase):
         at.run()
         [t for t in at.text_input if t.label == "Purpose"][0].input("Parts for the Ram and PW")
         at.run()
-        _button(at, "Receipt complete").click().run()
         _select(at, "Category").select("Equipment").run()
         self.assertTrue(any(c.label == "Ram" for c in at.checkbox))
         self.assertTrue(any(c.label == "PW" for c in at.checkbox))

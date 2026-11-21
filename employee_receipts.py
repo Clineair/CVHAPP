@@ -579,6 +579,12 @@ def extract_pdf_text(data):
     return "\n".join(parts)
 
 
+HEIC_UNREADABLE_NOTE = (
+    "This phone saved the photo as HEIC, which the app cannot read. " + NOT_READ_NOTE
+)
+MAX_OCR_EDGE = 2400
+
+
 def ocr_available():
     """True when pytesseract and the tesseract program are both installed."""
     try:
@@ -589,14 +595,48 @@ def ocr_available():
     return True
 
 
-def _prepare_image(data):
+def heic_available():
+    """True when pillow-heif can open HEIC/HEIF photos."""
+    try:
+        import pillow_heif
+        pillow_heif.register_heif_opener()
+    except Exception:
+        return False
+    return True
+
+
+def register_heif_opener():
+    if not heic_available():
+        return False
+    return True
+
+
+def _open_receipt_image(data):
+    """Open a receipt photo, including MPO/multi-frame files, without loading a huge raster first."""
     from PIL import Image, ImageOps
     image = Image.open(io.BytesIO(bytes(data)))
-    image = ImageOps.exif_transpose(image)
+    if getattr(image, "n_frames", 1) > 1:
+        try:
+            image.seek(0)
+        except Exception:
+            pass
+    # JPEG draft downscales while decoding so a large phone photo is less likely
+    # to run the server out of memory before the later resize.
+    if hasattr(image, "draft"):
+        try:
+            image.draft("RGB", (MAX_OCR_EDGE, MAX_OCR_EDGE))
+        except Exception:
+            pass
+    return ImageOps.exif_transpose(image)
+
+
+def _prepare_image(data):
+    from PIL import ImageOps
+    image = _open_receipt_image(data)
     image = image.convert("L")
     longest = max(image.size)
-    if longest > 2400:
-        scale = 2400.0 / longest
+    if longest > MAX_OCR_EDGE:
+        scale = MAX_OCR_EDGE / longest
         image = image.resize((max(1, int(image.width * scale)), max(1, int(image.height * scale))))
     elif longest < 1000:
         scale = 1000.0 / max(1, longest)
@@ -609,10 +649,63 @@ def extract_image_text(data):
     return pytesseract.image_to_string(_prepare_image(data), config="--psm 6")
 
 
-def read_receipt(data, filename="", ocr=None, pdf_reader=None):
+def render_pdf_pages(data, max_pages=3, scale=2):
+    """Rasterize PDF pages so a scanned (image-only) PDF can be read with OCR.
+
+    pdf_renderer can replace this in tests. Returns a list of JPEG byte strings.
+    """
+    import pypdfium2 as pdfium
+    pdf = pdfium.PdfDocument(bytes(data))
+    pages = []
+    try:
+        count = min(len(pdf), max_pages)
+        for index in range(count):
+            page = pdf[index]
+            bitmap = page.render(scale=scale)
+            image = bitmap.to_pil()
+            buf = io.BytesIO()
+            image.convert("RGB").save(buf, format="JPEG", quality=85)
+            pages.append(buf.getvalue())
+    finally:
+        pdf.close()
+    return pages
+
+
+def pdf_renderer_available():
+    try:
+        import pypdfium2  # noqa: F401
+    except Exception:
+        return False
+    return True
+
+
+def extract_pdf_text_or_ocr(data, ocr=None, pdf_reader=None, pdf_renderer=None):
+    """Use embedded PDF text when it has receipt fields; otherwise OCR rendered pages."""
+    text = (pdf_reader or extract_pdf_text)(data)
+    if parse_receipt_text(text or ""):
+        return text
+    if ocr is None:
+        if not ocr_available():
+            return text or ""
+        ocr = extract_image_text
+    renderer = pdf_renderer or render_pdf_pages
+    try:
+        pages = renderer(data)
+    except Exception:
+        return text or ""
+    parts = [text or ""]
+    for page in pages or []:
+        try:
+            parts.append(ocr(page) or "")
+        except Exception:
+            continue
+    return "\n".join(parts)
+
+
+def read_receipt(data, filename="", ocr=None, pdf_reader=None, pdf_renderer=None):
     """Return (fields, note) for a photo or PDF. Never raises.
 
-    ocr and pdf_reader can be injected in tests.
+    ocr, pdf_reader, and pdf_renderer can be injected in tests.
     """
     data = bytes(data or b"")
     if not data:
@@ -620,9 +713,21 @@ def read_receipt(data, filename="", ocr=None, pdf_reader=None):
     ext = upload_extension(filename, data)
     try:
         if ext == "pdf":
-            text = (pdf_reader or extract_pdf_text)(data)
+            text = extract_pdf_text_or_ocr(
+                data, ocr=ocr, pdf_reader=pdf_reader, pdf_renderer=pdf_renderer,
+            )
         elif ext in ("heic", "heif"):
-            return {}, "This phone saved the photo as HEIC, which the app cannot read. " + NOT_READ_NOTE
+            if not heic_available():
+                return {}, HEIC_UNREADABLE_NOTE
+            try:
+                _open_receipt_image(data)
+            except Exception:
+                return {}, HEIC_UNREADABLE_NOTE
+            if ocr is None:
+                if not ocr_available():
+                    return {}, OCR_UNAVAILABLE_NOTE
+                ocr = extract_image_text
+            text = ocr(data)
         else:
             if ocr is None:
                 if not ocr_available():

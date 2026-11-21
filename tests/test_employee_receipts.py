@@ -144,6 +144,48 @@ class ReadReceiptTests(unittest.TestCase):
         self.assertEqual(fields, {})
         self.assertIn("HEIC", note)
 
+    def test_heic_is_read_when_pillow_heif_is_available(self):
+        if not er.heic_available():
+            self.skipTest("pillow-heif is not installed")
+        import pillow_heif
+        from PIL import Image, ImageDraw, ImageFont
+        img = Image.new("RGB", (900, 400), "white")
+        draw = ImageDraw.Draw(img)
+        try:
+            font = ImageFont.truetype("DejaVuSansMono.ttf", 28)
+        except Exception:
+            font = ImageFont.load_default()
+        draw.text((20, 40), "SHELL OIL 57442", fill="black", font=font)
+        draw.text((20, 90), "11/18/2026", fill="black", font=font)
+        draw.text((20, 140), "TOTAL $61.12", fill="black", font=font)
+        buf = io.BytesIO()
+        pillow_heif.from_pillow(img).save(buf, format="HEIF")
+        data = buf.getvalue()
+        self.assertEqual(er.upload_extension("IMG_1.HEIC", data), "heic")
+        fields, note = er.read_receipt(data, "IMG_1.HEIC", ocr=lambda d: FUEL_TEXT)
+        self.assertEqual(note, er.READ_NOTE)
+        self.assertEqual(fields["amount"], "61.12")
+
+    def test_huge_photo_is_downscaled_before_ocr(self):
+        from PIL import Image
+        img = Image.new("RGB", (4000, 3000), "white")
+        buf = io.BytesIO()
+        img.save(buf, "JPEG", quality=80)
+        prepared = er._prepare_image(buf.getvalue())
+        self.assertLessEqual(max(prepared.size), er.MAX_OCR_EDGE)
+
+    def test_scanned_pdf_falls_back_to_ocr(self):
+        fields, note = er.read_receipt(
+            b"%PDF-1.4 scanned",
+            "scan.pdf",
+            pdf_reader=lambda d: "",
+            pdf_renderer=lambda d: [b"\xff\xd8\xffpage"],
+            ocr=lambda d: FUEL_TEXT,
+        )
+        self.assertEqual(note, er.READ_NOTE)
+        self.assertEqual(fields["amount"], "61.12")
+        self.assertEqual(fields["date"], date(2026, 11, 18))
+
     def test_ocr_error_never_raises(self):
         def boom(_):
             raise RuntimeError("bad image")
@@ -809,6 +851,11 @@ class WiringTests(unittest.TestCase):
         self.assertNotIn("show_receipts_summary_office", fn["show_employee_receipts"])
         self.assertIn("st.camera_input", fn["show_receipt_entry"])
         self.assertIn("st.file_uploader", fn["show_receipt_entry"])
+        self.assertIn('st.selectbox(\n        "Category"', fn["show_receipt_entry"])
+        self.assertNotIn("Receipt complete", fn["show_receipt_entry"])
+        entry = fn["show_receipt_entry"]
+        self.assertLess(entry.find("Purpose"), entry.find('"Category"'))
+        self.assertLess(entry.find('"Category"'), entry.find("Notes (optional)"))
 
     def test_bundled_files(self):
         self.assertIn("pytesseract", (ROOT / "requirements.txt").read_text())
