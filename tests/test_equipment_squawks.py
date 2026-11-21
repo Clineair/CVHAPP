@@ -30,6 +30,7 @@ def _exec_equipment_helpers():
         "TIMESHEET_MAIL_SHEET_TITLE", "TIMESHEET_MAIL_COLUMNS", "TIMESHEET_MAIL_ACTION_COMPOSER",
         "PARTS", "CORE_FACTORS", "PART_FACTORS", "PART_STOPS", "CONFIG_FIELDS",
         "ALL_FACTOR_KEYS", "ALL_STOP_KEYS", "FRAT_COLUMNS",
+        "_LOCAL_HELPER_MODULES", "_LOCAL_MODULE_SIGNATURE_CACHE",
     }
     functions = {
         "_unique", "official_equipment_rows", "is_placeholder_equipment_seed",
@@ -108,7 +109,7 @@ def _exec_equipment_helpers():
         "new_timesheet_entry_id", "_timesheet_sort_key", "latest_timesheet_record",
         "build_timesheet_record", "ensure_timesheets_worksheet",
         "load_timesheet_records", "load_timesheet_records_readonly",
-        "save_timesheet_record", "_ensure_current_mail_modules", "_timesheet_col_letter", "_replace_sheet_row", "_upsert_week_row", "timesheet_gmail_configured",
+        "save_timesheet_record", "_local_module_signature_cache", "_local_module_path", "_local_module_mtime_size", "_local_module_hash", "_record_local_module_signature", "_reload_local_modules_if_changed", "_ensure_current_mail_modules", "_timesheet_col_letter", "_replace_sheet_row", "_upsert_week_row", "timesheet_gmail_configured",
         "timesheet_secret_section", "timesheet_section_has_keys", "timesheet_auth_configured",
         "timesheet_auth_login_providers", "timesheet_trusted_signin_issuer",
         "timesheet_employee_email_map", "timesheet_user_info", "timesheet_verified_signin_email",

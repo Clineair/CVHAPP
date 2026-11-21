@@ -14,17 +14,128 @@ import timesheet_pin
 import employee_receipts
 from zoneinfo import ZoneInfo
 
+# Helper modules Streamlit can keep stale in sys.modules after a git deploy.
+# app.py is re-executed; these imports are no-ops if the module is already loaded.
+_LOCAL_HELPER_MODULES = (
+    "timesheet_mail",
+    "timesheet_company_mail",
+    "timesheet_pin",
+    "employee_receipts",
+)
+_LOCAL_MODULE_SIGNATURE_CACHE = "_cvhapp_local_module_signatures"
 
-def _ensure_current_mail_modules():
-    """Reload the mail helpers if this process still holds an older copy.
 
-    Streamlit can keep an already-imported helper module in memory after a
-    deploy, so app.py (new) calls attributes the helper (old) does not have yet.
-    That crashed the timesheet page with an AttributeError. Reloading picks up
-    the files on disk. A no-op when the helpers are already current.
+def _local_module_signature_cache():
+    """Process-wide file signatures that survive app.py being re-executed."""
+    import sys
+    import types
+    cache = sys.modules.get(_LOCAL_MODULE_SIGNATURE_CACHE)
+    if cache is None:
+        cache = types.ModuleType(_LOCAL_MODULE_SIGNATURE_CACHE)
+        cache.signatures = {}
+        sys.modules[_LOCAL_MODULE_SIGNATURE_CACHE] = cache
+    signatures = getattr(cache, "signatures", None)
+    if not isinstance(signatures, dict):
+        cache.signatures = {}
+        signatures = cache.signatures
+    return signatures
+
+
+def _local_module_path(module):
+    """Source path for a loaded helper, even if __file__ points at a .pyc."""
+    from pathlib import Path
+    raw = getattr(module, "__file__", None)
+    if not raw:
+        return None
+    path = Path(raw)
+    if path.suffix == ".pyc":
+        source = path.parent.parent / (path.stem.split(".")[0] + ".py")
+        if source.is_file():
+            path = source
+    return path if path.is_file() else None
+
+
+def _local_module_mtime_size(path):
+    stat = path.stat()
+    mtime_ns = getattr(stat, "st_mtime_ns", int(stat.st_mtime * 1_000_000_000))
+    return mtime_ns, stat.st_size
+
+
+def _local_module_hash(path):
+    import hashlib
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(65536), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _record_local_module_signature(name, path, signatures=None):
+    """Store mtime, size, and content hash for a helper file."""
+    mtime_ns, size = _local_module_mtime_size(path)
+    signature = (mtime_ns, size, _local_module_hash(path))
+    cache = signatures if signatures is not None else _local_module_signature_cache()
+    cache[name] = signature
+    return signature
+
+
+def _reload_local_modules_if_changed(module_names=None):
+    """Reload repo helper modules when their files changed on disk.
+
+    Streamlit re-runs app.py after a deploy but can keep already-imported
+    helper modules in memory. New app.py then calls attributes the old
+    helper does not have yet, which crashed Receipts with AttributeError
+    on employee_receipts.vendor_choice_from_text. Compare each helper's
+    file mtime and size (cheap) and, only when those change, a content
+    hash. Reload only when the file contents are actually new. Signatures
+    live in sys.modules so they survive app.py being re-executed. A no-op
+    when the helpers are already current, and on first sight in a process
+    (the import just loaded the file).
     """
     import importlib
     import sys
+
+    names = tuple(module_names) if module_names is not None else _LOCAL_HELPER_MODULES
+    signatures = _local_module_signature_cache()
+    reloaded = []
+    for name in names:
+        module = sys.modules.get(name)
+        if module is None:
+            continue
+        path = _local_module_path(module)
+        if path is None:
+            continue
+        try:
+            mtime_ns, size = _local_module_mtime_size(path)
+        except OSError:
+            continue
+        previous = signatures.get(name)
+        if previous is not None and previous[0] == mtime_ns and previous[1] == size:
+            continue
+        try:
+            content_hash = _local_module_hash(path)
+        except OSError:
+            continue
+        if previous is None or previous[2] == content_hash:
+            signatures[name] = (mtime_ns, size, content_hash)
+            continue
+        module = importlib.reload(module)
+        signatures[name] = (mtime_ns, size, content_hash)
+        reloaded.append(name)
+    return reloaded
+
+
+def _ensure_current_mail_modules():
+    """Reload stale helpers after a deploy, and return the company-mail module.
+
+    File mtime/hash decides whether any local helper, including
+    employee_receipts, is reloaded. The earlier timesheet-page attribute
+    check remains as a fallback if company-mail attributes are missing
+    even though the file looks unchanged.
+    """
+    import importlib
+    import sys
+    _reload_local_modules_if_changed()
     company = sys.modules.get("timesheet_company_mail")
     needed = ("sent_count", "resend_too_soon", "RESEND_COOLDOWN_SECONDS", "RESEND_BLOCKED_MESSAGE")
     if company is not None and all(hasattr(company, name) for name in needed):
@@ -32,12 +143,24 @@ def _ensure_current_mail_modules():
     mail = sys.modules.get("timesheet_mail")
     if mail is not None:
         importlib.reload(mail)
+        path = _local_module_path(mail)
+        if path is not None:
+            try:
+                _record_local_module_signature("timesheet_mail", path)
+            except OSError:
+                pass
     if company is not None:
         company = importlib.reload(company)
+        path = _local_module_path(company)
+        if path is not None:
+            try:
+                _record_local_module_signature("timesheet_company_mail", path)
+            except OSError:
+                pass
     return company
 
 
-_ensure_current_mail_modules()
+_reload_local_modules_if_changed()
 
 # ────────────────────────────────────────────────
 # Page Config & CVH Logo
