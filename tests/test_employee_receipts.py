@@ -38,15 +38,50 @@ class NotFound(Exception):
 NotFound.__name__ = "WorksheetNotFound"
 
 
+class APIError(Exception):
+    """Stand-in for gspread.exceptions.APIError that enforces worksheet grid limits."""
+
+    def __init__(self, code, message, status="INVALID_ARGUMENT"):
+        self.code = code
+        self.error = {"code": code, "message": message, "status": status}
+        self.response = type("Resp", (), {"status_code": code})()
+        super().__init__(self.error)
+
+    def __str__(self):
+        return "{}: [{}]: {}".format(self.__class__.__name__, self.code, self.error["message"])
+
+
+APIError.__name__ = "APIError"
+
+
 class WS:
     def __init__(self, book, title):
         self.book, self.title = book, title
+
+    @property
+    def row_count(self):
+        return self.book.row_counts[self.title]
+
+    @property
+    def col_count(self):
+        return self.book.col_counts[self.title]
+
+    def _exceeds(self, row=None, col=None):
+        if (row is not None and row > self.row_count) or (col is not None and col > self.col_count):
+            raise APIError(
+                400,
+                "Range (%s) exceeds grid limits. Max rows: %s, max columns: %s"
+                % (self.title, self.row_count, self.col_count),
+            )
 
     def row_values(self, n):
         rows = self.book.tabs[self.title]
         return list(rows[n - 1]) if len(rows) >= n else []
 
     def append_row(self, row, **kw):
+        self._exceeds(col=len(row))
+        rows = self.book.tabs[self.title]
+        self._exceeds(row=len(rows) + 1)
         self.book.writes.append((self.title, list(row)))
         self.book.tabs[self.title].append(list(row))
 
@@ -54,6 +89,7 @@ class WS:
         return [list(r) for r in self.book.tabs[self.title]]
 
     def update_cell(self, row, col, value):
+        self._exceeds(row=row, col=col)
         rows = self.book.tabs[self.title]
         while len(rows) < row:
             rows.append([])
@@ -63,12 +99,34 @@ class WS:
         line[col - 1] = value
         self.book.writes.append((self.title, "update_cell", row, col, value))
 
+    def add_cols(self, cols):
+        cols = int(cols)
+        self.book.col_counts[self.title] = self.col_count + cols
+        self.book.writes.append((self.title, "add_cols", cols))
+
+    def resize(self, rows=None, cols=None):
+        if rows is not None:
+            self.book.row_counts[self.title] = int(rows)
+        if cols is not None:
+            self.book.col_counts[self.title] = int(cols)
+        self.book.writes.append((self.title, "resize", rows, cols))
+
 
 class Book:
-    def __init__(self, tabs=None):
+    def __init__(self, tabs=None, col_counts=None, row_counts=None):
         self.tabs = tabs or {}
         self.writes = []
         self.created = []
+        self.col_counts = {}
+        self.row_counts = {}
+        for title, rows in self.tabs.items():
+            widest = max((len(r) for r in rows), default=0)
+            self.col_counts[title] = widest
+            self.row_counts[title] = 500
+        if col_counts:
+            self.col_counts.update(col_counts)
+        if row_counts:
+            self.row_counts.update(row_counts)
 
     def worksheet(self, title):
         if title not in self.tabs:
@@ -78,6 +136,8 @@ class Book:
     def add_worksheet(self, title, rows, cols):
         self.tabs[title] = []
         self.created.append(title)
+        self.row_counts[title] = int(rows)
+        self.col_counts[title] = int(cols)
         return WS(self, title)
 
 
@@ -364,6 +424,99 @@ class SheetTests(unittest.TestCase):
         self.assertEqual(len(er.validate_receipt({})), 3)
         self.assertEqual(er.validate_receipt({"date": date(2026, 1, 1), "amount": "2", "purpose": "x"}), [])
         self.assertTrue(er.validate_receipt({"date": date(2026, 1, 1), "amount": "0", "purpose": "x"}))
+
+    def test_save_to_original_13_column_grid_adds_cols_then_headers_and_row(self):
+        """Live Receipts tab was created 13 columns wide; writing column 14 must not fail."""
+        book = Book({"Receipts": [list(er.RECEIPTS_ORIGINAL_COLUMNS)]})
+        self.assertEqual(book.col_counts["Receipts"], 13)
+        rec = er.build_receipt_record(
+            "Ron Cline",
+            {"date": date(2026, 9, 9), "amount": "1000.00", "purpose": "Power",
+             "vendor_choice": "Other", "vendor_other": "PUD"},
+            "Buildings", subcategory="Hangar House",
+            photo_link="https://drive.google.com/file/d/X/view", photo_file="r.jpg",
+            when=datetime(2026, 11, 20, 19, 49, tzinfo=PT), entry_id="RC-LIVE",
+        )
+        er.save_receipt_record(rec, book)
+        self.assertIn(("Receipts", "add_cols", len(er.RECEIPTS_ADDED_COLUMNS)), book.writes)
+        self.assertEqual(book.col_counts["Receipts"], len(er.RECEIPTS_COLUMNS))
+        header = book.tabs["Receipts"][0]
+        self.assertEqual(header[:len(er.RECEIPTS_ORIGINAL_COLUMNS)], list(er.RECEIPTS_ORIGINAL_COLUMNS))
+        self.assertEqual(header[len(er.RECEIPTS_ORIGINAL_COLUMNS):], list(er.RECEIPTS_ADDED_COLUMNS))
+        saved = dict(zip(header, book.tabs["Receipts"][1]))
+        self.assertEqual(saved["Employee"], "Ron Cline")
+        self.assertEqual(saved["Amount"], "1000.00")
+        self.assertEqual(saved["Category"], "Buildings")
+        self.assertEqual(saved["Subcategory"], "Hangar House")
+        self.assertEqual(saved["Vendor"], "PUD")
+
+    def test_writing_past_grid_without_add_cols_raises_apierror(self):
+        book = Book({"Receipts": [list(er.RECEIPTS_ORIGINAL_COLUMNS)]})
+        ws = book.worksheet("Receipts")
+        with self.assertRaises(APIError) as caught:
+            ws.update_cell(1, 14, "Category")
+        self.assertEqual(caught.exception.code, 400)
+        self.assertIn("exceeds grid limits", str(caught.exception))
+        self.assertIn("max columns: 13", str(caught.exception).lower())
+        with self.assertRaises(APIError):
+            ws.append_row(["x"] * 14)
+
+    def test_office_edit_on_narrow_grid_resizes_before_new_header_cells(self):
+        header = list(er.RECEIPTS_ORIGINAL_COLUMNS)
+        row = [""] * len(header)
+        row[header.index("Saved At")] = "2026-11-18 10:00:00 PST"
+        row[header.index("Entry ID")] = "RC-GRID"
+        row[header.index("Employee")] = "Ron Cline"
+        row[header.index("Date")] = "2026-09-09"
+        row[header.index("Amount")] = "1000.00"
+        row[header.index("Purpose")] = "Power"
+        book = Book({"Receipts": [header, row]})
+        existing = dict(zip(header, row))
+        updated = er.prepare_receipt_edit(
+            existing, dict(existing, Amount="1000.00", Category="Buildings", Purpose="Power"),
+            "Ron Cline", when=datetime(2026, 11, 20, 19, 50, tzinfo=PT),
+        )
+        er.update_receipt_record(updated, book, "Ron Cline", office=True, when=datetime(2026, 11, 20, 19, 50, tzinfo=PT))
+        self.assertEqual(book.col_counts["Receipts"], len(er.RECEIPTS_COLUMNS))
+        saved = dict(zip(book.tabs["Receipts"][0], book.tabs["Receipts"][1]))
+        self.assertEqual(saved["Category"], "Buildings")
+        self.assertEqual(saved["Edited By"], "Ron Cline")
+        self.assertEqual(len(book.tabs["Receipts"]), 2)
+
+
+class SheetsSaveErrorCaptionTests(unittest.TestCase):
+    def test_apierror_shows_status_and_message(self):
+        exc = APIError(400, "Range (Receipts!N1) exceeds grid limits. Max rows: 500, max columns: 13")
+        text = er.format_sheets_save_error(exc)
+        self.assertTrue(text.startswith("Save error: APIError"))
+        self.assertIn("400", text)
+        self.assertIn("exceeds grid limits", text)
+        self.assertIn("max columns: 13", text.lower())
+        self.assertNotIn("private_key", text.lower())
+
+    def test_quota_error_shows_429(self):
+        exc = APIError(429, "Quota exceeded for quota metric 'Read requests'", status="RESOURCE_EXHAUSTED")
+        text = er.format_sheets_save_error(exc)
+        self.assertIn("429", text)
+        self.assertIn("Quota exceeded", text)
+
+    def test_secret_like_details_are_omitted(self):
+        exc = APIError(400, 'invalid_grant: client_secret=super-secret and private_key=-----BEGIN PRIVATE KEY-----')
+        text = er.format_sheets_save_error(exc)
+        self.assertIn("Save error: APIError 400", text)
+        self.assertIn("error details omitted", text)
+        self.assertNotIn("super-secret", text)
+        self.assertNotIn("BEGIN PRIVATE", text)
+        self.assertNotIn("client_secret", text)
+
+    def test_plain_exception_uses_type_and_message(self):
+        self.assertEqual(er.format_sheets_save_error(RuntimeError("Receipts worksheet has no header")),
+                         "Save error: RuntimeError Receipts worksheet has no header")
+
+    def test_app_receipts_caption_uses_formatter(self):
+        source = (ROOT / "app.py").read_text()
+        self.assertIn("employee_receipts.format_sheets_save_error(exc)", source)
+        self.assertNotIn('st.caption("Save error: " + type(exc).__name__)', source)
 
 
 class TotalsAndPeriodTests(unittest.TestCase):
