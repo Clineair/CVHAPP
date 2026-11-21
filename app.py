@@ -7924,6 +7924,74 @@ def show_receipt_entry(employee, p, secrets, existing=None, editor="", office=Fa
             _reset_receipt_entry(p)
         st.rerun()
 
+    if editing:
+        if st.button("Delete this receipt", key=w + "ask_delete", use_container_width=True):
+            _begin_receipt_delete(p, existing)
+            st.rerun()
+
+
+def _begin_receipt_delete(p, record):
+    """Leave the edit form and open the delete confirmation for this receipt."""
+    st.session_state[p + "delete_id"] = employee_receipts.receipt_entry_id(record)
+    st.session_state[p + "delete_snap"] = employee_receipts.receipt_delete_snapshot(record)
+    st.session_state.pop(p + "edit_id", None)
+    st.session_state[p + "saved_list"] = False
+    st.session_state.pop(p + "delete_confirm", None)
+
+
+def _clear_receipt_delete_state(p):
+    st.session_state.pop(p + "delete_id", None)
+    st.session_state.pop(p + "delete_snap", None)
+    st.session_state.pop(p + "delete_confirm", None)
+
+
+def show_receipt_delete_confirm(p, record, user, office, secrets):
+    """Confirm, then delete the receipt. Employees: own only. Office: any."""
+    if not record or not employee_receipts.can_delete_receipt(record, user, office=office):
+        st.error("That receipt could not be deleted.")
+        _clear_receipt_delete_state(p)
+        return
+    preview = employee_receipts.receipt_delete_preview(record)
+    st.markdown("**Delete this receipt?**")
+    st.markdown("Employee: **" + preview["Employee"] + "**")
+    st.markdown("Date: **" + preview["Date"] + "**")
+    st.markdown("Vendor: **" + preview["Vendor"] + "**")
+    st.markdown("Amount: **" + preview["Amount"] + "**")
+    st.warning("This removes the receipt from the list and moves the photo to the Google Drive trash.")
+    confirmed = st.checkbox("Yes, I want to delete this receipt", key=p + "delete_confirm")
+    if st.button("Cancel", key=p + "delete_cancel", use_container_width=True):
+        _clear_receipt_delete_state(p)
+        st.rerun()
+    if st.button(
+        "Yes, delete this receipt",
+        key=p + "delete_yes",
+        type="primary",
+        use_container_width=True,
+        disabled=not confirmed,
+    ):
+        if not confirmed:
+            st.error("Tick the box first to confirm.")
+            return
+        try:
+            result = employee_receipts.delete_receipt_record(
+                record, _receipts_spreadsheet(), user, office=office,
+                secrets=secrets, expected=st.session_state.get(p + "delete_snap"),
+            )
+        except Exception as exc:
+            st.error("Could not delete this receipt. Try again, or tell the office.")
+            st.caption(employee_receipts.format_sheets_save_error(exc))
+            return
+        clear_receipts_cache()
+        warning = _cell((result or {}).get("warning"))
+        st.session_state[p + "saved"] = (
+            "Deleted " + preview["Amount"] + " receipt for " + preview["Employee"] + ".",
+            warning,
+            "",
+            [],
+        )
+        _clear_receipt_delete_state(p)
+        st.rerun()
+
 
 def _receipt_by_id(records, entry_id):
     entry_id = _cell(entry_id)
@@ -7943,15 +8011,21 @@ def show_saved_receipts_picker(records, p, user, office=False):
         st.rerun()
     editable = [r for r in (records or []) if employee_receipts.can_edit_receipt(r, user, office=office)]
     if not editable:
-        st.caption("No receipts you can edit in this list.")
+        st.caption("No receipts you can edit or delete in this list.")
         return
     labels = [employee_receipts.receipt_picker_label(r, include_employee=office) for r in editable]
     pick = st.selectbox("Choose a receipt", labels, key=p + "saved_pick")
-    if st.button("Open", key=p + "saved_open", type="primary", use_container_width=True):
-        rec = editable[labels.index(pick)]
-        st.session_state[p + "edit_id"] = employee_receipts.receipt_entry_id(rec)
-        st.session_state[p + "saved_list"] = False
-        st.rerun()
+    rec = editable[labels.index(pick)] if pick in labels else None
+    open_col, delete_col = st.columns(2)
+    with open_col:
+        if st.button("Open", key=p + "saved_open", type="primary", use_container_width=True) and rec:
+            st.session_state[p + "edit_id"] = employee_receipts.receipt_entry_id(rec)
+            st.session_state[p + "saved_list"] = False
+            st.rerun()
+    with delete_col:
+        if st.button("Delete", key=p + "saved_delete", use_container_width=True) and rec:
+            _begin_receipt_delete(p, rec)
+            st.rerun()
 
 
 def show_receipt_list(employee, p):
@@ -8088,6 +8162,11 @@ def show_receipts_summary_office(p, secrets, user=""):
             st.caption("Photo saved to Google Drive.")
         for warning in warnings or []:
             st.warning(warning)
+    delete_id = _cell(st.session_state.get(p + "delete_id"))
+    if delete_id:
+        rec = _receipt_by_id(records, delete_id)
+        show_receipt_delete_confirm(p, rec, user, True, secrets)
+        return
     edit_id = _cell(st.session_state.get(p + "edit_id"))
     if edit_id:
         rec = _receipt_by_id(records, edit_id)
@@ -8206,7 +8285,7 @@ def show_receipts_summary_office(p, secrets, user=""):
     if st.session_state.get(p + "saved_list"):
         show_saved_receipts_picker(shown, p, user, office=True)
     elif st.button("Saved receipts", key=p + "saved_btn", use_container_width=True,
-                     help="Open a saved receipt to edit it"):
+                     help="Open a saved receipt to edit or delete it"):
         st.session_state[p + "saved_list"] = True
         st.rerun()
     st.subheader("IFTA report")
@@ -8300,6 +8379,16 @@ def show_employee_receipts(employee):
             st.caption("Photo saved to Google Drive.")
         for warning in warnings or []:
             st.warning(warning)
+    delete_id = _cell(st.session_state.get(p + "delete_id"))
+    if delete_id:
+        try:
+            records = cached_receipt_records(employee)
+        except Exception:
+            records = []
+            st.error("Could not load receipts from Google Sheets.")
+        rec = _receipt_by_id(records, delete_id)
+        show_receipt_delete_confirm(p, rec, employee, False, secrets)
+        return
     edit_id = _cell(st.session_state.get(p + "edit_id"))
     if edit_id:
         try:
@@ -8334,7 +8423,7 @@ def show_employee_receipts(employee):
             st.rerun()
     with saved_col:
         if st.button("Saved receipts", key=p + "saved_btn", use_container_width=True,
-                     help="Open a saved receipt to edit it"):
+                     help="Open a saved receipt to edit or delete it"):
             st.session_state[p + "saved_list"] = True
             st.rerun()
     show_receipt_list(employee, p)

@@ -9,7 +9,8 @@ SCRIPT = str(Path(__file__).resolve().parent / "receipts_ui_script.py")
 
 
 ENV = ("RECEIPTS_UI_EMPLOYEE", "RECEIPTS_UI_PIN", "RECEIPTS_UI_MAIL", "RECEIPTS_UI_PAGE",
-       "RECEIPTS_UI_REMEMBERED", "RECEIPTS_UI_PATTI_PIN", "RECEIPTS_UI_SEED")
+       "RECEIPTS_UI_REMEMBERED", "RECEIPTS_UI_PATTI_PIN", "RECEIPTS_UI_SEED",
+       "RECEIPTS_UI_TRASH_FAIL")
 
 
 def _run(employee="Carl Mulvaney", pin="1", mail="1", page="", remembered="", patti_pin="1", seed=""):
@@ -351,6 +352,86 @@ class ReceiptsUiTests(unittest.TestCase):
         self.assertEqual(updated["Edited By"], "Ron Cline")
         self.assertEqual(updated["Photo Link"], "https://drive.google.com/file/d/SEED2/view")
         self.assertEqual(updated["Category"], "Equipment")
+
+    def test_employee_deletes_own_receipt_after_confirming(self):
+        at = _run(seed="1")
+        _button(at, "Saved receipts").click().run()
+        self.assertTrue(any(b.label == "Delete" for b in at.button))
+        _button(at, "Delete").click().run()
+        self.assertFalse(at.exception)
+        self.assertTrue(any("Delete this receipt?" in (m.value or "") for m in at.markdown))
+        self.assertTrue(any("Carl Mulvaney" in (m.value or "") for m in at.markdown))
+        self.assertTrue(any("$10.00" in (m.value or "") for m in at.markdown))
+        self.assertTrue(any("2026-11-16" in (m.value or "") for m in at.markdown))
+        self.assertTrue(any("Shell" in (m.value or "") for m in at.markdown))
+        yes = _button(at, "Yes, delete this receipt")
+        self.assertTrue(yes.disabled)
+        self.assertEqual(len(at.session_state["store"]["Receipts"]), 4)
+        [c for c in at.checkbox if c.label == "Yes, I want to delete this receipt"][0].check().run()
+        _button(at, "Yes, delete this receipt").click().run()
+        self.assertFalse(at.exception)
+        self.assertTrue(any("Deleted $10.00 receipt for Carl Mulvaney" in s.value for s in at.success))
+        rows = at.session_state["store"]["Receipts"]
+        recs = [dict(zip(rows[0], row)) for row in rows[1:]]
+        self.assertEqual([r["Entry ID"] for r in recs], ["2", "3"])
+        self.assertEqual(at.session_state["trashed"], ["SEED1"])
+        self.assertEqual(at.session_state["created"], ["Receipts Deleted"])
+        audit = dict(zip(*at.session_state["store"]["Receipts Deleted"][:2]))
+        self.assertEqual(audit["Entry ID"], "1")
+        self.assertEqual(audit["Deleted By"], "Carl Mulvaney")
+        self.assertEqual(audit["Photo Trash"], "Trashed")
+        self.assertTrue(any(b.label == "🧾 Add a receipt" for b in at.button))
+
+    def test_office_can_delete_another_employees_receipt(self):
+        at = _run(page="summary", remembered="Ron Cline", seed="1")
+        _button(at, "Saved receipts").click().run()
+        picker = _select(at, "Choose a receipt")
+        gary = [opt for opt in picker.options if "Gary Grant" in opt][0]
+        picker.select(gary).run()
+        _button(at, "Delete").click().run()
+        self.assertTrue(any("Gary Grant" in (m.value or "") for m in at.markdown))
+        self.assertTrue(any("$25.50" in (m.value or "") for m in at.markdown))
+        [c for c in at.checkbox if c.label == "Yes, I want to delete this receipt"][0].check().run()
+        _button(at, "Yes, delete this receipt").click().run()
+        self.assertFalse(at.exception)
+        self.assertTrue(any("Deleted $25.50 receipt for Gary Grant" in s.value for s in at.success))
+        rows = at.session_state["store"]["Receipts"]
+        recs = [dict(zip(rows[0], row)) for row in rows[1:]]
+        self.assertEqual([r["Entry ID"] for r in recs], ["1", "3"])
+        self.assertEqual(at.session_state["trashed"], ["SEED2"])
+        audit = dict(zip(*at.session_state["store"]["Receipts Deleted"][:2]))
+        self.assertEqual(audit["Deleted By"], "Ron Cline")
+        self.assertEqual(audit["Employee"], "Gary Grant")
+
+    def test_edit_form_delete_button_opens_the_same_confirmation(self):
+        at = _run(seed="1")
+        _button(at, "Saved receipts").click().run()
+        _button(at, "Open").click().run()
+        _button(at, "Delete this receipt").click().run()
+        self.assertFalse(at.exception)
+        self.assertTrue(any("Delete this receipt?" in (m.value or "") for m in at.markdown))
+        [c for c in at.checkbox if c.label == "Yes, I want to delete this receipt"][0].check().run()
+        _button(at, "Yes, delete this receipt").click().run()
+        self.assertTrue(any("Deleted $10.00 receipt for Carl Mulvaney" in s.value for s in at.success))
+        recs = [dict(zip(*[at.session_state["store"]["Receipts"][0], row])) for row in at.session_state["store"]["Receipts"][1:]]
+        self.assertEqual([r["Entry ID"] for r in recs], ["2", "3"])
+
+    def test_photo_trash_failure_still_deletes_and_warns(self):
+        os.environ["RECEIPTS_UI_TRASH_FAIL"] = "1"
+        at = _run(seed="1")
+        _button(at, "Saved receipts").click().run()
+        _button(at, "Delete").click().run()
+        [c for c in at.checkbox if c.label == "Yes, I want to delete this receipt"][0].check().run()
+        _button(at, "Yes, delete this receipt").click().run()
+        self.assertFalse(at.exception)
+        self.assertTrue(any("Deleted $10.00 receipt for Carl Mulvaney" in s.value for s in at.success))
+        self.assertTrue(any("could not be moved to the Google Drive trash" in w.value for w in at.warning))
+        recs = [dict(zip(at.session_state["store"]["Receipts"][0], row)) for row in at.session_state["store"]["Receipts"][1:]]
+        self.assertEqual([r["Entry ID"] for r in recs], ["2", "3"])
+        self.assertEqual(at.session_state["trashed"], [])
+        audit = dict(zip(*at.session_state["store"]["Receipts Deleted"][:2]))
+        self.assertEqual(audit["Photo Trash"], "Failed")
+        os.environ.pop("RECEIPTS_UI_TRASH_FAIL", None)
 
 
 if __name__ == "__main__":

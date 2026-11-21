@@ -45,6 +45,11 @@ class FakeWS:
             line.append("")
         line[col - 1] = value
 
+    def delete_rows(self, start, end=None):
+        end = start if end is None else end
+        del self.store[self.title][start - 1:end]
+        st.session_state["writes"].append(self.title)
+
 
 class NotFound(Exception):
     pass
@@ -91,6 +96,7 @@ st.session_state.setdefault("writes", [])
 st.session_state.setdefault("created", [])
 st.session_state.setdefault("uploads", [])
 st.session_state.setdefault("mails", [])
+st.session_state.setdefault("trashed", [])
 
 EMPLOYEE = os.environ.get("RECEIPTS_UI_EMPLOYEE", "Carl Mulvaney")
 PHOTO = b"\xff\xd8\xff\xe0" + b"fake-jpeg" * 10
@@ -126,6 +132,22 @@ def fake_read(data, filename="", **kw):
 mod_proxy = types.SimpleNamespace(**{n: getattr(employee_receipts, n) for n in dir(employee_receipts) if not n.startswith("__")})
 mod_proxy.store_receipt_file = fake_store
 mod_proxy.read_receipt = fake_read
+
+def fake_trash(file_id, secrets, session=None):
+    if os.environ.get("RECEIPTS_UI_TRASH_FAIL"):
+        raise ConnectionError("Drive trash failed")
+    st.session_state["trashed"].append(file_id)
+    return True
+
+_real_delete = employee_receipts.delete_receipt_record
+
+def fake_delete(record, spreadsheet, deleted_by, office=False, when=None, secrets=None, trasher=None, expected=None):
+    return _real_delete(
+        record, spreadsheet, deleted_by, office=office, when=when, secrets=secrets,
+        trasher=trasher or fake_trash, expected=expected,
+    )
+
+mod_proxy.delete_receipt_record = fake_delete
 real_send = employee_receipts.send_summary
 mod_proxy.send_summary = lambda summary, secrets, **kw: real_send(
     summary, secrets, smtp_send=lambda u, p, m: st.session_state["mails"].append(m["Subject"]), **kw)
@@ -151,6 +173,7 @@ want = {
     "show_receipt_list", "receipt_summary_period_options", "show_receipts_summary_office",
     "show_employee_receipts", "employee_button_key", "_cell", "show_receipts_office_gate",
     "show_receipts_summary_page", "_receipts_office_filter_names",
+    "_begin_receipt_delete", "_clear_receipt_delete_state", "show_receipt_delete_confirm",
 }
 nodes = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in want]
 nodes += [n for n in tree.body if isinstance(n, ast.Assign) and any(
