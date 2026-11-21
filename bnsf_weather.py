@@ -45,6 +45,8 @@ BNSF_WEATHER_COLUMNS = [
     "Wind (mph)",
     "Gust (mph)",
     "Temperature (F)",
+    "Sky condition",
+    "Precipitation",
     "Notes",
     "Edited fields",
 ]
@@ -82,6 +84,8 @@ EDITABLE_FIELDS = (
     "Wind (mph)",
     "Gust (mph)",
     "Temperature (F)",
+    "Sky condition",
+    "Precipitation",
     "Notes",
 )
 
@@ -241,7 +245,10 @@ class WeatherObs:
     wind_mph: float | None = None
     gust_mph: float | None = None
     temp_f: float | None = None
+    sky_condition: str = ""
+    precipitation: str = ""
     observed_at: str = ""
+    county: str = ""
 
 
 @lru_cache(maxsize=1)
@@ -461,6 +468,95 @@ def _session_get(session, url, **kwargs):
     return session.get(url, **kwargs)
 
 
+
+WMO_SKY = {
+    0: "Clear",
+    1: "Mainly clear",
+    2: "Partly cloudy",
+    3: "Overcast",
+    45: "Fog",
+    48: "Fog",
+    51: "Drizzle",
+    53: "Drizzle",
+    55: "Drizzle",
+    56: "Freezing drizzle",
+    57: "Freezing drizzle",
+    61: "Rain",
+    63: "Rain",
+    65: "Rain",
+    66: "Freezing rain",
+    67: "Freezing rain",
+    71: "Snow",
+    73: "Snow",
+    75: "Snow",
+    77: "Snow",
+    80: "Rain showers",
+    81: "Rain showers",
+    82: "Rain showers",
+    85: "Snow showers",
+    86: "Snow showers",
+    95: "Thunderstorm",
+    96: "Thunderstorm",
+    99: "Thunderstorm",
+}
+
+
+def format_precipitation(inches):
+    if inches is None:
+        return ""
+    try:
+        amount = float(inches)
+    except (TypeError, ValueError):
+        return ""
+    if amount <= 0.0005:
+        return "None"
+    return ("%0.2f in" % amount).replace("0.00 in", "None") if False else ("%.2f in" % amount)
+
+
+def precipitation_to_inches(value, unit_code=""):
+    if value is None:
+        return None
+    amount = float(value)
+    unit = (unit_code or "").lower()
+    if "m" == unit or unit.endswith(":m") or "wmoUnit:m" in unit or unit.endswith("unit:m"):
+        return amount * 39.3700787
+    if "mm" in unit:
+        return amount / 25.4
+    if "in" in unit or "inch" in unit:
+        return amount
+    # NWS precipitationLastHour is typically meters
+    if amount < 1:
+        return amount * 39.3700787
+    return amount
+
+
+def sky_and_precip_from_nws(obs):
+    """Return (sky condition, precipitation text) from an NWS observation properties dict."""
+    obs = obs or {}
+    sky = _cell(obs.get("textDescription"))
+    val, unit = _qty(obs.get("precipitationLastHour") or obs.get("precipitationLast3Hours"))
+    precip = ""
+    if val is not None:
+        precip = format_precipitation(precipitation_to_inches(val, unit))
+    elif sky.lower() in {"clear", "fair", "sunny"} or not sky:
+        precip = "None"
+    return sky, precip
+
+
+def sky_and_precip_from_open_meteo(current):
+    current = current or {}
+    code = current.get("weather_code")
+    sky = ""
+    if code is not None:
+        try:
+            sky = WMO_SKY.get(int(code), "")
+        except (TypeError, ValueError):
+            sky = ""
+    precip_in = current.get("precipitation")
+    precip = format_precipitation(precip_in) if precip_in is not None else ""
+    return sky, precip
+
+
 def fetch_nws_observation(lat, lon, session=None):
     """Nearest NWS station latest observation, or None if it cannot be used."""
     session = session or requests
@@ -536,6 +632,7 @@ def fetch_nws_observation(lat, lon, session=None):
             source_label += " (%s)" % name
         if miles is not None:
             source_label += ", %s mi" % format_mph(miles)
+        sky, precip = sky_and_precip_from_nws(obs)
         return WeatherObs(
             source="NWS",
             source_label=source_label,
@@ -547,6 +644,8 @@ def fetch_nws_observation(lat, lon, session=None):
             wind_mph=wind_mph,
             gust_mph=gust_mph,
             temp_f=temp_f,
+            sky_condition=sky,
+            precipitation=precip,
             observed_at=_cell(obs.get("timestamp")),
         )
     if last_error and not features:
@@ -560,9 +659,10 @@ def fetch_open_meteo(lat, lon, session=None):
     params = {
         "latitude": float(lat),
         "longitude": float(lon),
-        "current": "temperature_2m,wind_speed_10m,wind_direction_10m,wind_gusts_10m",
+        "current": "temperature_2m,wind_speed_10m,wind_direction_10m,wind_gusts_10m,weather_code,precipitation",
         "temperature_unit": "fahrenheit",
         "wind_speed_unit": "mph",
+        "precipitation_unit": "inch",
         "timezone": "America/Los_Angeles",
     }
     response = session.get(
@@ -586,6 +686,7 @@ def fetch_open_meteo(lat, lon, session=None):
     direction = wind_label(wind_deg, wind_mph)
     if wind_mph is not None and float(wind_mph) <= 0.05:
         wind_deg = None
+    sky, precip = sky_and_precip_from_open_meteo(current)
     return WeatherObs(
         source="Open-Meteo",
         source_label="Open-Meteo (model at GPS point)",
@@ -597,6 +698,8 @@ def fetch_open_meteo(lat, lon, session=None):
         wind_mph=wind_mph,
         gust_mph=gust_mph,
         temp_f=temp_f,
+        sky_condition=sky,
+        precipitation=precip,
         observed_at=_cell(current.get("time")),
     )
 
@@ -767,6 +870,8 @@ def build_preview(pilot, aircraft, fix=None, weather=None, notes=""):
         preview["Wind (mph)"] = format_mph(weather.wind_mph)
         preview["Gust (mph)"] = format_mph(weather.gust_mph)
         preview["Temperature (F)"] = format_temp_f(weather.temp_f)
+        preview["Sky condition"] = _cell(weather.sky_condition)
+        preview["Precipitation"] = _cell(weather.precipitation)
     return preview
 
 
@@ -821,7 +926,22 @@ def ensure_bnsf_weather_worksheet(spreadsheet):
         if not header:
             worksheet.append_row(columns, value_input_option="RAW")
             created = True
+        else:
+            missing = [col for col in columns if col not in header]
+            if missing:
+                new_header = header + missing
+                _write_header_row(worksheet, new_header)
     return worksheet, created
+
+
+def _write_header_row(worksheet, header):
+    """Replace the first row with header, appending new columns on the right only."""
+    if hasattr(worksheet, "update"):
+        worksheet.update("A1", [list(header)], value_input_option="RAW")
+        return
+    for index, col in enumerate(header, start=1):
+        if hasattr(worksheet, "update_cell"):
+            worksheet.update_cell(1, index, col)
 
 
 def save_bnsf_weather_record(record, spreadsheet):
@@ -985,6 +1105,9 @@ def render_bnsf_ops(default_pilot="", default_aircraft="", pilots=None, aircraft
     else:
         st.caption(status["message"])
 
+    import bnsf_daily_report
+    bnsf_daily_report.render_ops_clocks(pilot, now=now)
+
     if st.button("Log weather", key="bnsf_log_weather", type="primary", use_container_width=True):
         st.session_state.bnsf_weather_logging = True
         st.session_state.pop("bnsf_weather_preview", None)
@@ -1034,164 +1157,173 @@ def render_bnsf_ops(default_pilot="", default_aircraft="", pilots=None, aircraft
         st.session_state.bnsf_weather_original = dict(preview)
         st.rerun()
 
-    if "bnsf_weather_preview" not in st.session_state:
-        return
+    if "bnsf_weather_preview" in st.session_state:
 
-    if st.session_state.get("bnsf_weather_weather_error"):
-        st.warning(
-            "Weather could not be fetched automatically (%s). Enter wind and temperature by hand."
-            % st.session_state.bnsf_weather_weather_error
+        if st.session_state.get("bnsf_weather_weather_error"):
+            st.warning(
+                "Weather could not be fetched automatically (%s). Enter wind and temperature by hand."
+                % st.session_state.bnsf_weather_weather_error
+            )
+
+        st.markdown("**Check or edit this weather log**")
+        st.caption("Every field can be changed before you save. Fields you change are marked as edited by hand.")
+        preview = st.session_state.bnsf_weather_preview
+        grouped = divisions_and_subdivisions()
+        division_names = sorted(grouped)
+        current_division = _cell(preview.get("Division"))
+        if current_division not in division_names and division_names:
+            # keep typed value in the list so the selectbox can show it
+            division_names = [current_division] + division_names if current_division else division_names
+        division = st.selectbox(
+            "Division",
+            division_names or [current_division or ""],
+            index=(division_names or [""]).index(current_division) if current_division in (division_names or [""]) else 0,
+            key="bnsf_form_division",
         )
-
-    st.markdown("**Check or edit this weather log**")
-    st.caption("Every field can be changed before you save. Fields you change are marked as edited by hand.")
-    preview = st.session_state.bnsf_weather_preview
-    grouped = divisions_and_subdivisions()
-    division_names = sorted(grouped)
-    current_division = _cell(preview.get("Division"))
-    if current_division not in division_names and division_names:
-        # keep typed value in the list so the selectbox can show it
-        division_names = [current_division] + division_names if current_division else division_names
-    division = st.selectbox(
-        "Division",
-        division_names or [current_division or ""],
-        index=(division_names or [""]).index(current_division) if current_division in (division_names or [""]) else 0,
-        key="bnsf_form_division",
-    )
-    subdivs = list(grouped.get(division, ()))
-    current_sub = _cell(preview.get("Subdivision"))
-    if current_sub and current_sub not in subdivs:
-        subdivs = [current_sub] + subdivs
-    if not subdivs:
-        subdivs = [current_sub or ""]
-    subdivision = st.selectbox(
-        "Subdivision",
-        subdivs,
-        index=subdivs.index(current_sub) if current_sub in subdivs else 0,
-        key="bnsf_form_subdivision",
-    )
-    try:
-        mp_default = float(preview.get("Mile marker") or 0)
-    except ValueError:
-        mp_default = 0.0
-    mile_marker = st.number_input("Mile marker", min_value=0.0, step=0.1, format="%.1f", value=mp_default, key="bnsf_form_mp")
-    location = st.text_input(
-        "Location",
-        value=preview.get("Location") or format_location(subdivision, mile_marker),
-        key="bnsf_form_location",
-    )
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        latitude = st.text_input("Latitude", value=preview.get("Latitude", ""), key="bnsf_form_lat")
-    with c2:
-        longitude = st.text_input("Longitude", value=preview.get("Longitude", ""), key="bnsf_form_lon")
-    with c3:
-        track_distance = st.text_input(
-            "Distance to track (mi)",
-            value=preview.get("Distance to track (mi)", ""),
-            key="bnsf_form_track_dist",
+        subdivs = list(grouped.get(division, ()))
+        current_sub = _cell(preview.get("Subdivision"))
+        if current_sub and current_sub not in subdivs:
+            subdivs = [current_sub] + subdivs
+        if not subdivs:
+            subdivs = [current_sub or ""]
+        subdivision = st.selectbox(
+            "Subdivision",
+            subdivs,
+            index=subdivs.index(current_sub) if current_sub in subdivs else 0,
+            key="bnsf_form_subdivision",
         )
-
-    dirs = list(WIND_DIRECTIONS)
-    current_dir = _cell(preview.get("Wind direction")) or "Calm"
-    if current_dir not in dirs:
-        dirs = [current_dir] + dirs
-    wind_dir = st.selectbox(
-        "Wind direction",
-        dirs,
-        index=dirs.index(current_dir) if current_dir in dirs else 0,
-        key="bnsf_form_wind_dir",
-    )
-    w1, w2, w3 = st.columns(3)
-    with w1:
-        wind_mph = st.text_input("Average wind (mph)", value=preview.get("Wind (mph)", ""), key="bnsf_form_wind_mph")
-    with w2:
-        gust_mph = st.text_input("Gust (mph)", value=preview.get("Gust (mph)", ""), key="bnsf_form_gust")
-    with w3:
-        temp_f = st.text_input("Temperature (F)", value=preview.get("Temperature (F)", ""), key="bnsf_form_temp")
-    wind_degrees = st.text_input("Wind degrees", value=preview.get("Wind degrees", ""), key="bnsf_form_wind_deg")
-    source = st.text_input("Weather source", value=preview.get("Weather source", ""), key="bnsf_form_source")
-    s1, s2 = st.columns(2)
-    with s1:
-        station = st.text_input("Station", value=preview.get("Station", ""), key="bnsf_form_station")
-    with s2:
-        station_dist = st.text_input(
-            "Station distance (mi)",
-            value=preview.get("Station distance (mi)", ""),
-            key="bnsf_form_station_dist",
+        try:
+            mp_default = float(preview.get("Mile marker") or 0)
+        except ValueError:
+            mp_default = 0.0
+        mile_marker = st.number_input("Mile marker", min_value=0.0, step=0.1, format="%.1f", value=mp_default, key="bnsf_form_mp")
+        location = st.text_input(
+            "Location",
+            value=preview.get("Location") or format_location(subdivision, mile_marker),
+            key="bnsf_form_location",
         )
-    notes = st.text_area("Notes", value=preview.get("Notes", ""), key="bnsf_form_notes")
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            latitude = st.text_input("Latitude", value=preview.get("Latitude", ""), key="bnsf_form_lat")
+        with c2:
+            longitude = st.text_input("Longitude", value=preview.get("Longitude", ""), key="bnsf_form_lon")
+        with c3:
+            track_distance = st.text_input(
+                "Distance to track (mi)",
+                value=preview.get("Distance to track (mi)", ""),
+                key="bnsf_form_track_dist",
+            )
 
-    current_values = {
-        "Pilot": _cell(pilot),
-        "Aircraft": _cell(chosen_aircraft),
-        "Division": _cell(division),
-        "Subdivision": _cell(subdivision),
-        "Mile marker": format_milepost(mile_marker) if mile_marker is not None else "",
-        "Location": _cell(location) or format_location(subdivision, mile_marker),
-        "Latitude": _cell(latitude),
-        "Longitude": _cell(longitude),
-        "Distance to track (mi)": _cell(track_distance),
-        "Weather source": _cell(source),
-        "Station": _cell(station),
-        "Station distance (mi)": _cell(station_dist),
-        "Wind direction": _cell(wind_dir),
-        "Wind degrees": _cell(wind_degrees),
-        "Wind (mph)": _cell(wind_mph),
-        "Gust (mph)": _cell(gust_mph),
-        "Temperature (F)": _cell(temp_f),
-        "Notes": _cell(notes),
-    }
-    # Keep preview in sync so a rerun (widget change) does not revert later fields
-    # to the original auto-fill after the first interaction. Session original is
-    # left untouched so edited-field detection still works.
-    st.session_state.bnsf_weather_preview = {**preview, **current_values}
-
-    save_col, cancel_col = st.columns(2)
-    with cancel_col:
-        if st.button("Cancel", key="bnsf_form_cancel"):
-            for key in (
-                "bnsf_weather_logging",
-                "bnsf_weather_preview",
-                "bnsf_weather_original",
-                "bnsf_weather_skip_gps",
-                "bnsf_weather_weather_error",
-            ):
-                st.session_state.pop(key, None)
-            st.rerun()
-    with save_col:
-        save_clicked = st.button("Save weather log", key="bnsf_form_save", type="primary")
-    if not save_clicked:
-        return
-    if not current_values["Pilot"]:
-        st.error("Select a pilot before saving.")
-        return
-    if spreadsheet_fn is None:
-        st.error("Google Sheets is not configured, so the weather log was not saved.")
-        return
-    record = build_record(current_values, original=st.session_state.get("bnsf_weather_original"), when=now)
-    try:
-        save_bnsf_weather_record(record, spreadsheet_fn())
-    except Exception as exc:
-        st.error("Could not save the weather log: %s" % exc)
-        return
-    st.session_state.bnsf_weather_saved = (
-        "Saved %s — %s, %s°F, wind %s %s mph."
-        % (
-            record["Location"] or "weather log",
-            record["Timestamp"],
-            record["Temperature (F)"] or "—",
-            record["Wind direction"] or "—",
-            record["Wind (mph)"] or "—",
+        dirs = list(WIND_DIRECTIONS)
+        current_dir = _cell(preview.get("Wind direction")) or "Calm"
+        if current_dir not in dirs:
+            dirs = [current_dir] + dirs
+        wind_dir = st.selectbox(
+            "Wind direction",
+            dirs,
+            index=dirs.index(current_dir) if current_dir in dirs else 0,
+            key="bnsf_form_wind_dir",
         )
-    )
-    for key in (
-        "bnsf_weather_logging",
-        "bnsf_weather_preview",
-        "bnsf_weather_original",
-        "bnsf_weather_skip_gps",
-        "bnsf_weather_weather_error",
-    ):
-        st.session_state.pop(key, None)
-    st.rerun()
+        w1, w2, w3 = st.columns(3)
+        with w1:
+            wind_mph = st.text_input("Average wind (mph)", value=preview.get("Wind (mph)", ""), key="bnsf_form_wind_mph")
+        with w2:
+            gust_mph = st.text_input("Gust (mph)", value=preview.get("Gust (mph)", ""), key="bnsf_form_gust")
+        with w3:
+            temp_f = st.text_input("Temperature (F)", value=preview.get("Temperature (F)", ""), key="bnsf_form_temp")
+        wind_degrees = st.text_input("Wind degrees", value=preview.get("Wind degrees", ""), key="bnsf_form_wind_deg")
+        source = st.text_input("Weather source", value=preview.get("Weather source", ""), key="bnsf_form_source")
+        s1, s2 = st.columns(2)
+        with s1:
+            station = st.text_input("Station", value=preview.get("Station", ""), key="bnsf_form_station")
+        with s2:
+            station_dist = st.text_input(
+                "Station distance (mi)",
+                value=preview.get("Station distance (mi)", ""),
+                key="bnsf_form_station_dist",
+            )
+        sky = st.text_input("Sky condition", value=preview.get("Sky condition", ""), key="bnsf_form_sky")
+        precip = st.text_input("Precipitation", value=preview.get("Precipitation", ""), key="bnsf_form_precip")
+        notes = st.text_area("Notes", value=preview.get("Notes", ""), key="bnsf_form_notes")
 
+        current_values = {
+            "Pilot": _cell(pilot),
+            "Aircraft": _cell(chosen_aircraft),
+            "Division": _cell(division),
+            "Subdivision": _cell(subdivision),
+            "Mile marker": format_milepost(mile_marker) if mile_marker is not None else "",
+            "Location": _cell(location) or format_location(subdivision, mile_marker),
+            "Latitude": _cell(latitude),
+            "Longitude": _cell(longitude),
+            "Distance to track (mi)": _cell(track_distance),
+            "Weather source": _cell(source),
+            "Station": _cell(station),
+            "Station distance (mi)": _cell(station_dist),
+            "Wind direction": _cell(wind_dir),
+            "Wind degrees": _cell(wind_degrees),
+            "Wind (mph)": _cell(wind_mph),
+            "Gust (mph)": _cell(gust_mph),
+            "Temperature (F)": _cell(temp_f),
+            "Sky condition": _cell(sky),
+            "Precipitation": _cell(precip),
+            "Notes": _cell(notes),
+        }
+        # Keep preview in sync so a rerun (widget change) does not revert later fields
+        # to the original auto-fill after the first interaction. Session original is
+        # left untouched so edited-field detection still works.
+        st.session_state.bnsf_weather_preview = {**preview, **current_values}
+
+        save_col, cancel_col = st.columns(2)
+        with cancel_col:
+            if st.button("Cancel", key="bnsf_form_cancel"):
+                for key in (
+                    "bnsf_weather_logging",
+                    "bnsf_weather_preview",
+                    "bnsf_weather_original",
+                    "bnsf_weather_skip_gps",
+                    "bnsf_weather_weather_error",
+                ):
+                    st.session_state.pop(key, None)
+                st.rerun()
+        with save_col:
+            save_clicked = st.button("Save weather log", key="bnsf_form_save", type="primary")
+        if save_clicked:
+            if not current_values["Pilot"]:
+                st.error("Select a pilot before saving.")
+            elif spreadsheet_fn is None:
+                st.error("Google Sheets is not configured, so the weather log was not saved.")
+            else:
+                record = build_record(current_values, original=st.session_state.get("bnsf_weather_original"), when=now)
+                try:
+                    save_bnsf_weather_record(record, spreadsheet_fn())
+                    st.session_state.bnsf_weather_saved = (
+                        "Saved %s — %s, %s°F, wind %s %s mph."
+                        % (
+                            record["Location"] or "weather log",
+                            record["Timestamp"],
+                            record["Temperature (F)"] or "—",
+                            record["Wind direction"] or "—",
+                            record["Wind (mph)"] or "—",
+                        )
+                    )
+                    for key in (
+                        "bnsf_weather_logging",
+                        "bnsf_weather_preview",
+                        "bnsf_weather_original",
+                        "bnsf_weather_skip_gps",
+                        "bnsf_weather_weather_error",
+                    ):
+                        st.session_state.pop(key, None)
+                    st.rerun()
+                except Exception as exc:
+                    st.error("Could not save the weather log: %s" % exc)
+
+
+
+    bnsf_daily_report.render_daily_field_report(
+        pilot=pilot,
+        aircraft=chosen_aircraft,
+        weather_records=records,
+        spreadsheet_fn=spreadsheet_fn,
+        now=now,
+    )

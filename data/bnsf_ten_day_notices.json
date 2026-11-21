@@ -1,0 +1,134 @@
+{
+  "version": 1,
+  "notices": [
+    {
+      "id": "2025-rdm-young-russell",
+      "title": "2025 Aerial Program \u2014 Montana SW (RDM Young, Russell)",
+      "year": 2025,
+      "program_name": "2025 Aerial Program-Montana SW (old MRL area)",
+      "work_description": "Follow-up",
+      "contractor": "Central Valley Helicopters",
+      "roadmaster": "YOUNG, RUSSELL",
+      "roadmaster_id": "13731",
+      "roadmaster_mobile": "406-698-8882",
+      "roadmaster_email": "Russell.Young@BNSF.com",
+      "division_engineer": "TRIPP, HOWARD",
+      "division_engineer_email": "Howard.Tripp@BNSF.com",
+      "division": "Montana",
+      "spray_pattern": "Special",
+      "prescribed_acres": 825.0,
+      "gpa": 4.0,
+      "estimated_work_days": 4,
+      "planned_start": "2025-07-15",
+      "cost_center": "27405",
+      "escort_required": false,
+      "chemical_rates": [
+        {
+          "product": "Edict RTU (blend of Edict 4SC/Novita MSO Xtra)",
+          "rate": 8.0,
+          "unit": "fl oz/Acre"
+        },
+        {
+          "product": "MSM 60",
+          "rate": 1.0,
+          "unit": "oz/Acre"
+        },
+        {
+          "product": "Novita DF",
+          "rate": 4.0,
+          "unit": "fl oz/Acre"
+        },
+        {
+          "product": "Triumph 22K",
+          "rate": 24.0,
+          "unit": "fl oz/Acre"
+        }
+      ],
+      "product_mix": "Triumph 22K: 24.00 fl oz/Acre, Edict RTU (blend of Edict 4SC/Novita MSO Xtra): 8.00 fl oz/Acre, MSM 60: 1.00 oz/Acre, Novita DF: 4.00 fl oz/Acre",
+      "segments": [
+        {
+          "subdivision": "BILLINGS YARD",
+          "cost_center": "27405",
+          "line_segment": "735",
+          "begin_mp": 0,
+          "end_mp": 9998,
+          "kind": "YD",
+          "engineer": "TRIPP, HOWARD"
+        },
+        {
+          "subdivision": "LAUREL",
+          "cost_center": "27405",
+          "line_segment": "362",
+          "begin_mp": 0.7,
+          "end_mp": 4.3,
+          "kind": "ML",
+          "engineer": "TRIPP, HOWARD"
+        },
+        {
+          "subdivision": "LAUREL SHOP YD",
+          "cost_center": "27405",
+          "line_segment": "737",
+          "begin_mp": 13.77,
+          "end_mp": 15.25,
+          "kind": "YD",
+          "engineer": "TRIPP, HOWARD"
+        },
+        {
+          "subdivision": "LAUREL YARD",
+          "cost_center": "27405",
+          "line_segment": "736",
+          "begin_mp": 11.62,
+          "end_mp": 14.03,
+          "kind": "YD",
+          "engineer": "TRIPP, HOWARD"
+        },
+        {
+          "subdivision": "MRL FIRST SUB",
+          "cost_center": "27405",
+          "line_segment": "5",
+          "begin_mp": 514.51,
+          "end_mp": 515.6,
+          "kind": "ML",
+          "engineer": "TRIPP, HOWARD"
+        },
+        {
+          "subdivision": "MRL FIRST SUB",
+          "cost_center": "27405",
+          "line_segment": "40",
+          "begin_mp": 209.9,
+          "end_mp": 225.8,
+          "kind": "ML",
+          "engineer": "TRIPP, HOWARD"
+        },
+        {
+          "subdivision": "MRL FIRST SUB",
+          "cost_center": "27405",
+          "line_segment": "41",
+          "begin_mp": 0,
+          "end_mp": 19.8,
+          "kind": "ML",
+          "engineer": "TRIPP, HOWARD"
+        },
+        {
+          "subdivision": "MRL SECOND SUB",
+          "cost_center": "27405",
+          "line_segment": "41",
+          "begin_mp": 19.8,
+          "end_mp": 111.9,
+          "kind": "ML",
+          "engineer": "TRIPP, HOWARD"
+        },
+        {
+          "subdivision": "MRL: LAUREL",
+          "cost_center": "27405",
+          "line_segment": "362",
+          "begin_mp": 0,
+          "end_mp": 0.7,
+          "kind": "ML",
+          "engineer": "TRIPP, HOWARD"
+        }
+      ],
+      "no_spray_zones": []
+    }
+  ]
+}
