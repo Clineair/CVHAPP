@@ -7,10 +7,14 @@ opens only that employee's receipts.
 ## What an employee does
 
 1. Tap **🧾 Receipts**, then **🧾 Add a receipt**.
-2. **Take a photo** (in-page camera) or **Upload a photo or PDF** (on a phone
-   this also offers the full camera).
-3. The app reads the photo and fills in Date, Amount, Receipt number, and
-   Vendor. The employee checks them and types the Purpose and any notes.
+2. **Take a photo** (in-page camera), **Upload a photo or PDF** (on a phone
+   this also offers the full camera), or **No receipt copy** when there is no
+   paper or photo. A no-copy receipt skips the photo and OCR, and requires a
+   short note explaining why (for example lost, or card statement only). That
+   reason is stored in Notes as `No receipt copy: …`, and lists show **No photo**
+   instead of an Open link.
+3. When a photo is provided, the app reads it and fills in Date, Amount, Receipt
+   number, and Vendor. The employee checks them and types the Purpose and any notes.
 4. **Receipt complete** checks the date, amount, and purpose. Then two menus
    appear: **Job** (CVH, BNSF, Forestry, Other) and **Expense type** (Fuel,
    Parts, Meals, Lodging, Supplies, Other). Both are required.

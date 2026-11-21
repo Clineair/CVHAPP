@@ -7573,7 +7573,6 @@ def receipt_statement_totals_rows(records):
 def receipt_table_rows(records):
     rows = []
     for rec in records or []:
-        link = _cell(rec.get("Photo Link"))
         rows.append({
             "Date": rec.get("Date", ""),
             "Amount": employee_receipts.format_money(rec.get("Amount")),
@@ -7582,9 +7581,14 @@ def receipt_table_rows(records):
             "Purpose": rec.get("Purpose", ""),
             "Vendor": employee_receipts.receipt_vendor(rec),
             "Receipt #": rec.get("Receipt Number", ""),
-            "Photo": link if link.startswith("http") else "",
+            "Photo": employee_receipts.receipt_photo_display(rec),
         })
     return rows
+
+
+def receipt_photo_column_config():
+    """Photo column: a clickable Drive link, or the text 'No photo' (not a broken Open)."""
+    return st.column_config.LinkColumn("Photo")
 
 
 def _reset_receipt_entry(p):
@@ -7644,7 +7648,13 @@ def apply_existing_receipt_to_session(session, w, record):
     elif category == employee_receipts.CATEGORY_FUEL and sub:
         session[w + "fuel_type"] = sub
     elif category == employee_receipts.CATEGORY_OTHER:
-        session[w + "other_comment"] = _cell(record.get("Notes")) or _cell(record.get("Purpose"))
+        session[w + "other_comment"] = (
+            employee_receipts.notes_without_no_copy(record.get("Notes"))
+            or _cell(record.get("Purpose"))
+        )
+    reason = employee_receipts.receipt_no_copy_reason(record)
+    if reason:
+        session[w + "no_copy_reason"] = reason
     for name, amount in employee_receipts.parse_equipment_shares(record.get("Equipment Shares")):
         session[w + "eq_" + name] = True
         session[w + "eqshare_" + name] = employee_receipts.format_amount(amount)
@@ -7696,12 +7706,20 @@ def show_receipt_entry(employee, p, secrets, existing=None, editor="", office=Fa
         else:
             st.caption("No photo is stored for this receipt.")
         st.caption("A new photo is optional. Leave this blank to keep the photo already on file.")
+    sources = (
+        list(employee_receipts.RECEIPT_PHOTO_SOURCES)
+        if editing else list(employee_receipts.RECEIPT_PHOTO_SOURCES_NEW)
+    )
     source = st.radio(
         "Photo" if not editing else "Replace photo (optional)",
-        ["Take a photo", "Upload a photo or PDF"], horizontal=True, key=w + "source",
+        sources, horizontal=True, key=w + "source",
         label_visibility="collapsed" if not editing else "visible",
     )
-    if source == "Take a photo":
+    no_copy = source == employee_receipts.RECEIPT_PHOTO_NO_COPY
+    if no_copy:
+        shot = None
+        st.caption("This receipt will be saved without a photo. Add a short note explaining why.")
+    elif source == employee_receipts.RECEIPT_PHOTO_TAKE:
         shot = st.camera_input("Take a photo of the receipt", key=w + "camera")
     else:
         shot = st.file_uploader(
@@ -7714,7 +7732,7 @@ def show_receipt_entry(employee, p, secrets, existing=None, editor="", office=Fa
         else:
             _reset_receipt_entry(p)
         st.rerun()
-    if shot is None and not editing:
+    if shot is None and not editing and not no_copy:
         st.info("Take or choose a photo of the receipt first.")
         return
     data = shot.getvalue() if (shot is not None and hasattr(shot, "getvalue")) else b""
@@ -7736,6 +7754,27 @@ def show_receipt_entry(employee, p, secrets, existing=None, editor="", office=Fa
     note = st.session_state.get(w + "note")
     if note:
         st.info(note)
+
+    no_copy_reason = st.session_state.get(w + "no_copy_reason") or ""
+    has_new_photo = bool(data)
+    show_no_copy_reason = no_copy or (
+        editing and (
+            employee_receipts.receipt_requires_no_copy_reason(
+                has_new_photo=has_new_photo, existing=existing,
+            )
+            or bool(employee_receipts.receipt_no_copy_reason(existing))
+        )
+    )
+    if show_no_copy_reason:
+        no_copy_reason = st.text_area(
+            "Why is there no receipt copy?",
+            key=w + "no_copy_reason",
+            placeholder="Lost, card statement only, ...",
+        )
+        if employee_receipts.receipt_requires_no_copy_reason(
+            has_new_photo=has_new_photo, existing=existing if editing else None,
+        ):
+            st.caption("Required when there is no photo.")
 
     st.markdown("**2. Check and fill in**")
     if w + "date" not in st.session_state:
@@ -7857,12 +7896,22 @@ def show_receipt_entry(employee, p, secrets, existing=None, editor="", office=Fa
     save_label = "Save changes" if editing else "Save receipt"
     if st.button(save_label, key=w + "save", use_container_width=True, type="primary"):
         problems = employee_receipts.validate_receipt(fields)
+        has_new_photo = bool(data)
+        if employee_receipts.receipt_requires_no_copy_reason(
+            has_new_photo=has_new_photo, existing=existing if editing else None,
+        ):
+            problems.extend(employee_receipts.validate_no_copy_reason(no_copy_reason, required=True))
         if problems:
             st.session_state[w + "complete"] = False
             for problem in problems:
                 st.error(problem)
             return
-        alloc_fields = dict(fields, other_comment=other_comment, notes=fields.get("notes") or other_comment)
+        alloc_fields = dict(
+            fields,
+            other_comment=other_comment,
+            notes=fields.get("notes") or other_comment,
+            no_copy_reason=no_copy_reason,
+        )
         problems = employee_receipts.validate_receipt_allocation(
             alloc_fields, category, subcategory=subcategory, subcategory_detail=subcategory_detail,
             equipment_shares=equipment_shares, equipment_purpose=equipment_purpose,
@@ -7957,7 +8006,10 @@ def show_receipt_delete_confirm(p, record, user, office, secrets):
     st.markdown("Date: **" + preview["Date"] + "**")
     st.markdown("Vendor: **" + preview["Vendor"] + "**")
     st.markdown("Amount: **" + preview["Amount"] + "**")
-    st.warning("This removes the receipt from the list and moves the photo to the Google Drive trash.")
+    if employee_receipts.receipt_has_photo_link(record):
+        st.warning("This removes the receipt from the list and moves the photo to the Google Drive trash.")
+    else:
+        st.warning("This removes the receipt from the list.")
     confirmed = st.checkbox("Yes, I want to delete this receipt", key=p + "delete_confirm")
     if st.button("Cancel", key=p + "delete_cancel", use_container_width=True):
         _clear_receipt_delete_state(p)
@@ -8051,7 +8103,7 @@ def show_receipt_list(employee, p):
         pd.DataFrame(receipt_table_rows(shown)),
         hide_index=True,
         use_container_width=True,
-        column_config={"Photo": st.column_config.LinkColumn("Photo", display_text="Open")},
+        column_config={"Photo": receipt_photo_column_config()},
     )
 
 
@@ -8272,7 +8324,7 @@ def show_receipts_summary_office(p, secrets, user=""):
             pd.DataFrame(employee_receipts.office_table_rows(shown)),
             hide_index=True,
             use_container_width=True,
-            column_config={"Photo": st.column_config.LinkColumn("Photo", display_text="Open")},
+            column_config={"Photo": receipt_photo_column_config()},
         )
         st.download_button(
             "Download CSV",
@@ -8310,7 +8362,7 @@ def show_receipts_summary_office(p, secrets, user=""):
             pd.DataFrame(employee_receipts.ifta_table_rows(ifta_rows)),
             hide_index=True,
             use_container_width=True,
-            column_config={"Photo": st.column_config.LinkColumn("Photo", display_text="Open")},
+            column_config={"Photo": receipt_photo_column_config()},
         )
         st.download_button(
             "Download IFTA CSV",

@@ -167,7 +167,7 @@ tree = ast.parse(src)
 want = {
     "cached_receipt_records", "clear_receipts_cache", "receipt_records_for_view", "receipt_totals_rows",
     "receipt_statement_totals_rows", "receipt_vendor_totals_rows",
-    "receipt_table_rows", "_reset_receipt_entry", "apply_receipt_fields_to_session",
+    "receipt_table_rows", "receipt_photo_column_config", "_reset_receipt_entry", "apply_receipt_fields_to_session",
     "apply_existing_receipt_to_session", "_receipt_options", "_receipt_by_id",
     "show_receipt_entry", "show_saved_receipts_picker",
     "show_receipt_list", "receipt_summary_period_options", "show_receipts_summary_office",
