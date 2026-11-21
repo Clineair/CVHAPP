@@ -61,19 +61,24 @@ class ReceiptsUiTests(unittest.TestCase):
         values = {t.label: t.value for t in at.text_input}
         self.assertEqual(values["Amount ($)"], "61.12")
         self.assertEqual(values["Receipt or invoice number"], "004417")
-        self.assertEqual(values["Vendor (optional)"], "SHELL OIL")
+        self.assertEqual(_select(at, "Vendor").value, "Other")
+        self.assertNotIn("None", _select(at, "Vendor").options)
+        self.assertEqual(_select(at, "Vendor").options[-1], "Other")
+        self.assertEqual(values["Vendor name"], "SHELL OIL")
         self.assertEqual(str(at.date_input[0].value), "2026-11-18")
         # Category is on the same screen as Amount and Purpose, with no extra button.
         self.assertEqual(_select(at, "Category").options[0], "Dues")
         self.assertFalse(any(b.label == "Receipt complete" for b in at.button))
         labels = [t.label for t in at.text_input] + [s.label for s in at.selectbox] + [t.label for t in at.text_area]
         self.assertLess(labels.index("Purpose"), labels.index("Category"))
-        self.assertLess(labels.index("Category"), labels.index("Notes (optional)"))
+        self.assertLess(labels.index("Category"), labels.index("Memo (optional)"))
+        self.assertNotIn("Notes (optional)", labels)
+        self.assertNotIn("Paid on monthly statement account", [b.label for b in at.selectbox])
         [t for t in at.text_input if t.label == "Purpose"][0].input("Fuel for the truck, BNSF job")
         at.run()
         self.assertEqual(_select(at, "Category").options[0], "Dues")
         self.assertIn("Equipment", _select(at, "Category").options)
-        self.assertIn("Paid on monthly statement account", [b.label for b in at.selectbox])
+        self.assertNotIn("Paid on monthly statement account", [b.label for b in at.selectbox])
         _button(at, "Save receipt").click().run()
         errors = [e.value for e in at.error]
         self.assertIn("Choose a category.", errors)
@@ -96,6 +101,8 @@ class ReceiptsUiTests(unittest.TestCase):
         self.assertEqual(rec["Category"], "BNSF")
         self.assertEqual(rec["Subcategory"], "Vehicle fuel")
         self.assertEqual((rec["Job"], rec["Expense Type"]), ("BNSF", "Vehicle fuel"))
+        self.assertEqual(rec["Vendor"], "SHELL OIL")
+        self.assertEqual(rec["Statement Account"], "")
         self.assertEqual(rec["IFTA State"], "WA")
         self.assertEqual(rec["IFTA Gallons"], "18.2")
         self.assertEqual(rec["Photo Link"], "https://drive.google.com/file/d/FAKE/view")
@@ -179,32 +186,59 @@ class ReceiptsUiTests(unittest.TestCase):
         at.checkbox[0].check().run()
         self.assertTrue(_button(at, "Email this summary").disabled)
 
-    def test_live_view_defaults_to_period_to_date_and_lists_receipts(self):
+    def test_live_view_defaults_to_all_dates_and_lists_receipts(self):
         at = _run(page="summary", remembered="Ron Cline", seed="1")
         self.assertFalse(at.exception)
         self.assertTrue(any(b.label == "Refresh" for b in at.button))
         kinds = [s for s in at.selectbox if s.label == "Show receipts for"][0]
-        self.assertEqual(kinds.value, "Period to date")
-        self.assertEqual(kinds.options, ["Period to date", "This month", "Pay period", "Custom dates"])
+        self.assertEqual(kinds.value, "All dates")
+        self.assertEqual(kinds.options, ["All dates", "Period to date", "This month", "Pay period", "Custom dates"])
         self.assertTrue(any("counted by the day they were entered (Pacific)" in c.value for c in at.caption))
-        # Period to date on Nov 20 is Nov 15–20: the two mid-month receipts, not the Nov 1 one.
+        self.assertTrue(any("Show receipts by" in (m.value or "") for m in at.markdown))
+        # All dates includes the Nov 1 receipt as well as the mid-month ones.
         frames = [df.value for df in at.dataframe]
         receipts = [df for df in frames if "Saved" in df.columns and "Employee" in df.columns][0]
         self.assertEqual(list(receipts.columns), [
             "Saved", "Employee", "Receipt date", "Vendor", "Purpose", "Receipt #",
-            "Category", "Detail", "Statement account", "Amount", "Photo",
+            "Category", "Detail", "Amount", "Photo",
         ])
-        self.assertEqual(sorted(receipts["Employee"].tolist()), ["Carl Mulvaney", "Gary Grant"])
-        self.assertNotIn("Earlier meal", list(receipts["Purpose"]))
+        self.assertIn("Napa", list(receipts["Vendor"]))
+        self.assertTrue(any(s.label == "Vendor" for s in at.selectbox))
+        self.assertFalse(any(s.label == "Statement account" for s in at.selectbox))
+        self.assertEqual(sorted(receipts["Employee"].tolist()), ["Carl Mulvaney", "Carl Mulvaney", "Gary Grant"])
+        self.assertIn("Earlier meal", list(receipts["Purpose"]))
         emp_totals = [df for df in frames if "Employee" in df.columns and "Receipts" in df.columns][0]
-        self.assertEqual(emp_totals["Total"].tolist()[-1], "$35.50")
+        self.assertEqual(emp_totals["Total"].tolist()[-1], "$43.50")
         self.assertTrue(any(b.label == "Download CSV" for b in at.download_button))
         at.checkbox[0].check().run()
         _button(at, "Email this summary").click().run()
-        self.assertEqual(at.session_state["mails"], ["CVH employee receipts: Nov 15 – Nov 20, 2026 (period to date)"])
+        self.assertEqual(at.session_state["mails"], ["CVH employee receipts: All dates"])
         audit = dict(zip(*at.session_state["store"]["Receipts Mail"][:2]))
-        self.assertEqual(audit["Idempotency Key"], "receipts:2026-11-15:2026-11-20")
+        self.assertEqual(audit["Idempotency Key"], "receipts:all")
         self.assertEqual(audit["Sent By"], "Ron Cline")
+        # Period to date still hides the earlier receipt when Patti narrows the dates.
+        at = _run(page="summary", remembered="Ron Cline", seed="1")
+        [s for s in at.selectbox if s.label == "Show receipts for"][0].select("Period to date").run()
+        frames = [df.value for df in at.dataframe]
+        receipts = [df for df in frames if "Saved" in df.columns and "Employee" in df.columns][0]
+        self.assertNotIn("Earlier meal", list(receipts["Purpose"]))
+        self.assertEqual(sorted(receipts["Employee"].tolist()), ["Carl Mulvaney", "Gary Grant"])
+
+    def test_query_by_employee_shows_category_subtotals_for_all_dates(self):
+        at = _run(page="summary", remembered="Ron Cline", seed="1")
+        self.assertEqual(_select(at, "Show receipts for").value, "All dates")
+        _select(at, "Employee").select("Carl Mulvaney").run()
+        frames = [df.value for df in at.dataframe]
+        receipts = [df for df in frames if "Saved" in df.columns][0]
+        self.assertEqual(sorted(receipts["Purpose"].tolist()), ["Earlier meal", "Fuel for truck"])
+        self.assertTrue(any("Totals by category" in (m.value or "") for m in at.markdown))
+        self.assertFalse(any(m.value == "Totals by employee" for m in at.markdown))
+        self.assertTrue(any(b.label == "Download CSV" for b in at.download_button))
+        at.checkbox[0].check().run()
+        _button(at, "Email this summary").click().run()
+        self.assertEqual(at.session_state["mails"], ["CVH employee receipts: All dates"])
+        audit = dict(zip(*at.session_state["store"]["Receipts Mail"][:2]))
+        self.assertEqual(audit["Idempotency Key"], "receipts:all:emp=Carl Mulvaney")
 
     def test_custom_range_and_filters_use_a_different_send_key(self):
         at = _run(page="summary", remembered="Ron Cline", seed="1")
@@ -244,6 +278,9 @@ class ReceiptsUiTests(unittest.TestCase):
         at.run()
         self.assertTrue(any("Remaining amount: $31.12" in (c.value or "") for c in at.caption))
         _select(at, "Purpose").select("Parts").run()
+        memo_boxes = [b for b in at.text_area if b.label == "Memo (optional)"]
+        self.assertEqual(len(memo_boxes), 1)
+        self.assertFalse(any(b.label == "Notes (optional)" for b in at.text_area))
         _button(at, "Save receipt").click().run()
         self.assertFalse(at.exception)
         rec = dict(zip(*at.session_state["store"]["Receipts"][:2]))

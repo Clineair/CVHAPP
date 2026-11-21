@@ -7437,9 +7437,14 @@ def receipt_totals_rows(records):
             for row in employee_receipts.totals_rows(records)]
 
 
-def receipt_statement_totals_rows(records):
+def receipt_vendor_totals_rows(records):
     return [dict(row, Total=employee_receipts.format_money(row["Total"]))
-            for row in employee_receipts.statement_totals_rows(records)]
+            for row in employee_receipts.vendor_totals_rows(records)]
+
+
+def receipt_statement_totals_rows(records):
+    """Back-compat alias for receipt_vendor_totals_rows."""
+    return receipt_vendor_totals_rows(records)
 
 
 def receipt_table_rows(records):
@@ -7452,7 +7457,7 @@ def receipt_table_rows(records):
             "Category": employee_receipts.receipt_category(rec),
             "Detail": employee_receipts.receipt_detail(rec),
             "Purpose": rec.get("Purpose", ""),
-            "Vendor": rec.get("Vendor", ""),
+            "Vendor": employee_receipts.receipt_vendor(rec),
             "Receipt #": rec.get("Receipt Number", ""),
             "Photo": link if link.startswith("http") else "",
         })
@@ -7468,9 +7473,15 @@ def apply_receipt_fields_to_session(session, w, fields):
     """Put read-back fields into the form widgets. Only fields that were found."""
     if fields.get("date"):
         session[w + "date"] = fields["date"]
-    for name in ("amount", "number", "vendor"):
+    for name in ("amount", "number"):
         if fields.get(name):
             session[w + name] = fields[name]
+    if fields.get("vendor"):
+        choice, other = employee_receipts.vendor_choice_from_text(fields["vendor"])
+        if choice:
+            session[w + "vendor_choice"] = choice
+        if other:
+            session[w + "vendor_other"] = other
     if fields.get("gallons") and not session.get(w + "ifta_gallons"):
         session[w + "ifta_gallons"] = fields["gallons"]
 
@@ -7492,9 +7503,12 @@ def apply_existing_receipt_to_session(session, w, record):
         session[w + "date"] = day
     session[w + "amount"] = employee_receipts.format_amount(record.get("Amount")) or _cell(record.get("Amount"))
     session[w + "number"] = _cell(record.get("Receipt Number"))
-    session[w + "vendor"] = _cell(record.get("Vendor"))
+    choice, other = employee_receipts.vendor_choice_from_text(employee_receipts.receipt_vendor(record))
+    if choice:
+        session[w + "vendor_choice"] = choice
+    if other:
+        session[w + "vendor_other"] = other
     session[w + "purpose"] = _cell(record.get("Purpose"))
-    session[w + "notes"] = _cell(record.get("Notes"))
     category = employee_receipts.receipt_category(record)
     if category:
         session[w + "category"] = category
@@ -7513,15 +7527,13 @@ def apply_existing_receipt_to_session(session, w, record):
         session[w + "eqshare_" + name] = employee_receipts.format_amount(amount)
     if _cell(record.get("Equipment Purpose")):
         session[w + "eq_purpose"] = _cell(record.get("Equipment Purpose"))
-    session[w + "memo"] = _cell(record.get("Memo"))
+    session[w + "memo"] = employee_receipts.receipt_memo(record)
     state = employee_receipts.ifta_state(record)
     if state:
         session[w + "ifta_state"] = employee_receipts.ifta_jurisdiction_label(state)
     gallons = employee_receipts.format_gallons(record.get("IFTA Gallons"))
     if gallons:
         session[w + "ifta_gallons"] = gallons
-    account = employee_receipts.receipt_statement_account(record) or employee_receipts.RECEIPT_STATEMENT_NONE
-    session[w + "statement"] = account
     session[w + "complete"] = True
 
 
@@ -7608,9 +7620,23 @@ def show_receipt_entry(employee, p, secrets, existing=None, editor="", office=Fa
     st.date_input("Date", key=w + "date", format="YYYY-MM-DD")
     st.text_input("Amount ($)", key=w + "amount", placeholder="42.50")
     st.text_input("Receipt or invoice number", key=w + "number")
-    st.text_input("Vendor (optional)", key=w + "vendor")
+    vendor_choice = st.selectbox(
+        "Vendor",
+        _receipt_options(employee_receipts.RECEIPT_VENDORS, st.session_state.get(w + "vendor_choice")),
+        index=None,
+        placeholder="Choose a vendor",
+        key=w + "vendor_choice",
+    )
+    vendor_other = ""
+    if vendor_choice == employee_receipts.RECEIPT_VENDOR_OTHER:
+        vendor_other = st.text_input(
+            "Vendor name", key=w + "vendor_other", placeholder="Type the vendor name",
+        )
+    vendor = employee_receipts.resolve_vendor(vendor_choice, vendor_other)
     st.text_input("Purpose", key=w + "purpose", placeholder="What it was for (job, aircraft, truck...)")
-    fields = {k: st.session_state.get(w + k) for k in ("date", "amount", "number", "vendor", "purpose", "notes")}
+    fields = {"date": st.session_state.get(w + "date"), "amount": st.session_state.get(w + "amount"),
+              "number": st.session_state.get(w + "number"), "vendor": vendor,
+              "purpose": st.session_state.get(w + "purpose"), "memo": st.session_state.get(w + "memo")}
 
     st.markdown("**Category**")
     category = st.selectbox(
@@ -7653,7 +7679,7 @@ def show_receipt_entry(employee, p, secrets, existing=None, editor="", office=Fa
             index=None,
             placeholder="Choose a purpose", key=w + "eq_purpose",
         ) or ""
-        memo = st.text_area("Memo", key=w + "memo")
+        memo = st.text_area("Memo (optional)", key=w + "memo")
     elif category == employee_receipts.CATEGORY_BUILDINGS:
         subcategory = st.selectbox(
             "Building",
@@ -7699,14 +7725,11 @@ def show_receipt_entry(employee, p, secrets, existing=None, editor="", office=Fa
         if ifta_warn:
             st.caption(ifta_warn)
 
-    statement_account = st.selectbox(
-        "Paid on monthly statement account",
-        _receipt_options(employee_receipts.RECEIPT_STATEMENT_ACCOUNTS, st.session_state.get(w + "statement")),
-        index=0,
-        key=w + "statement",
-    )
-    st.text_area("Notes (optional)", key=w + "notes")
-    fields = {k: st.session_state.get(w + k) for k in ("date", "amount", "number", "vendor", "purpose", "notes")}
+    if category != employee_receipts.CATEGORY_EQUIPMENT:
+        memo = st.text_area("Memo (optional)", key=w + "memo")
+    fields = {"date": st.session_state.get(w + "date"), "amount": st.session_state.get(w + "amount"),
+              "number": st.session_state.get(w + "number"), "vendor": vendor,
+              "purpose": st.session_state.get(w + "purpose"), "memo": st.session_state.get(w + "memo")}
 
     save_label = "Save changes" if editing else "Save receipt"
     if st.button(save_label, key=w + "save", use_container_width=True, type="primary"):
@@ -7742,7 +7765,7 @@ def show_receipt_entry(employee, p, secrets, existing=None, editor="", office=Fa
         record = employee_receipts.build_receipt_record(
             owner, alloc_fields, category, subcategory=subcategory,
             subcategory_detail=subcategory_detail, equipment_shares=equipment_shares,
-            equipment_purpose=equipment_purpose, memo=memo, statement_account=statement_account,
+            equipment_purpose=equipment_purpose, memo=memo,
             ifta_state=ifta_state, ifta_gallons=ifta_gallons,
             photo_link=link, photo_file=stored or name,
             when=when, entry_id=employee_receipts.receipt_entry_id(existing) if editing else None,
@@ -7952,11 +7975,13 @@ def show_receipts_summary_office(p, secrets, user=""):
             show_receipt_entry(_cell(rec.get("Employee")), p, secrets, existing=rec, editor=user, office=True)
         return
     st.caption("Receipts are counted by the day they were entered (Pacific), not the date on the receipt.")
+    st.markdown("**Query receipts**")
     kind = st.selectbox(
         "Show receipts for",
         list(employee_receipts.SUMMARY_RANGE_CHOICES),
         index=0,
         key=p + "sum_range_kind",
+        help="All dates shows every saved receipt, not just this pay period.",
     )
     period = None
     custom_start = custom_end = None
@@ -7984,57 +8009,62 @@ def show_receipts_summary_office(p, secrets, user=""):
     names = _receipts_office_filter_names(records, start, end)
     categories = list(employee_receipts.RECEIPT_CATEGORIES)
     details = []
-    accounts = list(employee_receipts.RECEIPT_STATEMENT_ACCOUNTS)
+    vendors = list(employee_receipts.RECEIPT_VENDORS_LISTED)
     for rec in employee_receipts.filter_receipts(records, start, end):
         category = employee_receipts.receipt_category(rec)
         detail = employee_receipts.receipt_subcategory(rec)
-        account = employee_receipts.receipt_statement_account(rec)
+        vendor = employee_receipts.receipt_vendor(rec)
         if category and category not in categories:
             categories.append(category)
         if detail and detail not in details:
             details.append(detail)
-        if account and account not in accounts:
-            accounts.append(account)
-    employee_col, cat_col, det_col, acct_col = st.columns(4)
+        if vendor and vendor not in vendors:
+            vendors.append(vendor)
+    st.markdown("**Show receipts by**")
+    st.caption("Pick Employee, Vendor, or Category — or leave a menu on All.")
+    employee_col, vend_col, cat_col, det_col = st.columns(4)
     with employee_col:
         employee_f = st.selectbox("Employee", [employee_receipts.FILTER_ALL] + names, key=p + "sum_employee")
+    with vend_col:
+        vendor_f = st.selectbox(
+            "Vendor", [employee_receipts.FILTER_ALL] + vendors, key=p + "sum_vendor",
+        )
     with cat_col:
         category_f = st.selectbox("Category", [employee_receipts.FILTER_ALL] + categories, key=p + "sum_category")
     with det_col:
         subcategory_f = st.selectbox("Detail", [employee_receipts.FILTER_ALL] + details, key=p + "sum_detail")
-    with acct_col:
-        account_f = st.selectbox(
-            "Statement account", [employee_receipts.FILTER_ALL] + accounts, key=p + "sum_account",
-        )
     shown = employee_receipts.filter_receipts(
         records, start, end, employee=employee_f, category=category_f,
-        subcategory=subcategory_f, statement_account=account_f,
+        subcategory=subcategory_f, vendor=vendor_f,
     )
     summary = employee_receipts.build_summary(
         records, start, end, employees=EMPLOYEES, employee=employee_f, category=category_f,
-        subcategory=subcategory_f, statement_account=account_f, range_kind=kind,
+        subcategory=subcategory_f, vendor=vendor_f, range_kind=kind,
     )
     st.markdown(
         "**" + summary["label"] + "**  ·  " + str(summary["count"]) + " receipts  ·  Total "
         + employee_receipts.format_money(summary["total"])
     )
-    st.markdown("Totals by employee")
-    emp_rows = employee_receipts.employee_totals_rows(shown)
-    if emp_rows:
-        st.dataframe(
-            pd.DataFrame([dict(row, Total=employee_receipts.format_money(row["Total"])) for row in emp_rows]),
-            hide_index=True,
-            use_container_width=True,
-        )
-    else:
+    if not shown:
         st.caption("No receipts in this range.")
-    if shown:
-        st.markdown("Totals by category")
-        st.dataframe(pd.DataFrame(receipt_totals_rows(shown)), hide_index=True, use_container_width=True)
-        st.markdown("Totals by statement account and month")
-        statement_rows = receipt_statement_totals_rows(shown)
-        if statement_rows:
-            st.dataframe(pd.DataFrame(statement_rows), hide_index=True, use_container_width=True)
+    else:
+        for heading, kind_name in employee_receipts.query_subtotal_sections(
+            employee=employee_f, vendor=vendor_f, category=category_f,
+        ):
+            st.markdown(heading)
+            if kind_name == "employee":
+                emp_rows = employee_receipts.employee_totals_rows(shown)
+                st.dataframe(
+                    pd.DataFrame([dict(row, Total=employee_receipts.format_money(row["Total"])) for row in emp_rows]),
+                    hide_index=True,
+                    use_container_width=True,
+                )
+            elif kind_name == "category":
+                st.dataframe(pd.DataFrame(receipt_totals_rows(shown)), hide_index=True, use_container_width=True)
+            else:
+                vendor_rows = receipt_vendor_totals_rows(shown)
+                if vendor_rows:
+                    st.dataframe(pd.DataFrame(vendor_rows), hide_index=True, use_container_width=True)
         st.markdown("Receipts")
         st.dataframe(
             pd.DataFrame(employee_receipts.office_table_rows(shown)),
@@ -8045,7 +8075,7 @@ def show_receipts_summary_office(p, secrets, user=""):
         st.download_button(
             "Download CSV",
             data=employee_receipts.summary_csv(shown),
-            file_name="cvh-receipts-" + start.isoformat() + "-to-" + end.isoformat() + ".csv",
+            file_name=("cvh-receipts-all-dates.csv" if start is None or end is None else "cvh-receipts-" + start.isoformat() + "-to-" + end.isoformat() + ".csv"),
             mime="text/csv",
             key=p + "sum_csv",
             use_container_width=True,

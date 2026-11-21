@@ -399,8 +399,14 @@ class TotalsAndPeriodTests(unittest.TestCase):
         self.assertEqual(er.RECEIPT_EQUIPMENT_PURPOSES, (
             "Diesel Fuel", "Gas", "JetA", "AvGas", "Parts",
         ))
-        self.assertEqual(er.RECEIPT_STATEMENT_ACCOUNTS[0], "None")
+        self.assertEqual(er.RECEIPT_VENDORS, (
+            "Bruckners", "Mid State Co-Op", "Knudson", "Ranch & Home",
+            "Kittitas County Solid Waste", "Napa", "Oxac", "Les Schwab", "Other",
+        ))
+        self.assertNotIn("None", er.RECEIPT_VENDORS)
+        self.assertEqual(er.RECEIPT_VENDORS[-1], "Other")
         self.assertIn("Les Schwab", er.RECEIPT_STATEMENT_ACCOUNTS)
+        self.assertEqual(er.RECEIPT_STATEMENT_ACCOUNTS[0], "None")
         self.assertEqual(er.RECEIPTS_OFFICE_USERS, ("Ron Cline", "Patti"))
         # Older Job / Expense type lists remain for reading saved receipts.
         self.assertEqual(er.RECEIPT_JOBS, ("CVH", "BNSF", "Forestry", "Other"))
@@ -542,10 +548,13 @@ class LiveViewTests(unittest.TestCase):
             er.resolve_summary_range(er.RANGE_CUSTOM, today=day, custom_start=date(2026, 11, 20), custom_end=date(2026, 11, 10)),
             (date(2026, 11, 10), date(2026, 11, 20)),
         )
+        self.assertEqual(er.resolve_summary_range(er.RANGE_ALL_DATES, today=day), (None, None))
+        self.assertEqual(er.SUMMARY_RANGE_CHOICES[0], er.RANGE_ALL_DATES)
         self.assertEqual(
             er.summary_range_label(date(2026, 11, 15), date(2026, 11, 20), er.RANGE_PERIOD_TO_DATE),
             "Nov 15 – Nov 20, 2026 (period to date)",
         )
+        self.assertEqual(er.summary_range_label(None, None, er.RANGE_ALL_DATES), "All dates")
 
     def test_filters_and_employee_totals(self):
         recs = [
@@ -556,6 +565,25 @@ class LiveViewTests(unittest.TestCase):
         shown = er.filter_receipts(recs, date(2026, 11, 15), date(2026, 11, 20), employee="Carl Mulvaney")
         self.assertEqual(len(shown), 1)
         self.assertEqual(er.grand_total(shown), 10.0)
+        all_dates = er.filter_receipts(recs, None, None, employee="Carl Mulvaney")
+        self.assertEqual(len(all_dates), 2)
+        self.assertEqual(er.grand_total(all_dates), 14.0)
+        self.assertEqual(
+            [h for h, _k in er.query_subtotal_sections(employee="Carl Mulvaney")],
+            ["Totals by category", "Totals by vendor and month"],
+        )
+        self.assertEqual(
+            [h for h, _k in er.query_subtotal_sections(vendor="Napa")],
+            ["Totals by employee", "Totals by category"],
+        )
+        self.assertEqual(
+            [h for h, _k in er.query_subtotal_sections(category="Fuel")],
+            ["Totals by employee", "Totals by vendor and month"],
+        )
+        self.assertEqual(
+            [k for _h, k in er.query_subtotal_sections()],
+            ["employee", "category", "vendor"],
+        )
         rows = er.employee_totals_rows(er.filter_receipts(recs, date(2026, 11, 15), date(2026, 11, 20)))
         self.assertEqual([r["Employee"] for r in rows], ["Carl Mulvaney", "Gary Grant", "All employees"])
         self.assertEqual(rows[-1]["Total"], 17.0)
@@ -576,9 +604,19 @@ class LiveViewTests(unittest.TestCase):
         self.assertEqual(er.idempotency_key(ptd), "receipts:2026-11-15:2026-11-20")
         self.assertEqual(er.idempotency_key(filtered), "receipts:2026-11-15:2026-11-28:emp=Carl Mulvaney|job=BNSF")
         self.assertEqual(er.idempotency_key(custom), "receipts:2026-11-10:2026-11-20")
+        all_dates = er.build_summary(recs, None, None, range_kind=er.RANGE_ALL_DATES)
+        self.assertEqual(all_dates["label"], "All dates")
+        self.assertEqual(er.idempotency_key(all_dates), "receipts:all")
+        self.assertTrue(er.summary_text(all_dates).startswith("All employee receipts."))
+        self.assertEqual(er.summary_subject(all_dates), "CVH employee receipts: All dates")
+        audit = er.build_mail_audit_record(all_dates, {"status": er.STATUS_SENT, "trigger": "Manual", "idempotency_key": "receipts:all"}, sent_by="Patti")
+        self.assertEqual(audit["Period Start"], "")
+        self.assertEqual(audit["Period End"], "")
+        self.assertEqual(audit["Idempotency Key"], "receipts:all")
         self.assertNotEqual(er.idempotency_key(period), er.idempotency_key(ptd))
         self.assertNotEqual(er.idempotency_key(period), er.idempotency_key(custom))
         self.assertNotEqual(er.idempotency_key(period), er.idempotency_key(filtered))
+        self.assertNotEqual(er.idempotency_key(all_dates), er.idempotency_key(period))
         self.assertIn("Filters: Employee: Carl Mulvaney, Job: BNSF", er.summary_text(filtered))
         self.assertIn("(period to date)", er.summary_subject(ptd))
         # A later unfiltered send of the same dates still matches the old period key.
@@ -704,27 +742,81 @@ class CategoryAndIftaTests(unittest.TestCase):
         self.assertIn("WA — Washington,18.2", csv_text)
         self.assertIn("All states,28.2", csv_text)
 
-    def test_statement_account_totals_and_filter(self):
+    def test_match_listed_vendor_is_case_and_punctuation_insensitive(self):
+        self.assertEqual(er.match_listed_vendor("NAPA Auto Parts"), "Napa")
+        self.assertEqual(er.match_listed_vendor("napa"), "Napa")
+        self.assertEqual(er.match_listed_vendor("Mid-State Co-Op"), "Mid State Co-Op")
+        self.assertEqual(er.match_listed_vendor("mid state coop"), "Mid State Co-Op")
+        self.assertEqual(er.match_listed_vendor("Knudson's"), "Knudson")
+        self.assertEqual(er.match_listed_vendor("Kittitas County Solid Waste"), "Kittitas County Solid Waste")
+        self.assertEqual(er.match_listed_vendor("SHELL OIL"), "")
+        self.assertEqual(er.match_listed_vendor("Home Depot"), "")
+        self.assertEqual(er.match_listed_vendor(""), "")
+        self.assertEqual(er.vendor_choice_from_text("NAPA Auto Parts"), ("Napa", ""))
+        self.assertEqual(er.vendor_choice_from_text("SHELL OIL"), ("Other", "SHELL OIL"))
+        self.assertEqual(er.vendor_choice_from_text(""), ("", ""))
+        self.assertEqual(er.resolve_vendor("Napa", ""), "Napa")
+        self.assertEqual(er.resolve_vendor("Other", "Shell Oil"), "Shell Oil")
+        self.assertEqual(er.resolve_vendor("Other", ""), "")
+
+    def test_vendor_totals_and_filter_use_statement_or_free_text(self):
         recs = [
-            dict(_rec("A", "10", "Fuel", saved="2026-11-16 08:00:00 PST"), **{"Statement Account": "Napa", "Category": "Shop Supplies"}),
-            dict(_rec("A", "5", "Parts", saved="2026-11-18 08:00:00 PST"), **{"Statement Account": "Napa", "Category": "Equipment"}),
-            dict(_rec("B", "7", "Fuel", saved="2026-11-16 09:00:00 PST"), **{"Statement Account": "Bruckners", "Category": "Fuel"}),
+            # Old receipt: statement vendor set, free-text vendor ignored for grouping.
+            dict(_rec("A", "10", "Fuel", saved="2026-11-16 08:00:00 PST"),
+                 **{"Statement Account": "Napa", "Vendor": "NAPA Auto Parts", "Category": "Shop Supplies"}),
+            # Old receipt: only the statement column was filled.
+            dict(_rec("A", "5", "Parts", saved="2026-11-18 08:00:00 PST"),
+                 **{"Statement Account": "Napa", "Vendor": "", "Category": "Equipment"}),
+            dict(_rec("B", "7", "Fuel", saved="2026-11-16 09:00:00 PST"),
+                 **{"Vendor": "Bruckners", "Category": "Fuel"}),
+            # Free-text vendor that is not on the list.
+            dict(_rec("B", "4", "Meals", saved="2026-11-18 08:00:00 PST"), **{"Vendor": "SHELL OIL", "Category": "Travel"}),
+            # No vendor at all.
             _rec("B", "3", "Meals", saved="2026-11-18 09:00:00 PST"),
         ]
-        rows = er.statement_totals_rows(er.filter_receipts(recs, date(2026, 11, 15), date(2026, 11, 20)))
-        accounts = [r["Statement account"] for r in rows]
-        self.assertIn("Napa total", accounts)
-        self.assertIn("None total", accounts)
-        napa = [r for r in rows if r["Statement account"] == "Napa total"][0]
+        self.assertEqual(er.receipt_vendor(recs[0]), "Napa")
+        self.assertEqual(er.receipt_vendor(recs[1]), "Napa")
+        self.assertEqual(er.receipt_vendor(recs[2]), "Bruckners")
+        self.assertEqual(er.receipt_vendor(recs[3]), "SHELL OIL")
+        self.assertEqual(er.receipt_vendor(recs[4]), "")
+        rows = er.vendor_totals_rows(er.filter_receipts(recs, date(2026, 11, 15), date(2026, 11, 20)))
+        vendors = [r["Vendor"] for r in rows]
+        self.assertIn("Napa total", vendors)
+        self.assertIn("SHELL OIL total", vendors)
+        self.assertIn("(no vendor) total", vendors)
+        self.assertNotIn("None total", vendors)
+        napa = [r for r in rows if r["Vendor"] == "Napa total"][0]
         self.assertEqual(napa["Total"], 15.0)
         shown = er.filter_receipts(
-            recs, date(2026, 11, 15), date(2026, 11, 20), statement_account="Napa",
+            recs, date(2026, 11, 15), date(2026, 11, 20), vendor="Napa",
         )
         self.assertEqual(er.grand_total(shown), 15.0)
         none = er.filter_receipts(
-            recs, date(2026, 11, 15), date(2026, 11, 20), statement_account="None",
+            recs, date(2026, 11, 15), date(2026, 11, 20), vendor="(no vendor)",
         )
         self.assertEqual(er.grand_total(none), 3.0)
+        rec = er.build_receipt_record(
+            "A", {"date": "2026-11-18", "amount": "12", "purpose": "parts", "vendor": "NAPA Auto Parts"},
+            "Shop Supplies",
+        )
+        self.assertEqual(rec["Vendor"], "Napa")
+        self.assertEqual(rec["Statement Account"], "Napa")
+        other = er.build_receipt_record(
+            "A", {"date": "2026-11-18", "amount": "12", "purpose": "fuel",
+                  "vendor_choice": "Other", "vendor_other": "SHELL OIL"},
+            "Fuel", subcategory="Diesel",
+        )
+        self.assertEqual(other["Vendor"], "SHELL OIL")
+        self.assertEqual(other["Statement Account"], "")
+        memoed = er.build_receipt_record(
+            "A", {"date": "2026-11-18", "amount": "12", "purpose": "dues", "memo": "annual"},
+            "Dues",
+        )
+        self.assertEqual(memoed["Memo"], "annual")
+        self.assertEqual(memoed["Notes"], "annual")
+        self.assertEqual(er.receipt_memo({"Memo": "", "Notes": "legacy", "Category": "Dues"}), "legacy")
+        self.assertEqual(er.receipt_memo({"Memo": "new", "Notes": "legacy", "Category": "Dues"}), "new")
+        self.assertEqual(er.receipt_memo({"Memo": "", "Notes": "comment", "Category": "Other"}), "")
 
     def test_gallons_parser_ignores_price_per_gallon(self):
         self.assertEqual(er.find_gallons("UNLEADED 18.2 GAL @ 3.359"), 18.2)
@@ -848,6 +940,10 @@ class WiringTests(unittest.TestCase):
         self.assertIn("show_timesheet_pin_gate(employee", fn["show_employee_receipts"])
         self.assertIn("show_receipts_summary_page()", fn["show_employees_page"])
         self.assertIn("show_receipts_office_gate()", fn["show_receipts_summary_page"])
+        office = fn["show_receipts_summary_office"]
+        self.assertIn("All dates", office)
+        self.assertIn("Show receipts by", office)
+        self.assertIn("query_subtotal_sections", office)
         self.assertNotIn("show_receipts_summary_office", fn["show_employee_receipts"])
         self.assertIn("st.camera_input", fn["show_receipt_entry"])
         self.assertIn("st.file_uploader", fn["show_receipt_entry"])
@@ -855,7 +951,10 @@ class WiringTests(unittest.TestCase):
         self.assertNotIn("Receipt complete", fn["show_receipt_entry"])
         entry = fn["show_receipt_entry"]
         self.assertLess(entry.find("Purpose"), entry.find('"Category"'))
-        self.assertLess(entry.find('"Category"'), entry.find("Notes (optional)"))
+        self.assertLess(entry.find('"Category"'), entry.find("Memo (optional)"))
+        self.assertNotIn("Notes (optional)", entry)
+        self.assertNotIn("Paid on monthly statement account", entry)
+        self.assertIn('st.selectbox(\n        "Vendor"', entry)
 
     def test_bundled_files(self):
         self.assertIn("pytesseract", (ROOT / "requirements.txt").read_text())
