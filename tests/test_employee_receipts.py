@@ -612,9 +612,12 @@ class TotalsAndPeriodTests(unittest.TestCase):
         self.assertIn("By category: BNSF $4.00, Fuel $10.00", text)
         self.assertIn("BNSF / Travel", text)
         self.assertIn("Photo: https://drive.google.com/file/d/X/view", text)
-        self.assertIn("not on Drive (f.jpg)", text)
+        self.assertIn("Photo: No photo", text)
+        self.assertNotIn("not on Drive", text)
         html = er.summary_html(s)
         self.assertIn('href="https://drive.google.com/file/d/X/view"', html)
+        self.assertIn("No photo", html)
+        self.assertNotIn("not on Drive", html)
         self.assertIn("<b>BNSF total</b>", html)
         self.assertEqual(er.summary_subject(s), "CVH employee receipts: Nov 15 – Nov 28, 2026")
 
@@ -1196,6 +1199,23 @@ class ReceiptDeleteTests(unittest.TestCase):
         audit = dict(zip(*book.tabs["Receipts Deleted"][:2]))
         self.assertEqual(audit["Photo Trash"], er.PHOTO_TRASH_SKIPPED)
 
+    def test_no_copy_receipt_delete_skips_trash_without_warning(self):
+        rec = self._rec(link="")
+        rec["Photo File"] = ""
+        rec["Notes"] = "No receipt copy: Lost the paper receipt"
+        book = self._book([rec])
+        result = er.delete_receipt_record(
+            rec, book, "Carl Mulvaney", office=False, when=datetime(2026, 11, 20, 20, 16, tzinfo=PT),
+            trasher=lambda *a, **k: (_ for _ in ()).throw(AssertionError("no photo to trash")),
+        )
+        self.assertEqual(result["photo_trash"], er.PHOTO_TRASH_SKIPPED)
+        self.assertEqual(result["warning"], "")
+        self.assertEqual(len(book.tabs["Receipts"]), 1)
+        audit = dict(zip(*book.tabs["Receipts Deleted"][:2]))
+        self.assertEqual(audit["Photo Trash"], er.PHOTO_TRASH_SKIPPED)
+        self.assertEqual(audit["Photo Link"], "")
+        self.assertEqual(audit["Photo File"], "")
+
     def test_drive_file_id_parses_common_links(self):
         self.assertEqual(er.drive_file_id("https://drive.google.com/file/d/1hbT2sM5o_Vlj8dQpH9aBlU0mwJ3t_eiy/view?usp=drivesdk"), "1hbT2sM5o_Vlj8dQpH9aBlU0mwJ3t_eiy")
         self.assertEqual(er.drive_file_id("https://drive.google.com/open?id=ABCDEFGHIJ"), "ABCDEFGHIJ")
@@ -1238,6 +1258,100 @@ class OfficePinTests(unittest.TestCase):
         self.assertIn("timesheet_pin.employee_allowed(identity) and identity == employee", src)
 
 
+
+class ReceiptNoCopyTests(unittest.TestCase):
+    def test_notes_combine_reason_with_other_comment_and_memo(self):
+        self.assertEqual(
+            er.combine_receipt_notes("Office Supplies", memo="annual", no_copy_reason="Lost"),
+            "No receipt copy: Lost\nannual",
+        )
+        self.assertEqual(
+            er.combine_receipt_notes("Other", other_comment="misc", no_copy_reason="Card statement only"),
+            "No receipt copy: Card statement only\nmisc",
+        )
+        self.assertEqual(er.combine_receipt_notes("Other", other_comment="misc"), "misc")
+        self.assertEqual(er.combine_receipt_notes("Dues", memo="annual"), "annual")
+        self.assertEqual(
+            er.combine_receipt_notes(
+                "Other",
+                other_comment="No receipt copy: Lost\nmisc",
+                no_copy_reason="Lost",
+            ),
+            "No receipt copy: Lost\nmisc",
+        )
+
+    def test_build_record_stores_reason_in_notes_and_leaves_photo_empty(self):
+        rec = er.build_receipt_record(
+            "Carl Mulvaney",
+            {"date": "2026-11-18", "amount": "15.00", "purpose": "parts",
+             "vendor": "Napa", "no_copy_reason": "Lost the paper receipt"},
+            "Office Supplies",
+        )
+        self.assertEqual(rec["Photo Link"], "")
+        self.assertEqual(rec["Photo File"], "")
+        self.assertEqual(rec["Notes"], "No receipt copy: Lost the paper receipt")
+        self.assertEqual(rec["Memo"], "")
+        other = er.build_receipt_record(
+            "Carl Mulvaney",
+            {"date": "2026-11-18", "amount": "15.00", "purpose": "misc",
+             "other_comment": "no invoice", "no_copy_reason": "Card statement only"},
+            "Other",
+            memo="leave this in memo only",
+        )
+        self.assertEqual(other["Notes"], "No receipt copy: Card statement only\nno invoice")
+        self.assertEqual(other["Memo"], "leave this in memo only")
+
+    def test_memo_and_other_comment_ignore_no_copy_prefix(self):
+        self.assertEqual(
+            er.receipt_memo({"Memo": "", "Notes": "No receipt copy: Lost\nannual", "Category": "Dues"}),
+            "annual",
+        )
+        self.assertEqual(
+            er.receipt_memo({"Memo": "new", "Notes": "No receipt copy: Lost", "Category": "Dues"}),
+            "new",
+        )
+        self.assertEqual(er.notes_without_no_copy("No receipt copy: Lost\nmisc"), "misc")
+        self.assertEqual(er.receipt_no_copy_reason({"Notes": "No receipt copy: Lost\nmisc"}), "Lost")
+        self.assertEqual(er.receipt_no_copy_reason({"Notes": "misc"}), "")
+
+    def test_validate_requires_reason_only_when_there_is_no_photo(self):
+        self.assertTrue(er.receipt_requires_no_copy_reason(has_new_photo=False, existing=None))
+        self.assertFalse(er.receipt_requires_no_copy_reason(has_new_photo=True, existing=None))
+        self.assertFalse(er.receipt_requires_no_copy_reason(
+            has_new_photo=False,
+            existing={"Photo Link": "https://drive.google.com/file/d/X/view", "Photo File": "a.jpg"},
+        ))
+        self.assertFalse(er.receipt_requires_no_copy_reason(
+            has_new_photo=False, existing={"Photo Link": "", "Photo File": "c.jpg"},
+        ))
+        self.assertTrue(er.receipt_requires_no_copy_reason(
+            has_new_photo=False, existing={"Photo Link": "", "Photo File": ""},
+        ))
+        self.assertEqual(
+            er.validate_no_copy_reason("", required=True),
+            [er.NO_RECEIPT_COPY_REASON_MISSING],
+        )
+        self.assertEqual(er.validate_no_copy_reason("Lost", required=True), [])
+
+    def test_tables_and_csv_show_no_photo(self):
+        with_link = {
+            "Saved At": "2026-11-16 08:00:00 PST", "Employee": "Carl Mulvaney",
+            "Date": "2026-11-16", "Amount": "10.00", "Vendor": "Shell",
+            "Purpose": "Fuel", "Category": "Fuel", "Subcategory": "Diesel",
+            "Photo Link": "https://drive.google.com/file/d/X/view", "Photo File": "a.jpg",
+        }
+        no_photo = dict(with_link, **{"Photo Link": "", "Photo File": "", "Amount": "8.00"})
+        rows = er.office_table_rows([with_link, no_photo])
+        by_amount = {r["Amount"]: r["Photo"] for r in rows}
+        self.assertEqual(by_amount["$10.00"], "https://drive.google.com/file/d/X/view")
+        self.assertEqual(by_amount["$8.00"], "No photo")
+        self.assertIn("No photo", er.summary_csv([with_link, no_photo]))
+        ifta = dict(with_link, **{"Photo Link": "", "IFTA State": "WA", "IFTA Gallons": "10"})
+        self.assertEqual(er.ifta_table_rows([ifta])[0]["Photo"], "No photo")
+        self.assertEqual(er.receipt_photo_display(with_link), "https://drive.google.com/file/d/X/view")
+        self.assertEqual(er.receipt_photo_display(no_photo), "No photo")
+
+
 class WiringTests(unittest.TestCase):
     SOURCE = (ROOT / "app.py").read_text()
 
@@ -1263,6 +1377,9 @@ class WiringTests(unittest.TestCase):
         self.assertNotIn("Notes (optional)", entry)
         self.assertNotIn("Paid on monthly statement account", entry)
         self.assertIn('st.selectbox(\n        "Vendor"', entry)
+        self.assertIn("RECEIPT_PHOTO_NO_COPY", entry)
+        self.assertIn("RECEIPT_PHOTO_SOURCES_NEW", entry)
+        self.assertIn("Why is there no receipt copy?", entry)
 
     def test_bundled_files(self):
         self.assertIn("pytesseract", (ROOT / "requirements.txt").read_text())

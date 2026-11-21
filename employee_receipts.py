@@ -217,6 +217,16 @@ PHOTO_TRASH_FAILED_NOTE = (
     "The receipt was removed from the list, but the photo could not be moved "
     "to the Google Drive trash. You may need to remove it in Drive."
 )
+RECEIPT_PHOTO_TAKE = "Take a photo"
+RECEIPT_PHOTO_UPLOAD = "Upload a photo or PDF"
+RECEIPT_PHOTO_NO_COPY = "No receipt copy"
+RECEIPT_PHOTO_SOURCES = (RECEIPT_PHOTO_TAKE, RECEIPT_PHOTO_UPLOAD)
+RECEIPT_PHOTO_SOURCES_NEW = RECEIPT_PHOTO_SOURCES + (RECEIPT_PHOTO_NO_COPY,)
+NO_RECEIPT_COPY_PREFIX = "No receipt copy: "
+NO_RECEIPT_COPY_PHOTO_LABEL = "No photo"
+NO_RECEIPT_COPY_REASON_MISSING = (
+    "Enter a note explaining why there is no receipt copy."
+)
 RECEIPT_DELETE_CHANGED_NOTE = (
     "That receipt changed on the Receipts tab, so it was not deleted. Refresh and try again."
 )
@@ -1251,14 +1261,96 @@ def receipt_memo(record):
     """Memo text for the form: the Memo column, or older Notes when Memo is empty.
 
     For an Other receipt, Notes holds the required comment, so it is not used
-    as a fallback for Memo.
+    as a fallback for Memo. A "No receipt copy: ..." line is also omitted so
+    it is not copied into the Memo box.
     """
     memo = _cell(record.get("Memo"))
     if memo:
         return memo
     if receipt_category(record) == CATEGORY_OTHER:
         return ""
-    return _cell(record.get("Notes"))
+    return notes_without_no_copy(record.get("Notes"))
+
+
+def receipt_photo_display(record):
+    """Table and CSV Photo cell: the Drive link, or 'No photo' when there is none."""
+    link = _cell((record or {}).get("Photo Link"))
+    if link.startswith("http"):
+        return link
+    return NO_RECEIPT_COPY_PHOTO_LABEL
+
+
+def receipt_has_stored_photo(record):
+    """True when the row already has a Drive link or a stored photo file name."""
+    rec = record or {}
+    return bool(_cell(rec.get("Photo Link")) or _cell(rec.get("Photo File")))
+
+
+def receipt_has_photo_link(record):
+    return _cell((record or {}).get("Photo Link")).startswith("http")
+
+
+def no_copy_reason_and_rest(notes):
+    """Split Notes into (no-copy reason, remaining comment)."""
+    text = _cell(notes)
+    if not text:
+        return "", ""
+    lines = text.split("\n")
+    first = lines[0].strip()
+    if first.startswith(NO_RECEIPT_COPY_PREFIX):
+        reason = first[len(NO_RECEIPT_COPY_PREFIX):].strip()
+        rest = "\n".join(lines[1:]).strip()
+        return reason, rest
+    return "", text
+
+
+def receipt_no_copy_reason(record):
+    reason, _rest = no_copy_reason_and_rest((record or {}).get("Notes"))
+    return reason
+
+
+def notes_without_no_copy(notes):
+    _reason, rest = no_copy_reason_and_rest(notes)
+    return rest
+
+
+def combine_receipt_notes(category, memo="", other_comment="", no_copy_reason=""):
+    """Build the Notes cell, prefixing a no-copy reason when one is given.
+
+    Other receipts keep the required comment in Notes. Everyone else stores
+    the memo there so older Notes-only readers still see it. A no-copy reason
+    is always the first line: 'No receipt copy: <reason>'.
+    """
+    memo = _cell(memo)
+    other_comment = _cell(other_comment)
+    no_copy_reason = _cell(no_copy_reason)
+    if other_comment or category == CATEGORY_OTHER:
+        body = other_comment
+    else:
+        body = memo
+    existing_reason, rest = no_copy_reason_and_rest(body)
+    if existing_reason and not no_copy_reason:
+        no_copy_reason = existing_reason
+    body = rest if existing_reason else body
+    if not no_copy_reason:
+        return body
+    headed = NO_RECEIPT_COPY_PREFIX + no_copy_reason
+    if not body:
+        return headed
+    return headed + "\n" + body
+
+
+def receipt_requires_no_copy_reason(has_new_photo=False, existing=None):
+    """A reason is required when saving with no new photo and none already stored."""
+    if has_new_photo:
+        return False
+    return not receipt_has_stored_photo(existing)
+
+
+def validate_no_copy_reason(reason, required=False):
+    if required and not _cell(reason):
+        return [NO_RECEIPT_COPY_REASON_MISSING]
+    return []
 
 
 def is_ifta_record(record):
@@ -1371,11 +1463,15 @@ def build_receipt_record(employee, fields, category, subcategory="", subcategory
     subcategory = _cell(subcategory)
     subcategory_detail = _cell(subcategory_detail)
     equipment_purpose = _cell(equipment_purpose)
-    memo = _cell(memo) or _cell(fields.get("memo")) or _cell(fields.get("notes"))
+    memo = _cell(memo) or _cell(fields.get("memo")) or notes_without_no_copy(fields.get("notes"))
     other_comment = _cell(fields.get("other_comment"))
+    no_copy_reason = _cell(fields.get("no_copy_reason"))
     # Other receipts keep the required comment in Notes. Everyone else stores
     # the memo in both Memo and Notes so older Notes-only readers still see it.
-    notes = other_comment if (other_comment or category == CATEGORY_OTHER) else memo
+    # A no-copy reason is prefixed so Patti can see why there is no photo.
+    notes = combine_receipt_notes(
+        category, memo=memo, other_comment=other_comment, no_copy_reason=no_copy_reason,
+    )
     job, expense_type = derived_job_and_expense(category, subcategory, equipment_purpose)
     receipt_date = parse_receipt_date(fields.get("date"))
     vendor = resolve_vendor(fields.get("vendor_choice"), fields.get("vendor_other"))
@@ -2275,7 +2371,6 @@ def office_table_rows(records):
     """Rows for the live office table and CSV: saved date, employee, receipt fields, photo link."""
     rows = []
     for rec in sort_receipts(records):
-        link = _cell(rec.get("Photo Link"))
         saved = _cell(rec.get("Saved At"))
         rows.append({
             "Saved": saved[:10] if saved else "",
@@ -2287,7 +2382,7 @@ def office_table_rows(records):
             "Category": receipt_category(rec),
             "Detail": receipt_detail(rec),
             "Amount": format_money(rec.get("Amount")),
-            "Photo": link if link.startswith("http") else "",
+            "Photo": receipt_photo_display(rec),
         })
     return rows
 
@@ -2402,7 +2497,8 @@ def summary_text(summary):
             if rec.get("Receipt Number"):
                 bits.append("#" + rec["Receipt Number"])
             lines.append("  - " + " | ".join(b for b in bits if b))
-            lines.append("    Photo: " + (rec.get("Photo Link") or "not on Drive (" + (rec.get("Photo File") or "no file") + ")"))
+            link = _cell(rec.get("Photo Link"))
+            lines.append("    Photo: " + (link if link.startswith("http") else NO_RECEIPT_COPY_PHOTO_LABEL))
         lines.append("")
     lines.append("Sent by the CVH Employee Tool.")
     return "\n".join(lines)
@@ -2439,7 +2535,7 @@ def summary_html(summary):
         for rec in person["items"]:
             link = _cell(rec.get("Photo Link"))
             photo = ('<a href="' + escape(link, quote=True) + '">Open photo</a>') if link.startswith("http") else escape(
-                "not on Drive" + (" (" + rec.get("Photo File") + ")" if rec.get("Photo File") else ""))
+                NO_RECEIPT_COPY_PHOTO_LABEL)
             out.append("<tr>" + "".join("<td " + cell + ">" + v + "</td>" for v in (
                 escape(rec.get("Date") or ""), escape(format_money(rec.get("Amount"))), escape(receipt_category(rec)),
                 escape(receipt_detail(rec)),
@@ -2512,7 +2608,6 @@ def ifta_state_rows(records):
 def ifta_table_rows(records):
     rows = []
     for rec in sort_receipts(records):
-        link = _cell(rec.get("Photo Link"))
         rows.append({
             "Receipt date": _cell(rec.get("Date")),
             "Employee": _cell(rec.get("Employee")),
@@ -2522,7 +2617,7 @@ def ifta_table_rows(records):
             "State": ifta_state(rec),
             "Gallons": format_gallons(rec.get("IFTA Gallons")) if parse_gallons(rec.get("IFTA Gallons")) is not None else "",
             "Amount": format_money(rec.get("Amount")),
-            "Photo": link if link.startswith("http") else "",
+            "Photo": receipt_photo_display(rec),
         })
     return rows
 

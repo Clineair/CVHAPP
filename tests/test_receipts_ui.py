@@ -40,6 +40,13 @@ def _select(at, label):
     raise AssertionError("no selectbox " + label + " in " + repr([b.label for b in at.selectbox]))
 
 
+def _radio_with_option(at, option):
+    for box in at.radio:
+        if option in list(box.options or []):
+            return box
+    raise AssertionError("no radio with " + option + " in " + repr([list(b.options or []) for b in at.radio]))
+
+
 class ReceiptsUiTests(unittest.TestCase):
     def tearDown(self):
         for k in ENV:
@@ -208,6 +215,9 @@ class ReceiptsUiTests(unittest.TestCase):
         self.assertFalse(any(s.label == "Statement account" for s in at.selectbox))
         self.assertEqual(sorted(receipts["Employee"].tolist()), ["Carl Mulvaney", "Carl Mulvaney", "Gary Grant"])
         self.assertIn("Earlier meal", list(receipts["Purpose"]))
+        earlier = receipts[receipts["Purpose"] == "Earlier meal"].iloc[0]
+        self.assertEqual(earlier["Photo"], "No photo")
+        self.assertTrue(any(str(v).startswith("https://") for v in receipts["Photo"]))
         emp_totals = [df for df in frames if "Employee" in df.columns and "Receipts" in df.columns][0]
         self.assertEqual(emp_totals["Total"].tolist()[-1], "$43.50")
         self.assertTrue(any(b.label == "Download CSV" for b in at.download_button))
@@ -432,6 +442,128 @@ class ReceiptsUiTests(unittest.TestCase):
         audit = dict(zip(*at.session_state["store"]["Receipts Deleted"][:2]))
         self.assertEqual(audit["Photo Trash"], "Failed")
         os.environ.pop("RECEIPTS_UI_TRASH_FAIL", None)
+
+
+
+    def test_no_receipt_copy_saves_without_photo_and_requires_a_reason(self):
+        at = _run()
+        _button(at, "🧾 Add a receipt").click().run()
+        self.assertTrue(any("photo of the receipt first" in i.value for i in at.info))
+        radio = _radio_with_option(at, "No receipt copy")
+        self.assertEqual(list(radio.options), ["Take a photo", "Upload a photo or PDF", "No receipt copy"])
+        radio.set_value("No receipt copy").run()
+        self.assertFalse(at.exception)
+        self.assertFalse(any("photo of the receipt first" in (i.value or "") for i in at.info))
+        self.assertTrue(any("without a photo" in (c.value or "") for c in at.caption))
+        self.assertTrue(any(t.label == "Amount ($)" for t in at.text_input))
+        self.assertTrue(any(t.label == "Why is there no receipt copy?" for t in at.text_area))
+        [t for t in at.text_input if t.label == "Amount ($)"][0].input("15.00")
+        at.run()
+        [t for t in at.text_input if t.label == "Purpose"][0].input("Parts from the statement")
+        at.run()
+        _select(at, "Vendor").select("Napa").run()
+        _select(at, "Category").select("Office Supplies").run()
+        _button(at, "Save receipt").click().run()
+        self.assertTrue(any("why there is no receipt copy" in e.value for e in at.error))
+        self.assertEqual(at.session_state.get("writes"), [])
+        [t for t in at.text_area if t.label == "Why is there no receipt copy?"][0].input("Lost the paper receipt")
+        at.run()
+        _button(at, "Save receipt").click().run()
+        self.assertFalse(at.exception)
+        rec = dict(zip(*at.session_state["store"]["Receipts"][:2]))
+        self.assertEqual(rec["Employee"], "Carl Mulvaney")
+        self.assertEqual(rec["Amount"], "15.00")
+        self.assertEqual(rec["Vendor"], "Napa")
+        self.assertEqual(rec["Category"], "Office Supplies")
+        self.assertEqual(rec["Photo Link"], "")
+        self.assertEqual(rec["Photo File"], "")
+        self.assertEqual(rec["Notes"], "No receipt copy: Lost the paper receipt")
+        self.assertEqual(at.session_state["uploads"], [])
+        self.assertTrue(any("Saved $15.00" in s.value for s in at.success))
+        frames = [df.value for df in at.dataframe]
+        receipts = [df for df in frames if "Photo" in df.columns and "Date" in df.columns][0]
+        self.assertEqual(list(receipts["Photo"]), ["No photo"])
+
+    def test_no_receipt_copy_other_category_combines_notes(self):
+        at = _run()
+        _button(at, "🧾 Add a receipt").click().run()
+        _radio_with_option(at, "No receipt copy").set_value("No receipt copy").run()
+        [t for t in at.text_input if t.label == "Amount ($)"][0].input("9.50")
+        at.run()
+        [t for t in at.text_input if t.label == "Purpose"][0].input("Misc shop item")
+        at.run()
+        _select(at, "Category").select("Other").run()
+        [t for t in at.text_area if t.label == "Why is there no receipt copy?"][0].input("Card statement only")
+        at.run()
+        [t for t in at.text_area if t.label == "Comment"][0].input("no invoice in the envelope")
+        at.run()
+        _button(at, "Save receipt").click().run()
+        self.assertFalse(at.exception)
+        rec = dict(zip(*at.session_state["store"]["Receipts"][:2]))
+        self.assertEqual(rec["Category"], "Other")
+        self.assertEqual(rec["Photo Link"], "")
+        self.assertEqual(rec["Notes"], "No receipt copy: Card statement only\nno invoice in the envelope")
+
+    def test_edit_can_add_a_photo_to_a_no_copy_receipt(self):
+        at = _run()
+        _button(at, "🧾 Add a receipt").click().run()
+        _radio_with_option(at, "No receipt copy").set_value("No receipt copy").run()
+        [t for t in at.text_input if t.label == "Amount ($)"][0].input("15.00")
+        at.run()
+        [t for t in at.text_input if t.label == "Purpose"][0].input("Parts from the statement")
+        at.run()
+        _select(at, "Vendor").select("Napa").run()
+        _select(at, "Category").select("Office Supplies").run()
+        [t for t in at.text_area if t.label == "Why is there no receipt copy?"][0].input("Lost the paper receipt")
+        at.run()
+        _button(at, "Save receipt").click().run()
+        self.assertFalse(at.exception)
+        _button(at, "Saved receipts").click().run()
+        _button(at, "Open").click().run()
+        self.assertFalse(at.exception)
+        self.assertTrue(any("No photo is stored" in (c.value or "") for c in at.caption))
+        self.assertTrue(any(t.label == "Why is there no receipt copy?" for t in at.text_area))
+        reason = [t for t in at.text_area if t.label == "Why is there no receipt copy?"][0]
+        self.assertEqual(reason.value, "Lost the paper receipt")
+        self.assertTrue(any("Replace photo" in (getattr(b, "label", "") or "") for b in at.radio))
+        at.session_state["give_photo"] = True
+        at.run()
+        _button(at, "Save changes").click().run()
+        self.assertFalse(at.exception)
+        rec = dict(zip(*at.session_state["store"]["Receipts"][:2]))
+        self.assertEqual(rec["Photo Link"], "https://drive.google.com/file/d/FAKE/view")
+        self.assertTrue(rec["Photo File"])
+        self.assertEqual(rec["Notes"], "No receipt copy: Lost the paper receipt")
+        self.assertEqual(len(at.session_state["uploads"]), 1)
+
+    def test_delete_of_no_copy_receipt_skips_photo_trash(self):
+        at = _run()
+        _button(at, "🧾 Add a receipt").click().run()
+        _radio_with_option(at, "No receipt copy").set_value("No receipt copy").run()
+        [t for t in at.text_input if t.label == "Amount ($)"][0].input("15.00")
+        at.run()
+        [t for t in at.text_input if t.label == "Purpose"][0].input("Parts from the statement")
+        at.run()
+        _select(at, "Vendor").select("Napa").run()
+        _select(at, "Category").select("Office Supplies").run()
+        [t for t in at.text_area if t.label == "Why is there no receipt copy?"][0].input("Lost the paper receipt")
+        at.run()
+        _button(at, "Save receipt").click().run()
+        self.assertFalse(at.exception)
+        _button(at, "Saved receipts").click().run()
+        _button(at, "Delete").click().run()
+        self.assertTrue(any("removes the receipt from the list." in (w.value or "") for w in at.warning))
+        self.assertFalse(any("moves the photo" in (w.value or "") for w in at.warning))
+        [c for c in at.checkbox if c.label == "Yes, I want to delete this receipt"][0].check().run()
+        _button(at, "Yes, delete this receipt").click().run()
+        self.assertFalse(at.exception)
+        self.assertTrue(any("Deleted $15.00 receipt for Carl Mulvaney" in s.value for s in at.success))
+        self.assertEqual(at.session_state["trashed"], [])
+        recs = at.session_state["store"]["Receipts"]
+        self.assertEqual(len(recs), 1)  # header only
+        audit = dict(zip(*at.session_state["store"]["Receipts Deleted"][:2]))
+        self.assertEqual(audit["Photo Trash"], "No photo")
+        self.assertEqual(audit["Photo Link"], "")
 
 
 if __name__ == "__main__":
