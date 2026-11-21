@@ -7610,20 +7610,9 @@ def show_receipt_entry(employee, p, secrets, existing=None, editor="", office=Fa
     st.text_input("Receipt or invoice number", key=w + "number")
     st.text_input("Vendor (optional)", key=w + "vendor")
     st.text_input("Purpose", key=w + "purpose", placeholder="What it was for (job, aircraft, truck...)")
-    st.text_area("Notes (optional)", key=w + "notes")
     fields = {k: st.session_state.get(w + k) for k in ("date", "amount", "number", "vendor", "purpose", "notes")}
-    if not editing:
-        if st.button("Receipt complete", key=w + "complete_btn", use_container_width=True, type="primary"):
-            problems = employee_receipts.validate_receipt(fields)
-            st.session_state[w + "complete"] = not problems
-            for problem in problems:
-                st.error(problem)
-        if not st.session_state.get(w + "complete"):
-            return
-    else:
-        st.session_state[w + "complete"] = True
 
-    st.markdown("**3. Category**" if not editing else "**Category**")
+    st.markdown("**Category**")
     category = st.selectbox(
         "Category",
         _receipt_options(employee_receipts.RECEIPT_CATEGORIES, st.session_state.get(w + "category")),
@@ -7716,6 +7705,8 @@ def show_receipt_entry(employee, p, secrets, existing=None, editor="", office=Fa
         index=0,
         key=w + "statement",
     )
+    st.text_area("Notes (optional)", key=w + "notes")
+    fields = {k: st.session_state.get(w + k) for k in ("date", "amount", "number", "vendor", "purpose", "notes")}
 
     save_label = "Save changes" if editing else "Save receipt"
     if st.button(save_label, key=w + "save", use_container_width=True, type="primary"):
