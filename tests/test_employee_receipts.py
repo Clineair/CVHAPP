@@ -111,6 +111,14 @@ class WS:
             self.book.col_counts[self.title] = int(cols)
         self.book.writes.append((self.title, "resize", rows, cols))
 
+    def delete_rows(self, start, end=None):
+        end = start if end is None else end
+        if start < 1:
+            raise APIError(400, "Invalid row")
+        rows = self.book.tabs[self.title]
+        del rows[start - 1:end]
+        self.book.writes.append((self.title, "delete_rows", start, end))
+
 
 class Book:
     def __init__(self, tabs=None, col_counts=None, row_counts=None):
@@ -1061,6 +1069,153 @@ class ReceiptEditTests(unittest.TestCase):
         self.assertEqual(er.validate_receipt_allocation(f, "Equipment", existing=existing), [])
         self.assertIn("Choose at least one piece of equipment.", er.validate_receipt_allocation(f, "Equipment"))
 
+
+class ReceiptDeleteTests(unittest.TestCase):
+    def _book(self, recs, extra_tabs=None):
+        header = list(er.RECEIPTS_COLUMNS)
+        rows = [header] + [[r.get(c, "") for c in header] for r in recs]
+        tabs = {"Sheet1": [["timestamp", "date", "part"]], "Receipts": rows}
+        if extra_tabs:
+            tabs.update(extra_tabs)
+        return Book(tabs)
+
+    def _rec(self, employee="Carl Mulvaney", entry="RC-DEL-1", amount="10.00",
+             vendor="Shell", day="2026-11-16", link="https://drive.google.com/file/d/SEED1/view"):
+        return er.build_receipt_record(
+            employee, {"date": day, "amount": amount, "purpose": "Fuel", "vendor": vendor},
+            "BNSF", subcategory="Vehicle fuel", photo_link=link, photo_file="a.jpg",
+            when=datetime(2026, 11, 16, 8, 0, tzinfo=PT), entry_id=entry,
+        )
+
+    def test_permissions_match_editing(self):
+        rec = self._rec("Gary Grant")
+        self.assertTrue(er.can_delete_receipt(rec, "Gary Grant", office=False))
+        self.assertFalse(er.can_delete_receipt(rec, "Carl Mulvaney", office=False))
+        self.assertTrue(er.can_delete_receipt(rec, "Patti", office=True))
+        self.assertTrue(er.can_delete_receipt(rec, "Ron Cline", office=True))
+        self.assertFalse(er.can_delete_receipt(rec, "Patti", office=False))
+
+    def test_employee_deletes_own_row_trashes_photo_and_writes_audit(self):
+        rec = self._rec()
+        book = self._book([rec, self._rec("Gary Grant", entry="RC-DEL-2", amount="25.50", vendor="NAPA")])
+        trashed = []
+        when = datetime(2026, 11, 20, 20, 10, tzinfo=PT)
+        result = er.delete_receipt_record(
+            rec, book, "Carl Mulvaney", office=False, when=when,
+            trasher=lambda file_id, secrets, session=None: trashed.append(file_id) or True,
+            expected=er.receipt_delete_snapshot(rec),
+        )
+        self.assertEqual(result["status"], "deleted")
+        self.assertEqual(result["photo_trash"], er.PHOTO_TRASH_TRASHED)
+        self.assertEqual(result["warning"], "")
+        self.assertEqual(trashed, ["SEED1"])
+        self.assertEqual(book.created, [er.RECEIPTS_DELETED_SHEET_TITLE])
+        receipts = book.tabs["Receipts"]
+        self.assertEqual(receipts[0], er.RECEIPTS_COLUMNS)
+        self.assertEqual(len(receipts), 2)
+        remaining = dict(zip(receipts[0], receipts[1]))
+        self.assertEqual(remaining["Entry ID"], "RC-DEL-2")
+        self.assertEqual(remaining["Employee"], "Gary Grant")
+        self.assertEqual(book.tabs["Sheet1"], [["timestamp", "date", "part"]])
+        audit = dict(zip(book.tabs["Receipts Deleted"][0], book.tabs["Receipts Deleted"][1]))
+        self.assertEqual(book.tabs["Receipts Deleted"][0], list(er.RECEIPTS_DELETED_COLUMNS))
+        self.assertEqual(audit["Entry ID"], "RC-DEL-1")
+        self.assertEqual(audit["Deleted By"], "Carl Mulvaney")
+        self.assertEqual(audit["Employee"], "Carl Mulvaney")
+        self.assertEqual(audit["Vendor"], "Shell")
+        self.assertEqual(audit["Amount"], "10.00")
+        self.assertEqual(audit["Photo Trash"], er.PHOTO_TRASH_TRASHED)
+        self.assertTrue(audit["Deleted At"].startswith("2026-11-20 20:10:00"))
+
+    def test_employee_cannot_delete_someone_elses_receipt(self):
+        rec = self._rec("Gary Grant", entry="RC-DEL-2")
+        book = self._book([rec])
+        with self.assertRaises(ValueError):
+            er.delete_receipt_record(rec, book, "Carl Mulvaney", office=False, trasher=lambda *a, **k: True)
+        self.assertEqual(len(book.tabs["Receipts"]), 2)
+        self.assertNotIn(er.RECEIPTS_DELETED_SHEET_TITLE, book.tabs)
+
+    def test_office_can_delete_any_employee_receipt(self):
+        rec = self._rec("Gary Grant", entry="RC-DEL-2", amount="25.50", vendor="NAPA")
+        book = self._book([rec])
+        result = er.delete_receipt_record(
+            rec, book, "Ron Cline", office=True, when=datetime(2026, 11, 20, 20, 12, tzinfo=PT),
+            trasher=lambda *a, **k: True,
+        )
+        self.assertEqual(result["status"], "deleted")
+        self.assertEqual(len(book.tabs["Receipts"]), 1)
+        audit = dict(zip(*book.tabs["Receipts Deleted"][:2]))
+        self.assertEqual(audit["Deleted By"], "Ron Cline")
+        self.assertEqual(audit["Employee"], "Gary Grant")
+
+    def test_changed_row_is_not_deleted(self):
+        rec = self._rec(amount="10.00")
+        book = self._book([rec])
+        expected = er.receipt_delete_snapshot(rec)
+        # Simulate someone editing the amount after the user opened the confirm screen.
+        book.tabs["Receipts"][1][er.RECEIPTS_COLUMNS.index("Amount")] = "99.00"
+        with self.assertRaises(RuntimeError) as caught:
+            er.delete_receipt_record(
+                rec, book, "Carl Mulvaney", office=False, expected=expected,
+                trasher=lambda *a, **k: (_ for _ in ()).throw(AssertionError("should not trash")),
+            )
+        self.assertIn("not deleted", str(caught.exception))
+        self.assertEqual(book.tabs["Receipts"][1][er.RECEIPTS_COLUMNS.index("Amount")], "99.00")
+        self.assertNotIn(er.RECEIPTS_DELETED_SHEET_TITLE, book.tabs)
+
+    def test_photo_trash_failure_still_deletes_the_row(self):
+        rec = self._rec()
+        book = self._book([rec])
+
+        def boom(file_id, secrets, session=None):
+            raise ConnectionError("Drive denied trash")
+
+        result = er.delete_receipt_record(
+            rec, book, "Carl Mulvaney", office=False, when=datetime(2026, 11, 20, 20, 15, tzinfo=PT),
+            trasher=boom,
+        )
+        self.assertEqual(result["status"], "deleted")
+        self.assertEqual(result["photo_trash"], er.PHOTO_TRASH_FAILED)
+        self.assertIn("could not be moved to the Google Drive trash", result["warning"])
+        self.assertEqual(len(book.tabs["Receipts"]), 1)
+        audit = dict(zip(*book.tabs["Receipts Deleted"][:2]))
+        self.assertEqual(audit["Photo Trash"], er.PHOTO_TRASH_FAILED)
+        self.assertEqual(audit["Photo Link"], "https://drive.google.com/file/d/SEED1/view")
+
+    def test_missing_photo_skips_trash_without_warning(self):
+        rec = self._rec(link="")
+        rec["Photo File"] = "c.jpg"
+        book = self._book([rec])
+        result = er.delete_receipt_record(
+            rec, book, "Carl Mulvaney", office=False, when=datetime(2026, 11, 20, 20, 16, tzinfo=PT),
+            trasher=lambda *a, **k: (_ for _ in ()).throw(AssertionError("no photo to trash")),
+        )
+        self.assertEqual(result["photo_trash"], er.PHOTO_TRASH_SKIPPED)
+        self.assertEqual(result["warning"], "")
+        self.assertEqual(len(book.tabs["Receipts"]), 1)
+        audit = dict(zip(*book.tabs["Receipts Deleted"][:2]))
+        self.assertEqual(audit["Photo Trash"], er.PHOTO_TRASH_SKIPPED)
+
+    def test_drive_file_id_parses_common_links(self):
+        self.assertEqual(er.drive_file_id("https://drive.google.com/file/d/1hbT2sM5o_Vlj8dQpH9aBlU0mwJ3t_eiy/view?usp=drivesdk"), "1hbT2sM5o_Vlj8dQpH9aBlU0mwJ3t_eiy")
+        self.assertEqual(er.drive_file_id("https://drive.google.com/open?id=ABCDEFGHIJ"), "ABCDEFGHIJ")
+        self.assertEqual(er.drive_file_id("https://example.com/x"), "")
+        self.assertEqual(er.drive_file_id(""), "")
+
+    def test_preview_lists_date_employee_vendor_and_amount(self):
+        rec = self._rec(amount="1000.00", vendor="PUD", day="2026-09-09", employee="Ron Cline")
+        text = er.format_receipt_delete_preview(rec)
+        self.assertIn("Ron Cline", text)
+        self.assertIn("2026-09-09", text)
+        self.assertIn("PUD", text)
+        self.assertIn("$1,000.00", text)
+
+    def test_app_has_confirmation_checkbox_and_button(self):
+        source = (ROOT / "app.py").read_text()
+        self.assertIn('st.checkbox("Yes, I want to delete this receipt"', source)
+        self.assertIn('"Yes, delete this receipt"', source)
+        self.assertIn("show_receipt_delete_confirm", source)
+        self.assertIn("clear_receipts_cache()", source)
 
 
 class OfficePinTests(unittest.TestCase):

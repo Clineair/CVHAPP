@@ -8,8 +8,12 @@ Storage
   (apps_script/receipt_upload), one subfolder per employee, so the original is
   kept for an audit. The sheet row links to that Drive file.
 - One row per receipt in the "Receipts" tab of the CVH FRAT Log spreadsheet.
-  The tab is created on the first save. No other tab is written, and the FRAT
-  log header is never touched.
+  The tab is created on the first save. Existing Receipts headers are never
+  reordered. The FRAT log header is never touched.
+- A deleted receipt's row is removed from Receipts and recorded on a
+  "Receipts Deleted" tab (created on first use). Its Drive photo is moved
+  to trash with the app's service account. If that trash step fails, the
+  row is still removed and a warning is shown.
 
 Mail
 - The summary goes from the company Gmail mailbox (clineair891@gmail.com,
@@ -188,6 +192,35 @@ RECEIPTS_ADDED_COLUMNS = [
 ]
 RECEIPTS_COLUMNS = RECEIPTS_ORIGINAL_COLUMNS + RECEIPTS_ADDED_COLUMNS
 RECEIPTS_PRESERVE_ON_EDIT = ("Saved At", "Entry ID", "Employee")
+RECEIPTS_DELETED_SHEET_TITLE = "Receipts Deleted"
+RECEIPTS_DELETED_COLUMNS = [
+    "Deleted At",
+    "Deleted By",
+    "Entry ID",
+    "Employee",
+    "Date",
+    "Amount",
+    "Vendor",
+    "Purpose",
+    "Category",
+    "Subcategory",
+    "Photo Link",
+    "Photo File",
+    "Photo Trash",
+    "Detail",
+]
+RECEIPT_DELETE_MATCH_FIELDS = ("Entry ID", "Employee", "Date", "Amount", "Vendor")
+PHOTO_TRASH_TRASHED = "Trashed"
+PHOTO_TRASH_FAILED = "Failed"
+PHOTO_TRASH_SKIPPED = "No photo"
+PHOTO_TRASH_FAILED_NOTE = (
+    "The receipt was removed from the list, but the photo could not be moved "
+    "to the Google Drive trash. You may need to remove it in Drive."
+)
+RECEIPT_DELETE_CHANGED_NOTE = (
+    "That receipt changed on the Receipts tab, so it was not deleted. Refresh and try again."
+)
+
 RECEIPTS_MAIL_SHEET_TITLE = "Receipts Mail"
 RECEIPTS_MAIL_COLUMNS = [
     "Timestamp",
@@ -1550,6 +1583,11 @@ def can_edit_receipt(record, user, office=False):
     return _cell(record.get("Employee")) == user
 
 
+def can_delete_receipt(record, user, office=False):
+    """Same permission as editing: own receipts, or any from the office page."""
+    return can_edit_receipt(record, user, office=office)
+
+
 def receipt_picker_label(record, include_employee=False):
     """One-line label for the Saved receipts picker."""
     parts = []
@@ -1586,10 +1624,14 @@ def prepare_receipt_edit(existing, updated, edited_by, when=None):
 
 def find_receipt_row_number(ws, entry_id):
     """1-based sheet row for this Entry ID. Uses the last match if a duplicate is already there."""
+    values = ws.get_all_values()
+    return _receipt_row_number_in_values(values, entry_id)
+
+
+def _receipt_row_number_in_values(values, entry_id):
     entry_id = _cell(entry_id)
     if not entry_id:
         raise ValueError("This receipt has no entry id")
-    values = ws.get_all_values()
     if not values:
         raise RuntimeError("Receipts worksheet has no header")
     header = [_cell(c) for c in values[0]]
@@ -1604,6 +1646,218 @@ def find_receipt_row_number(ws, entry_id):
     if not matches:
         raise RuntimeError("Could not find that receipt on the Receipts tab")
     return matches[-1]
+
+
+def receipt_delete_snapshot(record):
+    """Stable fields used to confirm we are still looking at the same receipt."""
+    record = record or {}
+    return {field: _cell(record.get(field)) for field in RECEIPT_DELETE_MATCH_FIELDS}
+
+
+def receipt_delete_preview(record):
+    """Date, employee, vendor, and amount shown on the delete confirmation screen."""
+    record = record or {}
+    return {
+        "Employee": _cell(record.get("Employee")) or "Unknown",
+        "Date": _cell(record.get("Date")) or "no date",
+        "Vendor": _cell(record.get("Vendor")) or "(no vendor)",
+        "Amount": format_money(record.get("Amount")),
+    }
+
+
+def format_receipt_delete_preview(record):
+    preview = receipt_delete_preview(record)
+    return "  •  ".join((preview["Employee"], preview["Date"], preview["Vendor"], preview["Amount"]))
+
+
+def _same_receipt_delete_field(name, left, right):
+    if name == "Amount":
+        a, b = parse_amount(left), parse_amount(right)
+        if a is not None and b is not None:
+            return a == b
+    if name == "Date":
+        a, b = parse_receipt_date(left), parse_receipt_date(right)
+        if a is not None and b is not None:
+            return a == b
+        return _cell(left) == _cell(right)
+    return _cell(left) == _cell(right)
+
+
+def receipt_matches_delete_snapshot(existing, expected):
+    """True when the live row is still the same receipt the user confirmed."""
+    if not expected:
+        return bool(receipt_entry_id(existing))
+    for field in RECEIPT_DELETE_MATCH_FIELDS:
+        if not _same_receipt_delete_field(field, existing.get(field), expected.get(field)):
+            return False
+    return True
+
+
+def drive_file_id(link):
+    """Drive file id from a Photo Link, or empty when the link is not a Drive file URL."""
+    text = _cell(link)
+    if not text or "drive.google.com" not in text.lower():
+        return ""
+    patterns = (
+        r"/file/d/([A-Za-z0-9_-]{4,})",
+        r"/d/([A-Za-z0-9_-]{4,})",
+        r"[?&]id=([A-Za-z0-9_-]{4,})",
+        r"/open\?id=([A-Za-z0-9_-]{4,})",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, text)
+        if match:
+            return match.group(1)
+    return ""
+
+
+def gcp_service_account_info(secrets):
+    """Service account dict from secrets, or {} if it is missing or a placeholder. Never logs values."""
+    section = _section(secrets, "gcp_service_account")
+    if section is None:
+        return {}
+    try:
+        info = dict(section)
+    except Exception:
+        return {}
+    email = _cell(info.get("client_email"))
+    key = _cell(info.get("private_key"))
+    if not email or not key:
+        return {}
+    if "replace-with" in key.lower() or "replace-with" in email.lower():
+        return {}
+    return info
+
+
+def trash_receipt_photo(file_id, secrets, trasher=None, session=None):
+    """Move one Drive file to trash with the app service account. Never logs secrets."""
+    file_id = _cell(file_id)
+    if not file_id:
+        raise ValueError("No Drive file id")
+    if trasher is not None:
+        return trasher(file_id, secrets, session=session)
+    info = gcp_service_account_info(secrets)
+    if not info:
+        raise RuntimeError("Google Drive service account is not configured")
+    from urllib.parse import quote
+
+    from google.auth.transport.requests import AuthorizedSession
+    from google.oauth2.service_account import Credentials
+
+    creds = Credentials.from_service_account_info(
+        info, scopes=["https://www.googleapis.com/auth/drive"],
+    )
+    client = session or AuthorizedSession(creds)
+    url = "https://www.googleapis.com/drive/v3/files/" + quote(file_id, safe="") + "?supportsAllDrives=true"
+    resp = client.patch(url, json={"trashed": True}, timeout=30)
+    if hasattr(resp, "raise_for_status"):
+        resp.raise_for_status()
+    return True
+
+
+def _record_from_sheet_row(header, row):
+    return {col: (_cell(row[idx]) if idx < len(row) else "") for idx, col in enumerate(header) if col}
+
+
+def build_deleted_audit_record(record, deleted_by, photo_trash, when=None, detail=""):
+    when = _as_pacific(when)
+    record = record or {}
+    return {
+        "Deleted At": format_saved_at(when),
+        "Deleted By": _cell(deleted_by),
+        "Entry ID": receipt_entry_id(record),
+        "Employee": _cell(record.get("Employee")),
+        "Date": _cell(record.get("Date")),
+        "Amount": format_amount(record.get("Amount")) or _cell(record.get("Amount")),
+        "Vendor": _cell(record.get("Vendor")),
+        "Purpose": _cell(record.get("Purpose")),
+        "Category": receipt_category(record),
+        "Subcategory": receipt_subcategory(record),
+        "Photo Link": _cell(record.get("Photo Link")),
+        "Photo File": _cell(record.get("Photo File")),
+        "Photo Trash": _cell(photo_trash),
+        "Detail": _cell(detail),
+    }
+
+
+def save_deleted_audit_record(record, spreadsheet):
+    ws, _created = _ensure_tab(spreadsheet, RECEIPTS_DELETED_SHEET_TITLE, RECEIPTS_DELETED_COLUMNS)
+    header = [_cell(c) for c in ws.row_values(1)]
+    if not header:
+        _ensure_worksheet_width(ws, len(RECEIPTS_DELETED_COLUMNS))
+        ws.append_row(list(RECEIPTS_DELETED_COLUMNS), value_input_option="RAW")
+        header = list(RECEIPTS_DELETED_COLUMNS)
+    values = [str(record.get(c, "")) for c in header]
+    _ensure_worksheet_width(ws, len(values))
+    ws.append_row(values, value_input_option="RAW")
+
+
+def delete_receipt_record(record, spreadsheet, deleted_by, office=False, when=None,
+                          secrets=None, trasher=None, expected=None):
+    """Remove the Receipts row for this Entry ID and move its Drive photo to trash.
+
+    Locates the row by Entry ID and refuses to delete if the live row no longer
+    matches the confirmed receipt. Existing Receipts headers are not changed.
+    A photo-trash failure does not keep the row; a warning is returned instead.
+    """
+    entry_id = receipt_entry_id(record)
+    if not entry_id:
+        raise ValueError("This receipt has no entry id")
+    deleted_by = _cell(deleted_by)
+    if not deleted_by:
+        raise ValueError("A person is required to delete a receipt")
+    if not can_delete_receipt(record, deleted_by, office=office):
+        raise ValueError("You can only delete your own receipts.")
+    ws = _worksheet_or_none(spreadsheet, RECEIPTS_SHEET_TITLE)
+    if ws is None:
+        raise RuntimeError("Receipts worksheet was not found")
+    values = ws.get_all_values()
+    row_number = _receipt_row_number_in_values(values, entry_id)
+    if row_number < 2:
+        raise RuntimeError("Refusing to delete the Receipts header row")
+    header = [_cell(c) for c in values[0]]
+    existing = _record_from_sheet_row(header, values[row_number - 1])
+    if not can_delete_receipt(existing, deleted_by, office=office):
+        raise ValueError("You can only delete your own receipts.")
+    snapshot = expected if expected is not None else receipt_delete_snapshot(record)
+    if not receipt_matches_delete_snapshot(existing, snapshot):
+        raise RuntimeError(RECEIPT_DELETE_CHANGED_NOTE)
+    if not hasattr(ws, "delete_rows"):
+        raise RuntimeError("This spreadsheet cannot delete a Receipts row")
+    ws.delete_rows(row_number)
+
+    file_id = drive_file_id(existing.get("Photo Link"))
+    photo_trash = PHOTO_TRASH_SKIPPED
+    warning = ""
+    detail = ""
+    if file_id:
+        try:
+            trash_receipt_photo(file_id, secrets, trasher=trasher)
+            photo_trash = PHOTO_TRASH_TRASHED
+        except Exception:
+            photo_trash = PHOTO_TRASH_FAILED
+            warning = PHOTO_TRASH_FAILED_NOTE
+            detail = "Photo could not be moved to the Drive trash."
+
+    audit_error = ""
+    try:
+        save_deleted_audit_record(
+            build_deleted_audit_record(
+                existing, deleted_by, photo_trash, when=when, detail=detail,
+            ),
+            spreadsheet,
+        )
+    except Exception:
+        audit_error = "The deletion was not logged on the Receipts Deleted tab."
+        warning = (warning + " " if warning else "") + audit_error
+
+    return {
+        "status": "deleted",
+        "entry_id": entry_id,
+        "photo_trash": photo_trash,
+        "warning": warning,
+        "audit_error": audit_error,
+    }
 
 
 def update_receipt_record(record, spreadsheet, edited_by, office=False, when=None):
