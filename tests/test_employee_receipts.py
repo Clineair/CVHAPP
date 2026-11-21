@@ -53,6 +53,16 @@ class WS:
     def get_all_values(self):
         return [list(r) for r in self.book.tabs[self.title]]
 
+    def update_cell(self, row, col, value):
+        rows = self.book.tabs[self.title]
+        while len(rows) < row:
+            rows.append([])
+        line = rows[row - 1]
+        while len(line) < col:
+            line.append("")
+        line[col - 1] = value
+        self.book.writes.append((self.title, "update_cell", row, col, value))
+
 
 class Book:
     def __init__(self, tabs=None):
@@ -83,6 +93,7 @@ class ParseTests(unittest.TestCase):
         self.assertEqual(f["amount"], "61.12")
         self.assertEqual(f["number"], "004417")
         self.assertEqual(f["vendor"], "SHELL OIL 57442")
+        self.assertEqual(f["gallons"], "18.2")
 
     def test_total_skips_subtotal_tax_and_uses_grand_total(self):
         text = "NAPA AUTO PARTS\nInvoice No: 88-1234\nNov 3, 2026\nSubtotal 1,200.00\nSales Tax 98.40\nTotal 1,298.40\nChange 0.00"
@@ -246,7 +257,8 @@ class SheetTests(unittest.TestCase):
         book = Book({"Sheet1": [list(frat_header)], "Time Sheets": [["Employee"]]})
         when = datetime(2026, 11, 20, 9, 0, tzinfo=PT)
         rec = er.build_receipt_record("Carl Mulvaney", {"date": date(2026, 11, 18), "amount": "61.12", "number": "004417",
-                                                       "purpose": "Fuel", "vendor": "Shell"}, "BNSF", "Fuel",
+                                                       "purpose": "Fuel", "vendor": "Shell"}, "BNSF", subcategory="Vehicle fuel",
+                                      ifta_state="WA", ifta_gallons="18.2",
                                       photo_link="https://drive.google.com/file/d/A/view", photo_file="a.jpg", when=when, entry_id="RC-1")
         er.save_receipt_record(rec, book)
         self.assertEqual(book.created, ["Receipts"])
@@ -257,15 +269,32 @@ class SheetTests(unittest.TestCase):
         self.assertEqual(saved["Saved At"], "2026-11-20 09:00:00 PST")
         self.assertEqual(saved["Date"], "2026-11-18")
         self.assertEqual(saved["Amount"], "61.12")
-        self.assertEqual((saved["Job"], saved["Expense Type"]), ("BNSF", "Fuel"))
+        self.assertEqual((saved["Job"], saved["Expense Type"]), ("BNSF", "Vehicle fuel"))
+        self.assertEqual(saved["Category"], "BNSF")
+        self.assertEqual(saved["Subcategory"], "Vehicle fuel")
+        self.assertEqual(saved["IFTA State"], "WA")
+        self.assertEqual(saved["IFTA Gallons"], "18.2")
         er.save_receipt_record(rec, book)
         self.assertEqual(book.created, ["Receipts"])
         self.assertEqual(len(book.tabs["Receipts"]), 3)
 
     def test_existing_header_order_is_respected(self):
-        book = Book({"Receipts": [["Employee", "Amount", "Job"]]})
-        er.save_receipt_record({"Employee": "A", "Amount": "1.00", "Job": "CVH", "Date": "x"}, book)
-        self.assertEqual(book.tabs["Receipts"][1], ["A", "1.00", "CVH"])
+        original = ["Employee", "Amount", "Job"]
+        book = Book({"Receipts": [list(original)]})
+        er.save_receipt_record({"Employee": "A", "Amount": "1.00", "Job": "CVH", "Date": "x", "Category": "Dues"}, book)
+        header = book.tabs["Receipts"][0]
+        self.assertEqual(header[:3], original)
+        for col in er.RECEIPTS_ADDED_COLUMNS:
+            self.assertIn(col, header)
+        self.assertEqual(book.tabs["Receipts"][1][:3], ["A", "1.00", "CVH"])
+        self.assertEqual(book.tabs["Receipts"][1][header.index("Category")], "Dues")
+
+    def test_original_receipts_headers_are_appended_not_reordered(self):
+        book = Book({"Receipts": [list(er.RECEIPTS_ORIGINAL_COLUMNS)]})
+        er.save_receipt_record({"Employee": "A", "Amount": "1.00", "Category": "Dues"}, book)
+        header = book.tabs["Receipts"][0]
+        self.assertEqual(header[:len(er.RECEIPTS_ORIGINAL_COLUMNS)], list(er.RECEIPTS_ORIGINAL_COLUMNS))
+        self.assertEqual(header[len(er.RECEIPTS_ORIGINAL_COLUMNS):], list(er.RECEIPTS_ADDED_COLUMNS))
 
     def test_read_is_read_only_and_filters_employee(self):
         book = Book()
@@ -278,13 +307,16 @@ class SheetTests(unittest.TestCase):
         self.assertEqual([r["Entry ID"] for r in rows], ["2"])
         self.assertEqual(book.writes, [])
 
-    def test_job_and_expense_type_required_and_from_lists(self):
-        f = {"date": "2026-11-18", "amount": "1", "purpose": "x"}
+    def test_category_required_and_from_list(self):
+        f = {"date": "2026-11-18", "amount": "1", "purpose": "x", "other_comment": "misc"}
         with self.assertRaises(ValueError):
-            er.build_receipt_record("A", f, "Candy", "Fuel")
+            er.build_receipt_record("A", f, "Candy")
         with self.assertRaises(ValueError):
-            er.build_receipt_record("A", f, "CVH", "")
-        self.assertEqual(er.build_receipt_record("A", f, "Other", "Other")["Job"], "Other")
+            er.build_receipt_record("A", f, "")
+        rec = er.build_receipt_record("A", f, "Other")
+        self.assertEqual(rec["Category"], "Other")
+        self.assertEqual(rec["Job"], "CVH")
+        self.assertEqual(rec["Notes"], "misc")
 
     def test_validate(self):
         self.assertEqual(len(er.validate_receipt({})), 3)
@@ -303,15 +335,34 @@ class TotalsAndPeriodTests(unittest.TestCase):
         self.assertEqual(er.expense_type_totals(recs), {"Fuel": 5.5, "Parts": 15.0, "Meals": 1.0})
         self.assertEqual(er.grand_total(recs), 21.5)
         rows = er.totals_rows(recs)
-        self.assertEqual([(r["Job"], r["Expense type"]) for r in rows], [
-            ("CVH", "Fuel"), ("CVH total", ""), ("BNSF", "Fuel"), ("BNSF", "Parts"), ("BNSF", "Meals"),
-            ("BNSF total", ""), ("All jobs", "")])
+        self.assertEqual([(r["Category"], r["Detail"]) for r in rows], [
+            ("BNSF", "Parts"), ("BNSF", "Travel"), ("BNSF", "Fuel"),
+            ("BNSF total", ""), ("Fuel total", ""), ("All categories", "")])
         self.assertEqual(rows[-1]["Total"], 21.5)
 
     def test_menus(self):
+        self.assertEqual(er.RECEIPT_CATEGORIES[0], "Dues")
+        self.assertIn("Licenses & Permits", er.RECEIPT_CATEGORIES)
+        self.assertIn("Equipment", er.RECEIPT_CATEGORIES)
+        self.assertNotIn("Repairs for Equipment", er.RECEIPT_CATEGORIES)
+        self.assertEqual(er.RECEIPT_BUILDINGS, (
+            "Hangar House", "Enstrom Hangar", "TS", "R44 Hangar", "Other",
+        ))
+        self.assertEqual(er.RECEIPT_JOB_SUBCATEGORIES, (
+            "Travel", "Supplies", "Heli fuel", "Vehicle fuel", "Other",
+        ))
+        self.assertEqual(er.RECEIPT_FUEL_TYPES, (
+            "Jet A", "AvGas", "Regular ground (gas)", "Diesel",
+        ))
+        self.assertEqual(er.RECEIPT_EQUIPMENT_PURPOSES, (
+            "Diesel Fuel", "Gas", "JetA", "AvGas", "Parts",
+        ))
+        self.assertEqual(er.RECEIPT_STATEMENT_ACCOUNTS[0], "None")
+        self.assertIn("Les Schwab", er.RECEIPT_STATEMENT_ACCOUNTS)
+        self.assertEqual(er.RECEIPTS_OFFICE_USERS, ("Ron Cline", "Patti"))
+        # Older Job / Expense type lists remain for reading saved receipts.
         self.assertEqual(er.RECEIPT_JOBS, ("CVH", "BNSF", "Forestry", "Other"))
         self.assertEqual(er.RECEIPT_EXPENSE_TYPES, ("Fuel", "Parts", "Meals", "Lodging", "Supplies", "Other"))
-        self.assertEqual(er.RECEIPTS_OFFICE_USERS, ("Ron Cline", "Patti"))
 
     def test_counts_by_day_entered_not_receipt_date(self):
         old_receipt_entered_late = _rec("A", "5", "Fuel", saved="2026-11-29 07:00:00 PST", day="2026-11-10")
@@ -342,13 +393,15 @@ class TotalsAndPeriodTests(unittest.TestCase):
         self.assertEqual([p["employee"] for p in s["employees"]], ["Carl Mulvaney", "Gary Grant"])
         self.assertEqual(s["count"], 3)
         self.assertEqual(s["total"], 21.0)
-        self.assertEqual(s["employees"][0]["jobs"], {"CVH": {"total": 10.0, "types": {"Fuel": 10.0}},
-                                                     "BNSF": {"total": 4.0, "types": {"Meals": 4.0}}})
+        self.assertEqual(s["employees"][0]["categories"], {
+            "Fuel": {"total": 10.0, "details": {}},
+            "BNSF": {"total": 4.0, "details": {"Travel": 4.0}},
+        })
         text = er.summary_text(s)
         self.assertIn("Carl Mulvaney – $14.00", text)
-        self.assertIn("  BNSF: $4.00\n    Meals: $4.00", text)
-        self.assertIn("By expense type (all jobs): Fuel $10.00, Meals $4.00", text)
-        self.assertIn("CVH / Fuel", text)
+        self.assertIn("  BNSF: $4.00\n    Travel: $4.00", text)
+        self.assertIn("By category: BNSF $4.00, Fuel $10.00", text)
+        self.assertIn("BNSF / Travel", text)
         self.assertIn("Photo: https://drive.google.com/file/d/X/view", text)
         self.assertIn("not on Drive (f.jpg)", text)
         html = er.summary_html(s)
@@ -501,6 +554,226 @@ class LiveViewTests(unittest.TestCase):
         self.assertTrue(company_mail.company_mail_ready(graph))
         self.assertFalse(er.mail_ready(graph))
         self.assertFalse(er.mail_ready({"timesheet_company_mail": dict(SECRETS_MAIL["timesheet_company_mail"], enabled=False)}))
+
+
+class CategoryAndIftaTests(unittest.TestCase):
+    def test_legacy_rows_map_to_new_categories(self):
+        self.assertEqual(er.map_legacy_category("BNSF", "Fuel"), "BNSF")
+        self.assertEqual(er.map_legacy_subcategory("BNSF", "Fuel"), "Fuel")
+        self.assertEqual(er.map_legacy_category("Forestry", "Supplies"), "Forestry")
+        self.assertEqual(er.map_legacy_subcategory("Forestry", "Supplies"), "Supplies")
+        self.assertEqual(er.map_legacy_category("CVH", "Fuel"), "Fuel")
+        self.assertEqual(er.map_legacy_category("CVH", "Parts"), "Equipment")
+        self.assertEqual(er.map_legacy_category("Other", "Meals"), "Travel")
+        self.assertEqual(er.map_legacy_category("CVH", "Lodging"), "Travel")
+        self.assertEqual(er.map_legacy_category("CVH", "Supplies"), "Shop Supplies")
+        rec = _rec("A", "10", "Parts", job="CVH")
+        self.assertEqual(er.receipt_category(rec), "Equipment")
+        self.assertEqual(er.receipt_category({"Category": "Dues", "Job": "CVH", "Expense Type": "Other"}), "Dues")
+
+    def test_category_totals_include_mapped_legacy_rows(self):
+        recs = [_rec("A", "10", "Parts", job="BNSF"), _rec("A", "2.50", "Fuel", job="CVH"),
+                _rec("A", "5", "Parts", job="BNSF"), _rec("A", "1", "Meals", job="BNSF"), _rec("A", "3", "Fuel", job="BNSF")]
+        totals = er.category_totals(recs)
+        self.assertEqual(totals["Fuel"]["total"], 2.5)
+        self.assertEqual(totals["BNSF"]["total"], 19.0)
+        self.assertEqual(totals["BNSF"]["details"], {"Parts": 15.0, "Travel": 1.0, "Fuel": 3.0})
+        rows = er.totals_rows(recs)
+        self.assertEqual(rows[-1], {"Category": "All categories", "Detail": "", "Total": 21.5})
+        self.assertIn({"Category": "Fuel total", "Detail": "", "Total": 2.5}, rows)
+
+    def test_equipment_shares_remaining_and_warning(self):
+        shares = [("Ram", "20.00"), ("PW", "10.00")]
+        self.assertEqual(er.format_equipment_shares(shares), "Ram=20.00; PW=10.00")
+        self.assertEqual(er.parse_equipment_shares("Ram=20.00; PW=10.00"), [("Ram", 20.0), ("PW", 10.0)])
+        self.assertEqual(er.equipment_share_remaining("61.12", shares), 31.12)
+        self.assertIn("still left", er.equipment_share_warning("61.12", shares))
+        self.assertEqual(er.equipment_share_warning("30.00", shares), "")
+        self.assertIn("over the receipt total", er.equipment_share_warning("20.00", shares))
+        self.assertEqual(
+            er.equipment_names_from_records(
+                [{"Unit ID": "Ram", "Name": "Ram", "Active": "Yes"}, {"Unit ID": "Old", "Name": "Old", "Active": "No"}],
+                is_active=lambda r: r.get("Active") == "Yes",
+                fallback=["Heli1"],
+            ),
+            ["Ram"],
+        )
+        self.assertEqual(er.equipment_names_from_records([], fallback=["Heli1", "Ram"]), ["Heli1", "Ram"])
+
+    def test_equipment_allocation_requires_unit_and_purpose_but_not_a_zero_remainder(self):
+        f = {"date": "2026-11-18", "amount": "30.00", "purpose": "parts"}
+        self.assertIn("Choose at least one piece of equipment.", er.validate_receipt_allocation(f, "Equipment"))
+        self.assertIn(
+            "Choose a purpose for this equipment receipt.",
+            er.validate_receipt_allocation(f, "Equipment", equipment_shares=[("Ram", 20)]),
+        )
+        self.assertEqual(
+            er.validate_receipt_allocation(
+                f, "Equipment", equipment_shares=[("Ram", 20)], equipment_purpose="Parts",
+            ),
+            [],
+        )
+        rec = er.build_receipt_record(
+            "A", f, "Equipment", equipment_shares=[("Ram", 20), ("PW", 10)], equipment_purpose="Parts", memo="filter",
+        )
+        self.assertEqual(rec["Equipment Shares"], "Ram=20.00; PW=10.00")
+        self.assertEqual(rec["Equipment Purpose"], "Parts")
+        self.assertEqual(rec["Memo"], "filter")
+        self.assertEqual((rec["Job"], rec["Expense Type"]), ("CVH", "Parts"))
+
+    def test_other_and_building_other_need_a_comment(self):
+        f = {"date": "2026-11-18", "amount": "5", "purpose": ""}
+        self.assertIn("Enter a comment for this Other receipt.", er.validate_receipt_allocation(f, "Other"))
+        self.assertEqual(er.validate_receipt_allocation(dict(f, purpose="misc"), "Other", other_comment=""), [])
+        self.assertIn("Enter the building name.", er.validate_receipt_allocation(f, "Buildings", subcategory="Other"))
+        self.assertEqual(
+            er.validate_receipt_allocation(f, "Buildings", subcategory="Other", subcategory_detail="shed"),
+            [],
+        )
+
+    def test_ifta_detection_and_quarter_report(self):
+        self.assertTrue(er.is_ifta_fuel("Fuel", "Diesel"))
+        self.assertTrue(er.is_ifta_fuel("Fuel", "Regular ground (gas)"))
+        self.assertFalse(er.is_ifta_fuel("Fuel", "Jet A"))
+        self.assertTrue(er.is_ifta_fuel("Equipment", "", "Diesel Fuel"))
+        self.assertTrue(er.is_ifta_fuel("Equipment", "", "Gas"))
+        self.assertFalse(er.is_ifta_fuel("Equipment", "", "JetA"))
+        self.assertTrue(er.is_ifta_fuel("BNSF", "Vehicle fuel"))
+        self.assertFalse(er.is_ifta_fuel("BNSF", "Heli fuel"))
+        self.assertTrue(er.is_ifta_fuel("Forestry", "Vehicle fuel"))
+        self.assertIn("gallons purchased", er.ifta_warning("Fuel", "Diesel", state="WA", gallons=""))
+        self.assertEqual(er.ifta_warning("Fuel", "Diesel", state="WA", gallons="18.2"), "")
+        recs = [
+            dict(_rec("Carl Mulvaney", "61.12", "Fuel", job="CVH", saved="2026-11-18 10:00:00 PST", day="2026-11-18"),
+                 **{"Category": "Fuel", "Subcategory": "Diesel", "IFTA State": "WA", "IFTA Gallons": "18.2"}),
+            dict(_rec("Gary Grant", "40.00", "Fuel", job="BNSF", saved="2026-11-19 10:00:00 PST", day="2026-11-19"),
+                 **{"Category": "BNSF", "Subcategory": "Vehicle fuel", "IFTA State": "OR", "IFTA Gallons": "10"}),
+            dict(_rec("Carl Mulvaney", "9.00", "Fuel", job="CVH", saved="2026-08-01 10:00:00 PST", day="2026-08-01"),
+                 **{"Category": "Fuel", "Subcategory": "Diesel", "IFTA State": "WA", "IFTA Gallons": "4"}),
+            _rec("Carl Mulvaney", "20.00", "Parts", job="CVH", saved="2026-11-18 11:00:00 PST"),
+        ]
+        year, quarter, start, end = er.ifta_quarter(date(2026, 11, 20))
+        self.assertEqual((year, quarter, start, end), (2026, 4, date(2026, 10, 1), date(2026, 12, 31)))
+        chosen = er.ifta_receipts_in_quarter(recs, 2026, 4)
+        self.assertEqual(len(chosen), 2)
+        self.assertEqual(er.ifta_gallons_by_state(chosen), {"OR": 10.0, "WA": 18.2})
+        csv_text = er.ifta_csv(chosen, 2026, 4)
+        self.assertIn("IFTA gallons Q4 2026", csv_text)
+        self.assertIn("WA — Washington,18.2", csv_text)
+        self.assertIn("All states,28.2", csv_text)
+
+    def test_statement_account_totals_and_filter(self):
+        recs = [
+            dict(_rec("A", "10", "Fuel", saved="2026-11-16 08:00:00 PST"), **{"Statement Account": "Napa", "Category": "Shop Supplies"}),
+            dict(_rec("A", "5", "Parts", saved="2026-11-18 08:00:00 PST"), **{"Statement Account": "Napa", "Category": "Equipment"}),
+            dict(_rec("B", "7", "Fuel", saved="2026-11-16 09:00:00 PST"), **{"Statement Account": "Bruckners", "Category": "Fuel"}),
+            _rec("B", "3", "Meals", saved="2026-11-18 09:00:00 PST"),
+        ]
+        rows = er.statement_totals_rows(er.filter_receipts(recs, date(2026, 11, 15), date(2026, 11, 20)))
+        accounts = [r["Statement account"] for r in rows]
+        self.assertIn("Napa total", accounts)
+        self.assertIn("None total", accounts)
+        napa = [r for r in rows if r["Statement account"] == "Napa total"][0]
+        self.assertEqual(napa["Total"], 15.0)
+        shown = er.filter_receipts(
+            recs, date(2026, 11, 15), date(2026, 11, 20), statement_account="Napa",
+        )
+        self.assertEqual(er.grand_total(shown), 15.0)
+        none = er.filter_receipts(
+            recs, date(2026, 11, 15), date(2026, 11, 20), statement_account="None",
+        )
+        self.assertEqual(er.grand_total(none), 3.0)
+
+    def test_gallons_parser_ignores_price_per_gallon(self):
+        self.assertEqual(er.find_gallons("UNLEADED 18.2 GAL @ 3.359"), 18.2)
+        self.assertEqual(er.find_gallons("Gallons purchased: 12.5"), 12.5)
+        self.assertIsNone(er.find_gallons("TOTAL $61.12"))
+
+
+
+class ReceiptEditTests(unittest.TestCase):
+    def _book(self, recs):
+        header = list(er.RECEIPTS_COLUMNS)
+        rows = [header] + [[r.get(c, "") for c in header] for r in recs]
+        return Book({"Receipts": rows})
+
+    def test_update_rewrites_the_same_row_and_keeps_the_photo(self):
+        when = datetime(2026, 11, 20, 9, 0, tzinfo=PT)
+        existing = er.build_receipt_record(
+            "Carl Mulvaney", {"date": date(2026, 11, 18), "amount": "61.12", "purpose": "Fuel"},
+            "BNSF", subcategory="Vehicle fuel", ifta_state="WA", ifta_gallons="18.2",
+            photo_link="https://drive.google.com/file/d/A/view", photo_file="a.jpg",
+            when=when, entry_id="RC-1",
+        )
+        book = self._book([existing])
+        updated = er.build_receipt_record(
+            "Carl Mulvaney", {"date": date(2026, 11, 18), "amount": "70.00", "purpose": "Fuel"},
+            "BNSF", subcategory="Vehicle fuel", ifta_state="WA", ifta_gallons="20",
+            photo_link="", photo_file="", when=datetime(2026, 11, 20, 16, 0, tzinfo=PT), entry_id="RC-1",
+        )
+        merged = er.prepare_receipt_edit(existing, updated, "Carl Mulvaney", when=datetime(2026, 11, 20, 16, 0, tzinfo=PT))
+        self.assertEqual(merged["Saved At"], existing["Saved At"])
+        self.assertEqual(merged["Entry ID"], "RC-1")
+        self.assertEqual(merged["Photo Link"], "https://drive.google.com/file/d/A/view")
+        self.assertEqual(merged["Edited By"], "Carl Mulvaney")
+        er.update_receipt_record(merged, book, "Carl Mulvaney", office=False, when=datetime(2026, 11, 20, 16, 0, tzinfo=PT))
+        self.assertEqual(book.created, [])
+        self.assertEqual(len(book.tabs["Receipts"]), 2)
+        saved = dict(zip(book.tabs["Receipts"][0], book.tabs["Receipts"][1]))
+        self.assertEqual(saved["Amount"], "70.00")
+        self.assertEqual(saved["Saved At"], "2026-11-20 09:00:00 PST")
+        self.assertEqual(saved["Entry ID"], "RC-1")
+        self.assertEqual(saved["Photo Link"], "https://drive.google.com/file/d/A/view")
+        self.assertEqual(saved["Edited By"], "Carl Mulvaney")
+        self.assertTrue(saved["Edited At"].startswith("2026-11-20 16:00:00"))
+        self.assertEqual(saved["IFTA Gallons"], "20")
+
+    def test_employee_cannot_edit_someone_elses_receipt(self):
+        rec = er.build_receipt_record(
+            "Gary Grant", {"date": date(2026, 11, 18), "amount": "1", "purpose": "x"},
+            "Dues", photo_link="https://drive.google.com/file/d/A/view", when=datetime(2026, 11, 20, 9, 0, tzinfo=PT),
+            entry_id="RC-2",
+        )
+        book = self._book([rec])
+        self.assertFalse(er.can_edit_receipt(rec, "Carl Mulvaney", office=False))
+        self.assertTrue(er.can_edit_receipt(rec, "Patti", office=True))
+        with self.assertRaises(ValueError):
+            er.update_receipt_record(rec, book, "Carl Mulvaney", office=False)
+
+    def test_office_edit_appends_edited_columns_to_an_old_header(self):
+        header = list(er.RECEIPTS_ORIGINAL_COLUMNS)
+        row = [""] * len(header)
+        row[header.index("Saved At")] = "2026-11-18 10:00:00 PST"
+        row[header.index("Entry ID")] = "RC-3"
+        row[header.index("Employee")] = "Gary Grant"
+        row[header.index("Date")] = "2026-11-18"
+        row[header.index("Amount")] = "25.50"
+        row[header.index("Purpose")] = "Filter"
+        row[header.index("Job")] = "CVH"
+        row[header.index("Expense Type")] = "Parts"
+        row[header.index("Photo Link")] = "https://drive.google.com/file/d/SEED2/view"
+        book = Book({"Receipts": [header, row]})
+        updated = dict(zip(header, row), Amount="30.00", Category="Equipment", Purpose="Filter")
+        updated = er.prepare_receipt_edit(dict(zip(header, row)), updated, "Ron Cline", when=datetime(2026, 11, 20, 17, 0, tzinfo=PT))
+        er.update_receipt_record(updated, book, "Ron Cline", office=True, when=datetime(2026, 11, 20, 17, 0, tzinfo=PT))
+        new_header = book.tabs["Receipts"][0]
+        self.assertEqual(new_header[:len(er.RECEIPTS_ORIGINAL_COLUMNS)], list(er.RECEIPTS_ORIGINAL_COLUMNS))
+        self.assertIn("Edited At", new_header)
+        self.assertIn("Edited By", new_header)
+        self.assertEqual(len(book.tabs["Receipts"]), 2)
+        saved = dict(zip(new_header, book.tabs["Receipts"][1]))
+        self.assertEqual(saved["Amount"], "30.00")
+        self.assertEqual(saved["Edited By"], "Ron Cline")
+        self.assertEqual(saved["Employee"], "Gary Grant")
+        self.assertEqual(saved["Photo Link"], "https://drive.google.com/file/d/SEED2/view")
+
+    def test_legacy_equipment_edit_does_not_require_shares(self):
+        existing = _rec("A", "25.50", "Parts", job="CVH")
+        existing["Entry ID"] = "RC-4"
+        f = {"date": "2026-11-18", "amount": "30.00", "purpose": "Filter"}
+        self.assertEqual(er.validate_receipt_allocation(f, "Equipment", existing=existing), [])
+        self.assertIn("Choose at least one piece of equipment.", er.validate_receipt_allocation(f, "Equipment"))
+
 
 
 class OfficePinTests(unittest.TestCase):

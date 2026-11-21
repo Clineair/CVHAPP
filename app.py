@@ -2009,6 +2009,25 @@ def load_equipment_records(spreadsheet=None):
     return records_from_worksheet(ws, EQUIPMENT_COLUMNS)
 
 
+def load_equipment_records_readonly(spreadsheet=None):
+    """Read the Equipment tab without creating it or adding columns."""
+    ws = _worksheet_or_none(spreadsheet or _gsheets_spreadsheet(), EQUIPMENT_SHEET_TITLE)
+    if ws is None:
+        return []
+    return records_from_worksheet(ws, EQUIPMENT_COLUMNS)
+
+
+def receipts_equipment_choices():
+    """Active equipment names in Equipment-page order, for the receipts Equipment list."""
+    try:
+        records = load_equipment_records_readonly()
+    except Exception:
+        records = []
+    return employee_receipts.equipment_names_from_records(
+        records, is_active=is_active_equipment, fallback=list(OFFICIAL_EQUIPMENT_NAMES),
+    )
+
+
 def load_squawk_records(spreadsheet=None):
     ws, _created = ensure_squawks_worksheet(spreadsheet or _gsheets_spreadsheet())
     return records_from_worksheet(ws, SQUAWK_COLUMNS)
@@ -7374,6 +7393,7 @@ def show_timesheet_email_section(employee, preview, saved=None, form_ok=False, p
 # ────────────────────────────────────────────────
 # Employee receipts (photo kept on Drive, one row per receipt in the Receipts tab)
 # Logic lives in employee_receipts.py. Categories: employee_receipts.RECEIPT_CATEGORIES.
+# The Equipment list on a receipt reuses receipts_equipment_choices(), the live Equipment page list.
 # ────────────────────────────────────────────────
 RECEIPTS_CACHE_TTL_SECONDS = 60
 RECEIPT_VIEWS = ("This period", "Last period", "All")
@@ -7412,9 +7432,14 @@ def receipt_records_for_view(records, view, today=None):
 
 
 def receipt_totals_rows(records):
-    """Job / Expense type / Total rows: each job's expense types, the job subtotal, then all jobs."""
+    """Category / Detail / Total rows: each category's sub-items, the category subtotal, then all categories."""
     return [dict(row, Total=employee_receipts.format_money(row["Total"]))
             for row in employee_receipts.totals_rows(records)]
+
+
+def receipt_statement_totals_rows(records):
+    return [dict(row, Total=employee_receipts.format_money(row["Total"]))
+            for row in employee_receipts.statement_totals_rows(records)]
 
 
 def receipt_table_rows(records):
@@ -7424,8 +7449,8 @@ def receipt_table_rows(records):
         rows.append({
             "Date": rec.get("Date", ""),
             "Amount": employee_receipts.format_money(rec.get("Amount")),
-            "Job": rec.get("Job", ""),
-            "Expense type": rec.get("Expense Type", ""),
+            "Category": employee_receipts.receipt_category(rec),
+            "Detail": employee_receipts.receipt_detail(rec),
             "Purpose": rec.get("Purpose", ""),
             "Vendor": rec.get("Vendor", ""),
             "Receipt #": rec.get("Receipt Number", ""),
@@ -7446,22 +7471,100 @@ def apply_receipt_fields_to_session(session, w, fields):
     for name in ("amount", "number", "vendor"):
         if fields.get(name):
             session[w + name] = fields[name]
+    if fields.get("gallons") and not session.get(w + "ifta_gallons"):
+        session[w + "ifta_gallons"] = fields["gallons"]
 
 
-def show_receipt_entry(employee, p, secrets):
-    """Photo, then the pre-filled form, then the category menu, then Save."""
-    gen = int(st.session_state.get(p + "gen") or 0)
-    w = p + str(gen) + "_"
+def _receipt_options(options, current=""):
+    """Keep a saved value in a dropdown even if it is not on the current list."""
+    out = list(options)
+    current = _cell(current)
+    if current and current not in out:
+        out.append(current)
+    return out
+
+
+def apply_existing_receipt_to_session(session, w, record):
+    """Prefill the edit form from a saved receipt. Call once before the widgets are drawn."""
+    record = record or {}
+    day = employee_receipts.parse_receipt_date(record.get("Date"))
+    if day:
+        session[w + "date"] = day
+    session[w + "amount"] = employee_receipts.format_amount(record.get("Amount")) or _cell(record.get("Amount"))
+    session[w + "number"] = _cell(record.get("Receipt Number"))
+    session[w + "vendor"] = _cell(record.get("Vendor"))
+    session[w + "purpose"] = _cell(record.get("Purpose"))
+    session[w + "notes"] = _cell(record.get("Notes"))
+    category = employee_receipts.receipt_category(record)
+    if category:
+        session[w + "category"] = category
+    sub = employee_receipts.receipt_subcategory(record)
+    if category == employee_receipts.CATEGORY_BUILDINGS and sub:
+        session[w + "building"] = sub
+        session[w + "building_other"] = _cell(record.get("Subcategory Detail"))
+    elif category in (employee_receipts.CATEGORY_BNSF, employee_receipts.CATEGORY_FORESTRY) and sub:
+        session[w + "job_sub"] = sub
+    elif category == employee_receipts.CATEGORY_FUEL and sub:
+        session[w + "fuel_type"] = sub
+    elif category == employee_receipts.CATEGORY_OTHER:
+        session[w + "other_comment"] = _cell(record.get("Notes")) or _cell(record.get("Purpose"))
+    for name, amount in employee_receipts.parse_equipment_shares(record.get("Equipment Shares")):
+        session[w + "eq_" + name] = True
+        session[w + "eqshare_" + name] = employee_receipts.format_amount(amount)
+    if _cell(record.get("Equipment Purpose")):
+        session[w + "eq_purpose"] = _cell(record.get("Equipment Purpose"))
+    session[w + "memo"] = _cell(record.get("Memo"))
+    state = employee_receipts.ifta_state(record)
+    if state:
+        session[w + "ifta_state"] = employee_receipts.ifta_jurisdiction_label(state)
+    gallons = employee_receipts.format_gallons(record.get("IFTA Gallons"))
+    if gallons:
+        session[w + "ifta_gallons"] = gallons
+    account = employee_receipts.receipt_statement_account(record) or employee_receipts.RECEIPT_STATEMENT_NONE
+    session[w + "statement"] = account
+    session[w + "complete"] = True
+
+
+def show_receipt_entry(employee, p, secrets, existing=None, editor="", office=False):
+    """Photo, then the pre-filled form, then the category menu, then Save.
+
+    Pass existing to edit a saved receipt in place. A new photo is optional;
+    the Drive photo already on the row is kept unless a new one is stored.
+    """
+    existing = existing or None
+    editing = bool(existing)
+    editor = _cell(editor) or _cell(employee)
+    if editing:
+        w = p + "edit_" + employee_receipts.receipt_entry_id(existing) + "_"
+        if not st.session_state.get(w + "prefilled"):
+            apply_existing_receipt_to_session(st.session_state, w, existing)
+            st.session_state[w + "prefilled"] = True
+        st.markdown("**Edit receipt**")
+        if office or _cell(existing.get("Employee")) != _cell(employee):
+            st.caption("Employee: " + (_cell(existing.get("Employee")) or "Unknown"))
+    else:
+        gen = int(st.session_state.get(p + "gen") or 0)
+        w = p + str(gen) + "_"
+        st.markdown("**1. Photo of the receipt**")
     today = datetime.now(ZoneInfo("America/Los_Angeles")).date()
-    st.markdown("**1. Photo of the receipt**")
     url, token = employee_receipts.upload_config(secrets)
     if url and token:
         st.caption("The photo is kept on Google Drive in case of an audit.")
     else:
         st.warning("Receipt photo storage is not set up yet. The receipt will save, but keep the paper copy.")
+    if editing:
+        link = _cell(existing.get("Photo Link"))
+        if link.startswith("http"):
+            st.markdown("Current photo: [Open](" + link + ")")
+        elif _cell(existing.get("Photo File")):
+            st.caption("Current photo file: " + _cell(existing.get("Photo File")) + " (not on Drive).")
+        else:
+            st.caption("No photo is stored for this receipt.")
+        st.caption("A new photo is optional. Leave this blank to keep the photo already on file.")
     source = st.radio(
-        "Photo", ["Take a photo", "Upload a photo or PDF"], horizontal=True, key=w + "source",
-        label_visibility="collapsed",
+        "Photo" if not editing else "Replace photo (optional)",
+        ["Take a photo", "Upload a photo or PDF"], horizontal=True, key=w + "source",
+        label_visibility="collapsed" if not editing else "visible",
     )
     if source == "Take a photo":
         shot = st.camera_input("Take a photo of the receipt", key=w + "camera")
@@ -7471,21 +7574,26 @@ def show_receipt_entry(employee, p, secrets):
         )
         st.caption("On a phone this also offers Take Photo with the full camera, which reads small print better.")
     if st.button("Cancel", key=w + "cancel", use_container_width=True):
-        _reset_receipt_entry(p)
+        if editing:
+            st.session_state.pop(p + "edit_id", None)
+        else:
+            _reset_receipt_entry(p)
         st.rerun()
-    if shot is None:
+    if shot is None and not editing:
         st.info("Take or choose a photo of the receipt first.")
         return
-    data = shot.getvalue() if hasattr(shot, "getvalue") else b""
-    name = _cell(getattr(shot, "name", "")) or "receipt.jpg"
-    fp = employee_receipts.fingerprint(data)
-    if fp and st.session_state.get(w + "fp") != fp:
-        fields, note = employee_receipts.read_receipt(data, name)
-        apply_receipt_fields_to_session(st.session_state, w, fields)
+    data = shot.getvalue() if (shot is not None and hasattr(shot, "getvalue")) else b""
+    name = _cell(getattr(shot, "name", "")) or "receipt.jpg" if shot is not None else ""
+    fp = employee_receipts.fingerprint(data) if data else ""
+    if data and fp and st.session_state.get(w + "fp") != fp:
+        # On edit, a new photo is only a replacement file. Do not overwrite the saved fields.
+        if not editing:
+            fields, note = employee_receipts.read_receipt(data, name)
+            apply_receipt_fields_to_session(st.session_state, w, fields)
+            st.session_state[w + "note"] = note
+            st.session_state[w + "complete"] = False
         st.session_state[w + "fp"] = fp
-        st.session_state[w + "note"] = note
-        st.session_state[w + "complete"] = False
-    if employee_receipts.upload_extension(name, data) not in ("pdf", "heic", "heif"):
+    if data and employee_receipts.upload_extension(name, data) not in ("pdf", "heic", "heif"):
         try:
             st.image(data, width=260)
         except Exception:
@@ -7504,56 +7612,208 @@ def show_receipt_entry(employee, p, secrets):
     st.text_input("Purpose", key=w + "purpose", placeholder="What it was for (job, aircraft, truck...)")
     st.text_area("Notes (optional)", key=w + "notes")
     fields = {k: st.session_state.get(w + k) for k in ("date", "amount", "number", "vendor", "purpose", "notes")}
-    if st.button("Receipt complete", key=w + "complete_btn", use_container_width=True, type="primary"):
-        problems = employee_receipts.validate_receipt(fields)
-        st.session_state[w + "complete"] = not problems
-        for problem in problems:
-            st.error(problem)
-    if not st.session_state.get(w + "complete"):
-        return
+    if not editing:
+        if st.button("Receipt complete", key=w + "complete_btn", use_container_width=True, type="primary"):
+            problems = employee_receipts.validate_receipt(fields)
+            st.session_state[w + "complete"] = not problems
+            for problem in problems:
+                st.error(problem)
+        if not st.session_state.get(w + "complete"):
+            return
+    else:
+        st.session_state[w + "complete"] = True
 
-    st.markdown("**3. Allocate**")
-    job = st.selectbox(
-        "Job", list(employee_receipts.RECEIPT_JOBS), index=None,
-        placeholder="Choose a job", key=w + "job",
+    st.markdown("**3. Category**" if not editing else "**Category**")
+    category = st.selectbox(
+        "Category",
+        _receipt_options(employee_receipts.RECEIPT_CATEGORIES, st.session_state.get(w + "category")),
+        index=None,
+        placeholder="Choose a category", key=w + "category",
     )
-    expense_type = st.selectbox(
-        "Expense type", list(employee_receipts.RECEIPT_EXPENSE_TYPES), index=None,
-        placeholder="Choose an expense type", key=w + "expense_type",
+    subcategory = ""
+    subcategory_detail = ""
+    equipment_shares = []
+    equipment_purpose = ""
+    memo = ""
+    other_comment = ""
+    share_warning = ""
+    if category == employee_receipts.CATEGORY_EQUIPMENT:
+        names = receipts_equipment_choices()
+        if existing:
+            for eq_name, _amount in employee_receipts.parse_equipment_shares(existing.get("Equipment Shares")):
+                if eq_name and eq_name not in names:
+                    names.append(eq_name)
+        if not names:
+            st.warning("The equipment list could not be loaded. Tell the office.")
+        for eq_name in names:
+            checked = st.checkbox(eq_name, key=w + "eq_" + eq_name)
+            if checked:
+                st.text_input("Share for " + eq_name + " ($)", key=w + "eqshare_" + eq_name, placeholder="0.00")
+                equipment_shares.append((eq_name, st.session_state.get(w + "eqshare_" + eq_name)))
+        leftover = employee_receipts.equipment_share_remaining(fields.get("amount"), equipment_shares)
+        if leftover == 0 and equipment_shares:
+            st.caption("Remaining amount: $0.00")
+        elif leftover > 0:
+            st.caption("Remaining amount: " + employee_receipts.format_money(leftover))
+        else:
+            st.caption("Shares are " + employee_receipts.format_money(-leftover) + " over the receipt total.")
+        share_warning = employee_receipts.equipment_share_warning(fields.get("amount"), equipment_shares)
+        equipment_purpose = st.selectbox(
+            "Purpose",
+            _receipt_options(employee_receipts.RECEIPT_EQUIPMENT_PURPOSES, st.session_state.get(w + "eq_purpose")),
+            index=None,
+            placeholder="Choose a purpose", key=w + "eq_purpose",
+        ) or ""
+        memo = st.text_area("Memo", key=w + "memo")
+    elif category == employee_receipts.CATEGORY_BUILDINGS:
+        subcategory = st.selectbox(
+            "Building",
+            _receipt_options(employee_receipts.RECEIPT_BUILDINGS, st.session_state.get(w + "building")),
+            index=None,
+            placeholder="Choose a building", key=w + "building",
+        ) or ""
+        if subcategory == "Other":
+            subcategory_detail = st.text_input("Building name", key=w + "building_other")
+    elif category in (employee_receipts.CATEGORY_BNSF, employee_receipts.CATEGORY_FORESTRY):
+        subcategory = st.selectbox(
+            category + " type",
+            _receipt_options(employee_receipts.RECEIPT_JOB_SUBCATEGORIES, st.session_state.get(w + "job_sub")),
+            index=None,
+            placeholder="Choose a type", key=w + "job_sub",
+        ) or ""
+    elif category == employee_receipts.CATEGORY_FUEL:
+        subcategory = st.selectbox(
+            "Fuel type",
+            _receipt_options(employee_receipts.RECEIPT_FUEL_TYPES, st.session_state.get(w + "fuel_type")),
+            index=None,
+            placeholder="Choose a fuel type", key=w + "fuel_type",
+        ) or ""
+    elif category == employee_receipts.CATEGORY_OTHER:
+        other_comment = st.text_area("Comment", key=w + "other_comment")
+
+    ifta_state = ""
+    ifta_gallons = ""
+    ifta_warn = ""
+    if employee_receipts.is_ifta_fuel(category or "", subcategory, equipment_purpose):
+        st.markdown("**IFTA fuel**")
+        labels = [code + " — " + name for code, name in employee_receipts.IFTA_JURISDICTIONS]
+        ifta_state = st.selectbox(
+            "State",
+            _receipt_options(labels, st.session_state.get(w + "ifta_state")),
+            index=None,
+            placeholder="Choose the state or province", key=w + "ifta_state",
+        ) or ""
+        ifta_gallons = st.text_input("Gallons purchased", key=w + "ifta_gallons", placeholder="18.2")
+        ifta_warn = employee_receipts.ifta_warning(
+            category, subcategory, equipment_purpose, ifta_state, ifta_gallons,
+        )
+        if ifta_warn:
+            st.caption(ifta_warn)
+
+    statement_account = st.selectbox(
+        "Paid on monthly statement account",
+        _receipt_options(employee_receipts.RECEIPT_STATEMENT_ACCOUNTS, st.session_state.get(w + "statement")),
+        index=0,
+        key=w + "statement",
     )
-    if st.button("Save receipt", key=w + "save", use_container_width=True, type="primary"):
+
+    save_label = "Save changes" if editing else "Save receipt"
+    if st.button(save_label, key=w + "save", use_container_width=True, type="primary"):
         problems = employee_receipts.validate_receipt(fields)
         if problems:
             st.session_state[w + "complete"] = False
             for problem in problems:
                 st.error(problem)
             return
-        if not job or not expense_type:
-            if not job:
-                st.error("Choose a job.")
-            if not expense_type:
-                st.error("Choose an expense type.")
+        alloc_fields = dict(fields, other_comment=other_comment, notes=fields.get("notes") or other_comment)
+        problems = employee_receipts.validate_receipt_allocation(
+            alloc_fields, category, subcategory=subcategory, subcategory_detail=subcategory_detail,
+            equipment_shares=equipment_shares, equipment_purpose=equipment_purpose,
+            other_comment=other_comment, existing=existing,
+        )
+        for problem in problems:
+            st.error(problem)
+        if problems:
             return
         when = datetime.now(ZoneInfo("America/Los_Angeles"))
-        link, stored, notice = employee_receipts.store_receipt_file(
-            data, name, employee, fields.get("date"), fields.get("amount"), secrets, when=when,
-        )
+        owner = _cell(existing.get("Employee")) if editing else employee
+        notice = ""
+        link = _cell(existing.get("Photo Link")) if editing else ""
+        stored = _cell(existing.get("Photo File")) if editing else ""
+        if data:
+            link, stored, notice = employee_receipts.store_receipt_file(
+                data, name, owner, fields.get("date"), fields.get("amount"), secrets, when=when,
+            )
+            if editing and notice and _cell(existing.get("Photo Link")):
+                # Keep the Drive photo already on the row if the replacement did not store.
+                link = _cell(existing.get("Photo Link"))
+                stored = _cell(existing.get("Photo File")) or stored
         record = employee_receipts.build_receipt_record(
-            employee, fields, job, expense_type, photo_link=link, photo_file=stored or name, when=when,
+            owner, alloc_fields, category, subcategory=subcategory,
+            subcategory_detail=subcategory_detail, equipment_shares=equipment_shares,
+            equipment_purpose=equipment_purpose, memo=memo, statement_account=statement_account,
+            ifta_state=ifta_state, ifta_gallons=ifta_gallons,
+            photo_link=link, photo_file=stored or name,
+            when=when, entry_id=employee_receipts.receipt_entry_id(existing) if editing else None,
         )
         try:
-            employee_receipts.save_receipt_record(record, _receipts_spreadsheet())
+            if editing:
+                record = employee_receipts.prepare_receipt_edit(existing, record, editor, when=when)
+                employee_receipts.update_receipt_record(
+                    record, _receipts_spreadsheet(), editor, office=office, when=when,
+                )
+            else:
+                employee_receipts.save_receipt_record(record, _receipts_spreadsheet())
         except Exception as exc:
             st.error("Could not save this receipt to Google Sheets. Try again, or tell the office.")
             st.caption("Save error: " + type(exc).__name__)
             return
         clear_receipts_cache()
+        label = category
+        detail = employee_receipts.receipt_detail(record)
+        if detail:
+            label = category + " / " + detail
+        warnings = [msg for msg in (share_warning, ifta_warn) if msg]
+        verb = "Updated " if editing else "Saved "
         st.session_state[p + "saved"] = (
-            "Saved " + employee_receipts.format_money(record["Amount"]) + " to " + job + " / " + expense_type + ".",
+            verb + employee_receipts.format_money(record["Amount"]) + " to " + label + ".",
             notice,
             link,
+            warnings,
         )
-        _reset_receipt_entry(p)
+        if editing:
+            st.session_state.pop(p + "edit_id", None)
+        else:
+            _reset_receipt_entry(p)
+        st.rerun()
+
+
+def _receipt_by_id(records, entry_id):
+    entry_id = _cell(entry_id)
+    if not entry_id:
+        return None
+    for rec in records or []:
+        if employee_receipts.receipt_entry_id(rec) == entry_id:
+            return rec
+    return None
+
+
+def show_saved_receipts_picker(records, p, user, office=False):
+    """Choose a saved receipt and open it for editing."""
+    st.markdown("**Saved receipts**")
+    if st.button("Back", key=p + "saved_back", use_container_width=True):
+        st.session_state[p + "saved_list"] = False
+        st.rerun()
+    editable = [r for r in (records or []) if employee_receipts.can_edit_receipt(r, user, office=office)]
+    if not editable:
+        st.caption("No receipts you can edit in this list.")
+        return
+    labels = [employee_receipts.receipt_picker_label(r, include_employee=office) for r in editable]
+    pick = st.selectbox("Choose a receipt", labels, key=p + "saved_pick")
+    if st.button("Open", key=p + "saved_open", type="primary", use_container_width=True):
+        rec = editable[labels.index(pick)]
+        st.session_state[p + "edit_id"] = employee_receipts.receipt_entry_id(rec)
+        st.session_state[p + "saved_list"] = False
         st.rerun()
 
 
@@ -7574,7 +7834,7 @@ def show_receipt_list(employee, p):
     if not shown:
         st.caption("No receipts yet.")
         return
-    st.markdown("Totals by job and expense type")
+    st.markdown("Totals by category")
     st.dataframe(pd.DataFrame(receipt_totals_rows(shown)), hide_index=True, use_container_width=True)
     st.dataframe(
         pd.DataFrame(receipt_table_rows(shown)),
@@ -7680,6 +7940,26 @@ def show_receipts_summary_office(p, secrets, user=""):
     except Exception:
         st.error("Could not load receipts from Google Sheets.")
         return
+    saved = st.session_state.pop(p + "saved", None)
+    if saved:
+        message, notice, link, *rest = saved
+        warnings = rest[0] if rest else []
+        st.success(message)
+        if notice:
+            st.warning(notice)
+        elif link:
+            st.caption("Photo saved to Google Drive.")
+        for warning in warnings or []:
+            st.warning(warning)
+    edit_id = _cell(st.session_state.get(p + "edit_id"))
+    if edit_id:
+        rec = _receipt_by_id(records, edit_id)
+        if not rec or not employee_receipts.can_edit_receipt(rec, user, office=True):
+            st.error("That receipt could not be opened.")
+            st.session_state.pop(p + "edit_id", None)
+        else:
+            show_receipt_entry(_cell(rec.get("Employee")), p, secrets, existing=rec, editor=user, office=True)
+        return
     st.caption("Receipts are counted by the day they were entered (Pacific), not the date on the receipt.")
     kind = st.selectbox(
         "Show receipts for",
@@ -7711,28 +7991,37 @@ def show_receipts_summary_office(p, secrets, user=""):
         kind, today=today, period=period, custom_start=custom_start, custom_end=custom_end,
     )
     names = _receipts_office_filter_names(records, start, end)
-    jobs = list(employee_receipts.RECEIPT_JOBS)
-    types = list(employee_receipts.RECEIPT_EXPENSE_TYPES)
+    categories = list(employee_receipts.RECEIPT_CATEGORIES)
+    details = []
+    accounts = list(employee_receipts.RECEIPT_STATEMENT_ACCOUNTS)
     for rec in employee_receipts.filter_receipts(records, start, end):
-        job = employee_receipts.receipt_job(rec)
-        typ = employee_receipts.receipt_expense_type(rec)
-        if job not in jobs:
-            jobs.append(job)
-        if typ not in types:
-            types.append(typ)
-    employee_col, job_col, type_col = st.columns(3)
+        category = employee_receipts.receipt_category(rec)
+        detail = employee_receipts.receipt_subcategory(rec)
+        account = employee_receipts.receipt_statement_account(rec)
+        if category and category not in categories:
+            categories.append(category)
+        if detail and detail not in details:
+            details.append(detail)
+        if account and account not in accounts:
+            accounts.append(account)
+    employee_col, cat_col, det_col, acct_col = st.columns(4)
     with employee_col:
         employee_f = st.selectbox("Employee", [employee_receipts.FILTER_ALL] + names, key=p + "sum_employee")
-    with job_col:
-        job_f = st.selectbox("Job", [employee_receipts.FILTER_ALL] + jobs, key=p + "sum_job")
-    with type_col:
-        type_f = st.selectbox("Expense type", [employee_receipts.FILTER_ALL] + types, key=p + "sum_type")
+    with cat_col:
+        category_f = st.selectbox("Category", [employee_receipts.FILTER_ALL] + categories, key=p + "sum_category")
+    with det_col:
+        subcategory_f = st.selectbox("Detail", [employee_receipts.FILTER_ALL] + details, key=p + "sum_detail")
+    with acct_col:
+        account_f = st.selectbox(
+            "Statement account", [employee_receipts.FILTER_ALL] + accounts, key=p + "sum_account",
+        )
     shown = employee_receipts.filter_receipts(
-        records, start, end, employee=employee_f, job=job_f, expense_type=type_f,
+        records, start, end, employee=employee_f, category=category_f,
+        subcategory=subcategory_f, statement_account=account_f,
     )
     summary = employee_receipts.build_summary(
-        records, start, end, employees=EMPLOYEES, employee=employee_f, job=job_f,
-        expense_type=type_f, range_kind=kind,
+        records, start, end, employees=EMPLOYEES, employee=employee_f, category=category_f,
+        subcategory=subcategory_f, statement_account=account_f, range_kind=kind,
     )
     st.markdown(
         "**" + summary["label"] + "**  ·  " + str(summary["count"]) + " receipts  ·  Total "
@@ -7749,8 +8038,12 @@ def show_receipts_summary_office(p, secrets, user=""):
     else:
         st.caption("No receipts in this range.")
     if shown:
-        st.markdown("Totals by job and expense type")
+        st.markdown("Totals by category")
         st.dataframe(pd.DataFrame(receipt_totals_rows(shown)), hide_index=True, use_container_width=True)
+        st.markdown("Totals by statement account and month")
+        statement_rows = receipt_statement_totals_rows(shown)
+        if statement_rows:
+            st.dataframe(pd.DataFrame(statement_rows), hide_index=True, use_container_width=True)
         st.markdown("Receipts")
         st.dataframe(
             pd.DataFrame(employee_receipts.office_table_rows(shown)),
@@ -7766,6 +8059,45 @@ def show_receipts_summary_office(p, secrets, user=""):
             key=p + "sum_csv",
             use_container_width=True,
         )
+    if st.session_state.get(p + "saved_list"):
+        show_saved_receipts_picker(shown, p, user, office=True)
+    elif st.button("Saved receipts", key=p + "saved_btn", use_container_width=True,
+                     help="Open a saved receipt to edit it"):
+        st.session_state[p + "saved_list"] = True
+        st.rerun()
+    st.subheader("IFTA report")
+    st.caption("Ground and vehicle fuel receipts, counted by the date on the receipt.")
+    quarter_options = employee_receipts.ifta_quarter_options(today)
+    quarter_labels = [
+        employee_receipts.ifta_quarter_label(year, quarter) + " (" + employee_receipts.period_label(start, end) + ")"
+        for year, quarter, start, end in quarter_options
+    ]
+    quarter_pick = st.selectbox("IFTA quarter", quarter_labels, index=0, key=p + "ifta_quarter")
+    year, quarter, q_start, q_end = quarter_options[quarter_labels.index(quarter_pick)]
+    ifta_rows = employee_receipts.ifta_receipts_in_quarter(records, year, quarter)
+    state_rows = employee_receipts.ifta_state_rows(ifta_rows)
+    st.markdown("Gallons by state")
+    if state_rows:
+        st.dataframe(pd.DataFrame(state_rows), hide_index=True, use_container_width=True)
+    else:
+        st.caption("No IFTA fuel receipts in this quarter.")
+    if ifta_rows:
+        st.markdown("Fuel receipts")
+        st.dataframe(
+            pd.DataFrame(employee_receipts.ifta_table_rows(ifta_rows)),
+            hide_index=True,
+            use_container_width=True,
+            column_config={"Photo": st.column_config.LinkColumn("Photo", display_text="Open")},
+        )
+        st.download_button(
+            "Download IFTA CSV",
+            data=employee_receipts.ifta_csv(ifta_rows, year, quarter),
+            file_name="cvh-ifta-" + employee_receipts.ifta_quarter_label(year, quarter).replace(" ", "-").lower() + ".csv",
+            mime="text/csv",
+            key=p + "ifta_csv",
+            use_container_width=True,
+        )
+
     st.subheader("Email this summary")
     auto = employee_receipts.auto_send_enabled(secrets)
     st.caption(
@@ -7815,17 +8147,52 @@ def show_employee_receipts(employee):
     p = "rc_" + key + "_"
     saved = st.session_state.pop(p + "saved", None)
     if saved:
-        message, notice, link = saved
+        message, notice, link, *rest = saved
+        warnings = rest[0] if rest else []
         st.success(message)
         if notice:
             st.warning(notice)
         elif link:
             st.caption("Photo saved to Google Drive.")
+        for warning in warnings or []:
+            st.warning(warning)
+    edit_id = _cell(st.session_state.get(p + "edit_id"))
+    if edit_id:
+        try:
+            records = cached_receipt_records(employee)
+        except Exception:
+            records = []
+            st.error("Could not load receipts from Google Sheets.")
+        rec = _receipt_by_id(records, edit_id)
+        if not rec or not employee_receipts.can_edit_receipt(rec, employee, office=False):
+            st.error("That receipt could not be opened.")
+            st.session_state.pop(p + "edit_id", None)
+        else:
+            show_receipt_entry(employee, p, secrets, existing=rec, editor=employee, office=False)
+        return
     if st.session_state.get(p + "step"):
         show_receipt_entry(employee, p, secrets)
-    elif st.button("🧾 Add a receipt", key=p + "add", type="primary", use_container_width=True):
-        st.session_state[p + "step"] = "photo"
-        st.rerun()
+        return
+    if st.session_state.get(p + "saved_list"):
+        try:
+            records = cached_receipt_records(employee)
+        except Exception:
+            st.error("Could not load receipts from Google Sheets.")
+            return
+        view = st.radio("Show", list(RECEIPT_VIEWS), horizontal=True, key=p + "view")
+        shown = receipt_records_for_view(records, view)
+        show_saved_receipts_picker(shown, p, employee, office=False)
+        return
+    add_col, saved_col = st.columns(2)
+    with add_col:
+        if st.button("🧾 Add a receipt", key=p + "add", type="primary", use_container_width=True):
+            st.session_state[p + "step"] = "photo"
+            st.rerun()
+    with saved_col:
+        if st.button("Saved receipts", key=p + "saved_btn", use_container_width=True,
+                     help="Open a saved receipt to edit it"):
+            st.session_state[p + "saved_list"] = True
+            st.rerun()
     show_receipt_list(employee, p)
 
 

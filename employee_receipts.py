@@ -37,15 +37,15 @@ import timesheet_mail as tm
 
 PACIFIC = ZoneInfo("America/Los_Angeles")
 
-# ── Two menus. Edit these lists to add, remove, or reorder choices. ──
-# Job: who the receipt is charged to. The first three match the timesheet hour columns.
+# ── Expense categories. Edit these lists to add, remove, or reorder choices. ──
+# Older receipts used Job + Expense type. Those lists stay here so saved rows
+# can still be read and totaled. New receipts use Category (and a sub-choice).
 RECEIPT_JOBS = (
     "CVH",
     "BNSF",
     "Forestry",
     "Other",
 )
-# Expense type: what was bought.
 RECEIPT_EXPENSE_TYPES = (
     "Fuel",
     "Parts",
@@ -55,12 +55,105 @@ RECEIPT_EXPENSE_TYPES = (
     "Other",
 )
 
+CATEGORY_DUES = "Dues"
+CATEGORY_LICENSES = "Licenses & Permits"
+CATEGORY_EQUIPMENT = "Equipment"
+CATEGORY_BUILDINGS = "Buildings"
+CATEGORY_OFFICE = "Office Supplies"
+CATEGORY_SHOP = "Shop Supplies"
+CATEGORY_HELIPORT = "Heliport"
+CATEGORY_BNSF = "BNSF"
+CATEGORY_FORESTRY = "Forestry"
+CATEGORY_FUEL = "Fuel"
+CATEGORY_TRAVEL = "Travel"
+CATEGORY_OTHER = "Other"
+RECEIPT_CATEGORIES = (
+    CATEGORY_DUES,
+    CATEGORY_LICENSES,
+    CATEGORY_EQUIPMENT,
+    CATEGORY_BUILDINGS,
+    CATEGORY_OFFICE,
+    CATEGORY_SHOP,
+    CATEGORY_HELIPORT,
+    CATEGORY_BNSF,
+    CATEGORY_FORESTRY,
+    CATEGORY_FUEL,
+    CATEGORY_TRAVEL,
+    CATEGORY_OTHER,
+)
+# Buildings dropdown. Add names here when a new building should appear.
+RECEIPT_BUILDINGS = (
+    "Hangar House",
+    "Enstrom Hangar",
+    "TS",
+    "R44 Hangar",
+    "Other",
+)
+# Sub-menu for BNSF and Forestry.
+RECEIPT_JOB_SUBCATEGORIES = (
+    "Travel",
+    "Supplies",
+    "Heli fuel",
+    "Vehicle fuel",
+    "Other",
+)
+# Sub-menu for the Fuel category.
+RECEIPT_FUEL_TYPES = (
+    "Jet A",
+    "AvGas",
+    "Regular ground (gas)",
+    "Diesel",
+)
+# Purpose menu when the category is Equipment.
+RECEIPT_EQUIPMENT_PURPOSES = (
+    "Diesel Fuel",
+    "Gas",
+    "JetA",
+    "AvGas",
+    "Parts",
+)
+RECEIPT_STATEMENT_NONE = "None"
+# Paid-on-monthly-statement accounts. Edit this list when vendors change.
+RECEIPT_STATEMENT_ACCOUNTS = (
+    RECEIPT_STATEMENT_NONE,
+    "Bruckners",
+    "Mid State Co-Op",
+    "Knudson",
+    "Ranch & Home",
+    "Kittitas County Solid Waste",
+    "Napa",
+    "Oxac",
+    "Les Schwab",
+)
+# IFTA member jurisdictions: 48 contiguous US states and 10 Canadian provinces.
+# Same set the Equipment IFTA forms use.
+IFTA_JURISDICTIONS = [
+    ("AL", "Alabama"), ("AZ", "Arizona"), ("AR", "Arkansas"), ("CA", "California"),
+    ("CO", "Colorado"), ("CT", "Connecticut"), ("DE", "Delaware"), ("FL", "Florida"),
+    ("GA", "Georgia"), ("ID", "Idaho"), ("IL", "Illinois"), ("IN", "Indiana"),
+    ("IA", "Iowa"), ("KS", "Kansas"), ("KY", "Kentucky"), ("LA", "Louisiana"),
+    ("ME", "Maine"), ("MD", "Maryland"), ("MA", "Massachusetts"), ("MI", "Michigan"),
+    ("MN", "Minnesota"), ("MS", "Mississippi"), ("MO", "Missouri"), ("MT", "Montana"),
+    ("NE", "Nebraska"), ("NV", "Nevada"), ("NH", "New Hampshire"), ("NJ", "New Jersey"),
+    ("NM", "New Mexico"), ("NY", "New York"), ("NC", "North Carolina"), ("ND", "North Dakota"),
+    ("OH", "Ohio"), ("OK", "Oklahoma"), ("OR", "Oregon"), ("PA", "Pennsylvania"),
+    ("RI", "Rhode Island"), ("SC", "South Carolina"), ("SD", "South Dakota"), ("TN", "Tennessee"),
+    ("TX", "Texas"), ("UT", "Utah"), ("VT", "Vermont"), ("VA", "Virginia"),
+    ("WA", "Washington"), ("WV", "West Virginia"), ("WI", "Wisconsin"), ("WY", "Wyoming"),
+    ("AB", "Alberta"), ("BC", "British Columbia"), ("MB", "Manitoba"),
+    ("NB", "New Brunswick"), ("NL", "Newfoundland and Labrador"), ("NS", "Nova Scotia"),
+    ("ON", "Ontario"), ("PE", "Prince Edward Island"), ("QC", "Quebec"), ("SK", "Saskatchewan"),
+]
+IFTA_JURISDICTION_CODES = tuple(code for code, _name in IFTA_JURISDICTIONS)
+IFTA_DEFAULT_JURISDICTION = "WA"
+
 # People who may open the "Receipts summary" office page (EMPLOYEES -> Receipts summary)
 # after their PIN. Patti is an office PIN user (timesheet_pin.PIN_OFFICE_USERS), not an employee.
 RECEIPTS_OFFICE_USERS = ("Ron Cline", "Patti")
 
 RECEIPTS_SHEET_TITLE = "Receipts"
-RECEIPTS_COLUMNS = [
+# Never reorder these original headers on a live tab. New fields are appended.
+RECEIPTS_ORIGINAL_COLUMNS = [
     "Saved At",
     "Entry ID",
     "Employee",
@@ -75,6 +168,21 @@ RECEIPTS_COLUMNS = [
     "Photo File",
     "Notes",
 ]
+RECEIPTS_ADDED_COLUMNS = [
+    "Category",
+    "Subcategory",
+    "Subcategory Detail",
+    "Equipment Shares",
+    "Equipment Purpose",
+    "Memo",
+    "IFTA State",
+    "IFTA Gallons",
+    "Statement Account",
+    "Edited At",
+    "Edited By",
+]
+RECEIPTS_COLUMNS = RECEIPTS_ORIGINAL_COLUMNS + RECEIPTS_ADDED_COLUMNS
+RECEIPTS_PRESERVE_ON_EDIT = ("Saved At", "Entry ID", "Employee")
 RECEIPTS_MAIL_SHEET_TITLE = "Receipts Mail"
 RECEIPTS_MAIL_COLUMNS = [
     "Timestamp",
@@ -127,8 +235,9 @@ OFFICE_TABLE_COLUMNS = (
     "Vendor",
     "Purpose",
     "Receipt #",
-    "Job",
-    "Expense type",
+    "Category",
+    "Detail",
+    "Statement account",
     "Amount",
     "Photo",
 )
@@ -358,6 +467,56 @@ def find_vendor(text):
     return ""
 
 
+_GALLONS_AFTER_RE = re.compile(
+    r"(?<![\d.])(\d{1,4}(?:\.\d{1,3})?)\s*(?:gal(?:lons?)?|gals)\b",
+    re.I,
+)
+_GALLONS_LABEL_RE = re.compile(
+    r"\b(?:gals?|gallons?)\s*(?:purchased|pumped|qty)?\s*[:#]?\s*(\d{1,4}(?:\.\d{1,3})?)\b",
+    re.I,
+)
+
+
+def parse_gallons(value):
+    """Return gallons as a float, or None for blank or bad input."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return round(float(value), 3) if value >= 0 else None
+    text = _cell(value).replace(",", "").replace(" ", "")
+    if not text:
+        return None
+    try:
+        number = float(text)
+    except ValueError:
+        return None
+    if number < 0 or number != number or number > 100_000:
+        return None
+    return round(number, 3)
+
+
+def format_gallons(value):
+    number = parse_gallons(value)
+    if number is None:
+        return ""
+    text = ("%.3f" % number).rstrip("0").rstrip(".")
+    return text or "0"
+
+
+def find_gallons(text):
+    """Best guess at gallons purchased from receipt text."""
+    found = []
+    for match in _GALLONS_AFTER_RE.finditer(text or ""):
+        number = parse_gallons(match.group(1))
+        if number is not None:
+            found.append(number)
+    for match in _GALLONS_LABEL_RE.finditer(text or ""):
+        number = parse_gallons(match.group(1))
+        if number is not None:
+            found.append(number)
+    return found[0] if found else None
+
+
 def parse_receipt_text(text):
     """Fields read from receipt text. Missing ones are left out."""
     fields = {}
@@ -373,6 +532,9 @@ def parse_receipt_text(text):
     vendor = find_vendor(text)
     if vendor:
         fields["vendor"] = vendor
+    gallons = find_gallons(text)
+    if gallons is not None:
+        fields["gallons"] = format_gallons(gallons)
     return fields
 
 
@@ -607,6 +769,352 @@ def store_receipt_file(data, original_name, employee, receipt_date, amount, secr
     return link, stored, ""
 
 
+
+# ── Categories, equipment shares, IFTA, statement accounts ──
+
+def equipment_names_from_records(records, is_active=None, fallback=None):
+    """Unit names from the Equipment page, in that page's order. Active units only.
+
+    is_active(record) can be supplied by the app. When no records are passed,
+    fallback (the official Equipment list) is used so the form still works.
+    """
+    names = []
+    for rec in records or []:
+        if is_active is not None and not is_active(rec):
+            continue
+        name = _cell(rec.get("Unit ID")) or _cell(rec.get("Name"))
+        if name and name not in names:
+            names.append(name)
+    if names:
+        return names
+    for name in list(fallback or []):
+        if _cell(name) and _cell(name) not in names:
+            names.append(_cell(name))
+    return names
+
+
+def format_equipment_shares(shares):
+    """Store allocations as 'Ram=20.00; PW=10.00'."""
+    parts = []
+    for name, amount in shares or []:
+        name = _cell(name)
+        number = parse_amount(amount)
+        if not name or number is None:
+            continue
+        parts.append(name + "=" + format_amount(number))
+    return "; ".join(parts)
+
+
+def parse_equipment_shares(value):
+    """List of (name, amount) from a stored Equipment Shares cell."""
+    text = _cell(value)
+    if not text:
+        return []
+    out = []
+    chunks = text.replace("\n", ";").split(";")
+    for chunk in chunks:
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        if "=" in chunk:
+            name, amount = chunk.split("=", 1)
+        elif ":" in chunk:
+            name, amount = chunk.split(":", 1)
+        else:
+            continue
+        number = parse_amount(amount)
+        name = _cell(name)
+        if name and number is not None:
+            out.append((name, number))
+    return out
+
+
+def equipment_share_remaining(total, shares):
+    """Receipt total minus the typed shares, rounded to cents."""
+    total_n = parse_amount(total) or 0.0
+    used = round(sum((parse_amount(amount) or 0.0) for _name, amount in (shares or [])), 2)
+    return round(total_n - used, 2)
+
+
+def equipment_share_warning(total, shares):
+    """Warning when Equipment shares do not add up to the receipt total. Empty if they do."""
+    leftover = equipment_share_remaining(total, shares)
+    if leftover == 0:
+        return ""
+    used = round((parse_amount(total) or 0.0) - leftover, 2)
+    if leftover > 0:
+        return (
+            "The shares add up to " + format_money(used) + ". "
+            + format_money(leftover) + " is still left. You can save anyway."
+        )
+    return (
+        "The shares add up to " + format_money(used) + ", which is "
+        + format_money(-leftover) + " over the receipt total. You can save anyway."
+    )
+
+
+def ifta_jurisdiction_label(code):
+    code = _cell(code).upper()
+    for item, name in IFTA_JURISDICTIONS:
+        if item == code:
+            return item + " — " + name
+    return code
+
+
+def ifta_jurisdiction_code(value):
+    text = _cell(value)
+    if not text:
+        return ""
+    code = text.split("—")[0].split("-")[0].strip().upper()
+    if code in IFTA_JURISDICTION_CODES:
+        return code
+    return ""
+
+
+def is_ifta_fuel(category, subcategory="", equipment_purpose=""):
+    """True when this receipt is ground/vehicle fuel that belongs on the IFTA report."""
+    category = _cell(category)
+    subcategory = _cell(subcategory)
+    purpose = _cell(equipment_purpose)
+    if category == CATEGORY_FUEL and subcategory in ("Regular ground (gas)", "Diesel"):
+        return True
+    if category == CATEGORY_EQUIPMENT and purpose in ("Diesel Fuel", "Gas"):
+        return True
+    if category in (CATEGORY_BNSF, CATEGORY_FORESTRY) and subcategory == "Vehicle fuel":
+        return True
+    return False
+
+
+def receipt_date_or_saved(record):
+    """Date on the receipt, or the day it was entered if that is missing."""
+    return parse_receipt_date(record.get("Date")) or saved_date(record)
+
+
+def ifta_quarter(day):
+    """(year, quarter 1-4, start, end) for an IFTA quarter containing day."""
+    if isinstance(day, datetime):
+        day = _as_pacific(day).date()
+    quarter = (day.month - 1) // 3 + 1
+    start_month = (quarter - 1) * 3 + 1
+    start = date(day.year, start_month, 1)
+    if quarter == 4:
+        end = date(day.year, 12, 31)
+    else:
+        end = date(day.year, start_month + 3, 1) - timedelta(days=1)
+    return day.year, quarter, start, end
+
+
+def ifta_quarter_label(year, quarter):
+    return "Q" + str(int(quarter)) + " " + str(int(year))
+
+
+def ifta_quarter_options(today=None, count=8):
+    """Recent IFTA quarters, newest first, including the current one."""
+    today = today or now_pacific().date()
+    if isinstance(today, datetime):
+        today = _as_pacific(today).date()
+    year, quarter, start, end = ifta_quarter(today)
+    options = []
+    for _ in range(count):
+        options.append((year, quarter, start, end))
+        if quarter == 1:
+            year, quarter = year - 1, 4
+        else:
+            quarter -= 1
+        _y, _q, start, end = ifta_quarter(date(year, (quarter - 1) * 3 + 1, 1))
+    return options
+
+
+def map_legacy_category(job, expense_type):
+    """Map an old Job + Expense type row onto the new category list."""
+    job = _cell(job)
+    expense_type = _cell(expense_type)
+    if job in (CATEGORY_BNSF, CATEGORY_FORESTRY):
+        return job
+    if expense_type == "Fuel":
+        return CATEGORY_FUEL
+    if expense_type == "Parts":
+        return CATEGORY_EQUIPMENT
+    if expense_type in ("Meals", "Lodging"):
+        return CATEGORY_TRAVEL
+    if expense_type == "Supplies":
+        return CATEGORY_SHOP
+    if expense_type and expense_type in RECEIPT_CATEGORIES:
+        return expense_type
+    if expense_type:
+        return expense_type
+    return CATEGORY_OTHER
+
+
+def map_legacy_subcategory(job, expense_type):
+    """Sub-item for an old Job + Expense type row."""
+    job = _cell(job)
+    expense_type = _cell(expense_type)
+    if job in (CATEGORY_BNSF, CATEGORY_FORESTRY):
+        if expense_type in ("Meals", "Lodging"):
+            return "Travel"
+        if expense_type == "Supplies":
+            return "Supplies"
+        if expense_type == "Fuel":
+            return "Fuel"
+        return expense_type or "Other"
+    if expense_type == "Fuel":
+        return ""
+    if expense_type == "Parts":
+        return ""
+    if expense_type in ("Meals", "Lodging"):
+        return expense_type
+    return ""
+
+
+def derived_job_and_expense(category, subcategory="", equipment_purpose=""):
+    """Fill the older Job and Expense Type columns on a new receipt."""
+    category = _cell(category)
+    subcategory = _cell(subcategory)
+    purpose = _cell(equipment_purpose)
+    if category in (CATEGORY_BNSF, CATEGORY_FORESTRY):
+        return category, subcategory or "Other"
+    if category == CATEGORY_FUEL:
+        return "CVH", "Fuel"
+    if category == CATEGORY_EQUIPMENT:
+        if purpose in ("Diesel Fuel", "Gas", "JetA", "AvGas"):
+            return "CVH", "Fuel"
+        return "CVH", "Parts"
+    if category == CATEGORY_TRAVEL:
+        return "CVH", "Other"
+    if category in (CATEGORY_OFFICE, CATEGORY_SHOP):
+        return "CVH", "Supplies"
+    return "CVH", category or "Other"
+
+
+def receipt_category(record):
+    stored = _cell(record.get("Category"))
+    if stored:
+        return stored
+    return map_legacy_category(record.get("Job"), record.get("Expense Type"))
+
+
+def receipt_subcategory(record):
+    stored = _cell(record.get("Subcategory"))
+    if stored:
+        return stored
+    if _cell(record.get("Category")):
+        return ""
+    return map_legacy_subcategory(record.get("Job"), record.get("Expense Type"))
+
+
+def receipt_detail(record):
+    """One-line sub-item for tables, email, and CSV."""
+    category = receipt_category(record)
+    sub = receipt_subcategory(record)
+    extra = _cell(record.get("Subcategory Detail"))
+    purpose = _cell(record.get("Equipment Purpose"))
+    shares = format_equipment_shares(parse_equipment_shares(record.get("Equipment Shares")))
+    if category == CATEGORY_EQUIPMENT:
+        bits = [shares] if shares else []
+        if purpose:
+            bits.append(purpose)
+        return " · ".join(bits)
+    if category == CATEGORY_BUILDINGS:
+        if sub == "Other" and extra:
+            return "Other: " + extra
+        return sub
+    if extra and sub == "Other":
+        return "Other: " + extra
+    return sub
+
+
+def receipt_statement_account(record):
+    value = _cell(record.get("Statement Account"))
+    if not value or value == RECEIPT_STATEMENT_NONE:
+        return ""
+    return value
+
+
+def is_ifta_record(record):
+    return is_ifta_fuel(
+        receipt_category(record),
+        receipt_subcategory(record),
+        record.get("Equipment Purpose"),
+    )
+
+
+def ifta_state(record):
+    return ifta_jurisdiction_code(record.get("IFTA State"))
+
+
+def ifta_gallons(record):
+    return parse_gallons(record.get("IFTA Gallons"))
+
+
+def ifta_warning(category, subcategory="", equipment_purpose="", state="", gallons=""):
+    """Warning when IFTA fields are missing. Does not block a save."""
+    if not is_ifta_fuel(category, subcategory, equipment_purpose):
+        return ""
+    missing = []
+    if not ifta_jurisdiction_code(state):
+        missing.append("the state or province")
+    if parse_gallons(gallons) is None:
+        missing.append("gallons purchased")
+    if not missing:
+        return ""
+    return "This looks like ground fuel for IFTA. Add " + " and ".join(missing) + " if you have them. You can save anyway."
+
+
+def _with_current(options, current=""):
+    out = list(options)
+    current = _cell(current)
+    if current and current not in out:
+        out.append(current)
+    return out
+
+
+def validate_receipt_allocation(fields, category, subcategory="", subcategory_detail="",
+                                equipment_shares=None, equipment_purpose="", other_comment="",
+                                existing=None):
+    """Problems that block saving the category step. Equipment share leftovers warn, not block.
+
+    When editing a receipt saved under the older menus, empty equipment shares
+    or a leftover sub-choice already on the row are allowed so a typo can be
+    fixed without re-filling the new fields first.
+    """
+    problems = []
+    category = _cell(category)
+    current_category = receipt_category(existing) if existing else ""
+    if category not in _with_current(RECEIPT_CATEGORIES, current_category):
+        problems.append("Choose a category.")
+        return problems
+    current_sub = receipt_subcategory(existing) if existing else ""
+    if category == CATEGORY_EQUIPMENT:
+        shares = list(equipment_shares or [])
+        had_shares = parse_equipment_shares((existing or {}).get("Equipment Shares"))
+        if not shares and (had_shares or not existing):
+            problems.append("Choose at least one piece of equipment.")
+        current_purpose = _cell((existing or {}).get("Equipment Purpose"))
+        purpose = _cell(equipment_purpose)
+        allowed_purposes = _with_current(RECEIPT_EQUIPMENT_PURPOSES, current_purpose)
+        if not purpose:
+            if not existing or current_purpose:
+                problems.append("Choose a purpose for this equipment receipt.")
+        elif purpose not in allowed_purposes:
+            problems.append("Choose a purpose for this equipment receipt.")
+    elif category == CATEGORY_BUILDINGS:
+        if _cell(subcategory) not in _with_current(RECEIPT_BUILDINGS, current_sub):
+            problems.append("Choose a building.")
+        elif subcategory == "Other" and not _cell(subcategory_detail) and not _cell((existing or {}).get("Subcategory Detail")):
+            problems.append("Enter the building name.")
+    elif category in (CATEGORY_BNSF, CATEGORY_FORESTRY):
+        if _cell(subcategory) not in _with_current(RECEIPT_JOB_SUBCATEGORIES, current_sub):
+            problems.append("Choose a " + category + " type.")
+    elif category == CATEGORY_FUEL:
+        if _cell(subcategory) not in _with_current(RECEIPT_FUEL_TYPES, current_sub):
+            problems.append("Choose a fuel type.")
+    elif category == CATEGORY_OTHER:
+        comment = _cell(other_comment) or _cell(fields.get("notes")) or _cell(fields.get("purpose"))
+        if not comment:
+            problems.append("Enter a comment for this Other receipt.")
+    return problems
+
 # ── Records ──
 
 def validate_receipt(fields):
@@ -622,15 +1130,24 @@ def validate_receipt(fields):
     return problems
 
 
-def build_receipt_record(employee, fields, job, expense_type, photo_link="", photo_file="", when=None, entry_id=None):
+def build_receipt_record(employee, fields, category, subcategory="", subcategory_detail="",
+                         equipment_shares=None, equipment_purpose="", memo="",
+                         statement_account="", ifta_state="", ifta_gallons="",
+                         photo_link="", photo_file="", when=None, entry_id=None):
     when = _as_pacific(when)
-    job = _cell(job)
-    expense_type = _cell(expense_type)
-    if job not in RECEIPT_JOBS:
-        raise ValueError("Choose a job from the list")
-    if expense_type not in RECEIPT_EXPENSE_TYPES:
-        raise ValueError("Choose an expense type from the list")
+    category = _cell(category)
+    if category not in RECEIPT_CATEGORIES:
+        raise ValueError("Choose a category from the list")
+    subcategory = _cell(subcategory)
+    subcategory_detail = _cell(subcategory_detail)
+    equipment_purpose = _cell(equipment_purpose)
+    memo = _cell(memo) or _cell(fields.get("memo"))
+    comment = _cell(fields.get("other_comment")) or _cell(fields.get("notes"))
+    job, expense_type = derived_job_and_expense(category, subcategory, equipment_purpose)
     receipt_date = parse_receipt_date(fields.get("date"))
+    account = _cell(statement_account)
+    if not account or account == RECEIPT_STATEMENT_NONE:
+        account = ""
     return {
         "Saved At": format_saved_at(when),
         "Entry ID": entry_id or new_entry_id(when),
@@ -644,7 +1161,16 @@ def build_receipt_record(employee, fields, job, expense_type, photo_link="", pho
         "Expense Type": expense_type,
         "Photo Link": _cell(photo_link),
         "Photo File": _cell(photo_file),
-        "Notes": _cell(fields.get("notes")),
+        "Notes": comment,
+        "Category": category,
+        "Subcategory": subcategory,
+        "Subcategory Detail": subcategory_detail,
+        "Equipment Shares": format_equipment_shares(equipment_shares),
+        "Equipment Purpose": equipment_purpose,
+        "Memo": memo,
+        "IFTA State": ifta_jurisdiction_code(ifta_state),
+        "IFTA Gallons": format_gallons(ifta_gallons) if parse_gallons(ifta_gallons) is not None else _cell(ifta_gallons),
+        "Statement Account": account,
     }
 
 
@@ -673,8 +1199,26 @@ def _ensure_tab(spreadsheet, title, columns):
     return ws, False
 
 
+def ensure_receipts_columns(ws, columns=None):
+    """Append any missing Receipts columns on the right. Never reorder existing headers."""
+    columns = columns or RECEIPTS_COLUMNS
+    header = [_cell(c) for c in ws.row_values(1)]
+    if not header:
+        return False
+    missing = [col for col in columns if col not in header]
+    if not missing:
+        return False
+    start = len(header) + 1
+    for offset, col in enumerate(missing):
+        ws.update_cell(1, start + offset, col)
+    return True
+
+
 def ensure_receipts_worksheet(spreadsheet):
-    return _ensure_tab(spreadsheet, RECEIPTS_SHEET_TITLE, RECEIPTS_COLUMNS)
+    ws, created = _ensure_tab(spreadsheet, RECEIPTS_SHEET_TITLE, RECEIPTS_COLUMNS)
+    if not created:
+        ensure_receipts_columns(ws)
+    return ws, created
 
 
 def save_receipt_record(record, spreadsheet):
@@ -684,6 +1228,106 @@ def save_receipt_record(record, spreadsheet):
     if not header:
         raise RuntimeError("Receipts worksheet has no header")
     ws.append_row([str(record.get(c, "")) for c in header], value_input_option="RAW")
+    return "Google Sheets (Receipts)"
+
+
+def receipt_entry_id(record):
+    return _cell((record or {}).get("Entry ID"))
+
+
+def can_edit_receipt(record, user, office=False):
+    """Employees may edit their own receipts. Ron and Patti may edit any from the office page."""
+    user = _cell(user)
+    if not user or not receipt_entry_id(record):
+        return False
+    if office:
+        return user in RECEIPTS_OFFICE_USERS
+    return _cell(record.get("Employee")) == user
+
+
+def receipt_picker_label(record, include_employee=False):
+    """One-line label for the Saved receipts picker."""
+    parts = []
+    if include_employee:
+        parts.append(_cell(record.get("Employee")) or "Unknown")
+    parts.append(_cell(record.get("Date")) or "no date")
+    parts.append(format_money(record.get("Amount")))
+    category = receipt_category(record)
+    detail = receipt_detail(record)
+    parts.append(category + ((" / " + detail) if detail else ""))
+    if _cell(record.get("Vendor")):
+        parts.append(_cell(record.get("Vendor")))
+    entry = receipt_entry_id(record)
+    if entry:
+        parts.append(entry)
+    return " | ".join(parts)
+
+
+def prepare_receipt_edit(existing, updated, edited_by, when=None):
+    """Keep the original entry, employee, saved time, and Drive photo unless a new photo was stored."""
+    out = dict(updated or {})
+    existing = existing or {}
+    for col in RECEIPTS_PRESERVE_ON_EDIT:
+        out[col] = existing.get(col, "")
+    if not _cell(out.get("Photo Link")) and _cell(existing.get("Photo Link")):
+        out["Photo Link"] = _cell(existing.get("Photo Link"))
+        out["Photo File"] = _cell(existing.get("Photo File")) or _cell(out.get("Photo File"))
+    elif not _cell(out.get("Photo File")) and _cell(existing.get("Photo File")):
+        out["Photo File"] = _cell(existing.get("Photo File"))
+    out["Edited At"] = format_saved_at(when)
+    out["Edited By"] = _cell(edited_by)
+    return out
+
+
+def find_receipt_row_number(ws, entry_id):
+    """1-based sheet row for this Entry ID. Uses the last match if a duplicate is already there."""
+    entry_id = _cell(entry_id)
+    if not entry_id:
+        raise ValueError("This receipt has no entry id")
+    values = ws.get_all_values()
+    if not values:
+        raise RuntimeError("Receipts worksheet has no header")
+    header = [_cell(c) for c in values[0]]
+    try:
+        idx = header.index("Entry ID")
+    except ValueError as exc:
+        raise RuntimeError("Receipts worksheet is missing the Entry ID column") from exc
+    matches = []
+    for row_number, row in enumerate(values[1:], start=2):
+        if _cell(row[idx] if idx < len(row) else "") == entry_id:
+            matches.append(row_number)
+    if not matches:
+        raise RuntimeError("Could not find that receipt on the Receipts tab")
+    return matches[-1]
+
+
+def update_receipt_record(record, spreadsheet, edited_by, office=False, when=None):
+    """Update the existing Receipts row for this Entry ID. Never appends a second row."""
+    entry_id = receipt_entry_id(record)
+    if not entry_id:
+        raise ValueError("This receipt has no entry id")
+    edited_by = _cell(edited_by)
+    if not edited_by:
+        raise ValueError("An editor is required")
+    ws, _created = ensure_receipts_worksheet(spreadsheet)
+    ensure_receipts_columns(ws)
+    values = ws.get_all_values()
+    if not values:
+        raise RuntimeError("Receipts worksheet has no header")
+    header = [_cell(c) for c in values[0]]
+    row_number = find_receipt_row_number(ws, entry_id)
+    existing_row = values[row_number - 1]
+    existing = {col: (_cell(existing_row[idx]) if idx < len(existing_row) else "") for idx, col in enumerate(header) if col}
+    if not can_edit_receipt(existing, edited_by, office=office):
+        raise ValueError("You can only edit your own receipts.")
+    merged = prepare_receipt_edit(existing, record, edited_by, when=when)
+    for col_name in header:
+        if not col_name or col_name in RECEIPTS_PRESERVE_ON_EDIT:
+            continue
+        if col_name not in merged and col_name not in ("Edited At", "Edited By"):
+            continue
+        col_number = header.index(col_name) + 1
+        ws.update_cell(row_number, col_number, str(merged.get(col_name, "")))
     return "Google Sheets (Receipts)"
 
 
@@ -826,14 +1470,27 @@ def _filter_value(value):
     return text
 
 
-def filter_receipts(records, start, end, employee=None, job=None, expense_type=None):
-    """Receipts saved in [start, end] (Pacific), optionally narrowed by employee, job, or expense type."""
+def filter_receipts(records, start, end, employee=None, category=None, subcategory=None,
+                    statement_account=None, job=None, expense_type=None):
+    """Receipts saved in [start, end] (Pacific), optionally narrowed by employee, category, or statement account."""
     employee = _filter_value(employee)
+    category = _filter_value(category)
+    subcategory = _filter_value(subcategory)
+    statement_account = _filter_value(statement_account)
     job = _filter_value(job)
     expense_type = _filter_value(expense_type)
     out = [r for r in (records or []) if in_period(r, start, end)]
     if employee:
         out = [r for r in out if _cell(r.get("Employee")) == employee]
+    if category:
+        out = [r for r in out if receipt_category(r) == category]
+    if subcategory:
+        out = [r for r in out if receipt_subcategory(r) == subcategory]
+    if statement_account:
+        if statement_account == RECEIPT_STATEMENT_NONE:
+            out = [r for r in out if not receipt_statement_account(r)]
+        else:
+            out = [r for r in out if receipt_statement_account(r) == statement_account]
     if job:
         out = [r for r in out if receipt_job(r) == job]
     if expense_type:
@@ -841,14 +1498,24 @@ def filter_receipts(records, start, end, employee=None, job=None, expense_type=N
     return out
 
 
-def filter_key(employee=None, job=None, expense_type=None):
+def filter_key(employee=None, category=None, subcategory=None, statement_account=None,
+               job=None, expense_type=None):
     """Stable suffix for the send-dedupe key. Empty when no filters are on."""
     parts = []
     employee = _filter_value(employee)
+    category = _filter_value(category)
+    subcategory = _filter_value(subcategory)
+    statement_account = _filter_value(statement_account)
     job = _filter_value(job)
     expense_type = _filter_value(expense_type)
     if employee:
         parts.append("emp=" + employee)
+    if category:
+        parts.append("cat=" + category)
+    if subcategory:
+        parts.append("sub=" + subcategory)
+    if statement_account:
+        parts.append("acct=" + statement_account)
     if job:
         parts.append("job=" + job)
     if expense_type:
@@ -893,15 +1560,82 @@ def job_expense_totals(records):
     return out
 
 
+def subcategory_totals(records):
+    """{detail or category: total} for one category's receipts."""
+    totals = {}
+    for rec in records or []:
+        key = receipt_detail(rec) or receipt_category(rec)
+        totals[key] = round(totals.get(key, 0.0) + (parse_amount(rec.get("Amount")) or 0.0), 2)
+    return totals
+
+
+def category_totals(records):
+    """{category: {"total": x, "details": {sub-item: y}}} in menu order."""
+    by_cat = {}
+    for rec in records or []:
+        by_cat.setdefault(receipt_category(rec), []).append(rec)
+    out = {}
+    for category, mine in _ordered(by_cat, RECEIPT_CATEGORIES).items():
+        details = subcategory_totals(mine)
+        # A category with no sub-item (Dues, Office Supplies, ...) does not need a detail row.
+        if list(details.keys()) == [category]:
+            details = {}
+        out[category] = {"total": grand_total(mine), "details": details}
+    return out
+
+
 def totals_rows(records):
-    """Rows for a Job / Expense type / Total table: each job's types, then the job subtotal, then the grand total."""
+    """Rows for a Category / Detail / Total table, then each category subtotal, then the grand total."""
     rows = []
-    for job, info in job_expense_totals(records).items():
-        for kind, amount in info["types"].items():
-            rows.append({"Job": job, "Expense type": kind, "Total": amount})
-        rows.append({"Job": job + " total", "Expense type": "", "Total": info["total"]})
+    for category, info in category_totals(records).items():
+        if info["details"]:
+            for kind, amount in info["details"].items():
+                rows.append({"Category": category, "Detail": kind, "Total": amount})
+        rows.append({"Category": category + " total", "Detail": "", "Total": info["total"]})
     if rows:
-        rows.append({"Job": "All jobs", "Expense type": "", "Total": grand_total(records)})
+        rows.append({"Category": "All categories", "Detail": "", "Total": grand_total(records)})
+    return rows
+
+
+def statement_month_key(record):
+    day = saved_date(record) or parse_receipt_date(record.get("Date"))
+    return day.strftime("%Y-%m") if day else ""
+
+
+def statement_month_label(key):
+    parsed = parse_receipt_date(key + "-01") if key else None
+    return parsed.strftime("%b %Y") if parsed else key
+
+
+def statement_account_totals(records):
+    """{account: {"total": x, "months": {YYYY-MM: y}}} including a None bucket."""
+    by_acct = {}
+    for rec in records or []:
+        account = receipt_statement_account(rec) or RECEIPT_STATEMENT_NONE
+        by_acct.setdefault(account, []).append(rec)
+    order = list(RECEIPT_STATEMENT_ACCOUNTS)
+    out = {}
+    for account, mine in _ordered(by_acct, order).items():
+        months = {}
+        for rec in mine:
+            key = statement_month_key(rec)
+            if not key:
+                continue
+            months[key] = round(months.get(key, 0.0) + (parse_amount(rec.get("Amount")) or 0.0), 2)
+        out[account] = {"total": grand_total(mine), "months": dict(sorted(months.items()))}
+    return out
+
+
+def statement_totals_rows(records):
+    """Rows for Statement account / Month / Total, then each vendor subtotal, then the grand total."""
+    rows = []
+    grouped = statement_account_totals(records)
+    for account, info in grouped.items():
+        for month, amount in info["months"].items():
+            rows.append({"Statement account": account, "Month": statement_month_label(month), "Total": amount})
+        rows.append({"Statement account": account + " total", "Month": "", "Total": info["total"]})
+    if rows:
+        rows.append({"Statement account": "All statement accounts", "Month": "", "Total": grand_total(records)})
     return rows
 
 
@@ -938,8 +1672,9 @@ def office_table_rows(records):
             "Vendor": _cell(rec.get("Vendor")),
             "Purpose": _cell(rec.get("Purpose")),
             "Receipt #": _cell(rec.get("Receipt Number")),
-            "Job": receipt_job(rec),
-            "Expense type": receipt_expense_type(rec),
+            "Category": receipt_category(rec),
+            "Detail": receipt_detail(rec),
+            "Statement account": receipt_statement_account(rec) or RECEIPT_STATEMENT_NONE,
             "Amount": format_money(rec.get("Amount")),
             "Photo": link if link.startswith("http") else "",
         })
@@ -956,9 +1691,13 @@ def summary_csv(records):
     return buf.getvalue()
 
 
-def build_summary(records, start, end, employees=None, employee=None, job=None, expense_type=None, range_kind=""):
+def build_summary(records, start, end, employees=None, employee=None, category=None, subcategory=None,
+                  statement_account=None, job=None, expense_type=None, range_kind=""):
     """Per-employee totals and line items for receipts saved in [start, end], optionally filtered."""
-    chosen = filter_receipts(records, start, end, employee=employee, job=job, expense_type=expense_type)
+    chosen = filter_receipts(
+        records, start, end, employee=employee, category=category, subcategory=subcategory,
+        statement_account=statement_account, job=job, expense_type=expense_type,
+    )
     names = []
     for name in list(employees or []) + [_cell(r.get("Employee")) for r in chosen]:
         if name and name not in names:
@@ -970,6 +1709,7 @@ def build_summary(records, start, end, employees=None, employee=None, job=None, 
             continue
         people.append({
             "employee": name,
+            "categories": category_totals(mine),
             "jobs": job_expense_totals(mine),
             "types": expense_type_totals(mine),
             "total": grand_total(mine),
@@ -981,6 +1721,9 @@ def build_summary(records, start, end, employees=None, employee=None, job=None, 
         "label": summary_range_label(start, end, range_kind),
         "range_kind": range_kind or "",
         "employee_filter": _filter_value(employee),
+        "category_filter": _filter_value(category),
+        "subcategory_filter": _filter_value(subcategory),
+        "statement_account_filter": _filter_value(statement_account),
         "job_filter": _filter_value(job),
         "expense_type_filter": _filter_value(expense_type),
         "employees": people,
@@ -993,6 +1736,12 @@ def summary_filters_label(summary):
     parts = []
     if summary.get("employee_filter"):
         parts.append("Employee: " + summary["employee_filter"])
+    if summary.get("category_filter"):
+        parts.append("Category: " + summary["category_filter"])
+    if summary.get("subcategory_filter"):
+        parts.append("Detail: " + summary["subcategory_filter"])
+    if summary.get("statement_account_filter"):
+        parts.append("Statement account: " + summary["statement_account_filter"])
     if summary.get("job_filter"):
         parts.append("Job: " + summary["job_filter"])
     if summary.get("expense_type_filter"):
@@ -1017,24 +1766,26 @@ def summary_text(summary):
         lines.append("No receipts were saved in this range.")
     for person in summary["employees"]:
         lines.append(person["employee"] + " – " + format_money(person["total"]))
-        for job, info in person["jobs"].items():
-            lines.append("  " + job + ": " + format_money(info["total"]))
-            for kind, amount in info["types"].items():
+        for category, info in person["categories"].items():
+            lines.append("  " + category + ": " + format_money(info["total"]))
+            for kind, amount in info["details"].items():
                 lines.append("    " + kind + ": " + format_money(amount))
-        lines.append("  By expense type (all jobs): " + ", ".join(
-            kind + " " + format_money(amount) for kind, amount in person["types"].items()))
+        lines.append("  By category: " + ", ".join(
+            category + " " + format_money(info["total"]) for category, info in person["categories"].items()))
         lines.append("  Receipts:")
         for rec in person["items"]:
             bits = [
                 rec.get("Date") or "no date",
                 format_money(rec.get("Amount")),
-                receipt_job(rec) + " / " + receipt_expense_type(rec),
+                receipt_category(rec) + ((" / " + receipt_detail(rec)) if receipt_detail(rec) else ""),
                 rec.get("Purpose") or "",
             ]
             if rec.get("Vendor"):
                 bits.append(rec["Vendor"])
             if rec.get("Receipt Number"):
                 bits.append("#" + rec["Receipt Number"])
+            if receipt_statement_account(rec):
+                bits.append("Statement: " + receipt_statement_account(rec))
             lines.append("  - " + " | ".join(b for b in bits if b))
             lines.append("    Photo: " + (rec.get("Photo Link") or "not on Drive (" + (rec.get("Photo File") or "no file") + ")"))
         lines.append("")
@@ -1056,32 +1807,127 @@ def summary_html(summary):
     cell = 'style="border:1px solid #ccc;padding:4px 6px;text-align:left"'
     for person in summary["employees"]:
         out.append("<h3>" + escape(person["employee"]) + " – " + escape(format_money(person["total"])) + "</h3>")
-        out.append('<table style="border-collapse:collapse"><tr><th ' + cell + ">Job</th><th " + cell
-                   + ">Expense type</th><th " + cell + ">Total</th></tr>")
-        for job, info in person["jobs"].items():
-            for kind, amount in info["types"].items():
-                out.append("<tr><td " + cell + ">" + escape(job) + "</td><td " + cell + ">" + escape(kind) + "</td><td "
+        out.append('<table style="border-collapse:collapse"><tr><th ' + cell + ">Category</th><th " + cell
+                   + ">Detail</th><th " + cell + ">Total</th></tr>")
+        for category, info in person["categories"].items():
+            for kind, amount in info["details"].items():
+                out.append("<tr><td " + cell + ">" + escape(category) + "</td><td " + cell + ">" + escape(kind) + "</td><td "
                            + cell + ">" + escape(format_money(amount)) + "</td></tr>")
-            out.append("<tr><td " + cell + "><b>" + escape(job) + " total</b></td><td " + cell + "></td><td " + cell
+            out.append("<tr><td " + cell + "><b>" + escape(category) + " total</b></td><td " + cell + "></td><td " + cell
                        + "><b>" + escape(format_money(info["total"])) + "</b></td></tr>")
         out.append("</table>")
-        out.append("<p>By expense type (all jobs): " + escape(", ".join(
-            kind + " " + format_money(amount) for kind, amount in person["types"].items())) + "</p>")
+        out.append("<p>By category: " + escape(", ".join(
+            category + " " + format_money(info["total"]) for category, info in person["categories"].items())) + "</p>")
         out.append('<table style="border-collapse:collapse"><tr>' + "".join(
-            "<th " + cell + ">" + h + "</th>" for h in ("Date", "Amount", "Job", "Expense type", "Purpose", "Vendor", "Receipt #", "Photo")
+            "<th " + cell + ">" + h + "</th>" for h in ("Date", "Amount", "Category", "Detail", "Purpose", "Vendor", "Receipt #", "Statement", "Photo")
         ) + "</tr>")
         for rec in person["items"]:
             link = _cell(rec.get("Photo Link"))
             photo = ('<a href="' + escape(link, quote=True) + '">Open photo</a>') if link.startswith("http") else escape(
                 "not on Drive" + (" (" + rec.get("Photo File") + ")" if rec.get("Photo File") else ""))
             out.append("<tr>" + "".join("<td " + cell + ">" + v + "</td>" for v in (
-                escape(rec.get("Date") or ""), escape(format_money(rec.get("Amount"))), escape(receipt_job(rec)),
-                escape(receipt_expense_type(rec)),
-                escape(rec.get("Purpose") or ""), escape(rec.get("Vendor") or ""), escape(rec.get("Receipt Number") or ""), photo,
+                escape(rec.get("Date") or ""), escape(format_money(rec.get("Amount"))), escape(receipt_category(rec)),
+                escape(receipt_detail(rec)),
+                escape(rec.get("Purpose") or ""), escape(rec.get("Vendor") or ""), escape(rec.get("Receipt Number") or ""),
+                escape(receipt_statement_account(rec)), photo,
             )) + "</tr>")
         out.append("</table>")
     out.append("<p style=\"color:#666\">Sent by the CVH Employee Tool.</p>")
     return "".join(out)
+
+
+
+# ── IFTA report (from employee receipts, by the date on the receipt) ──
+
+IFTA_TABLE_COLUMNS = (
+    "Receipt date",
+    "Employee",
+    "Vendor",
+    "Category",
+    "Detail",
+    "State",
+    "Gallons",
+    "Amount",
+    "Photo",
+)
+
+
+def ifta_receipts_in_quarter(records, year, quarter):
+    """Ground/vehicle fuel receipts whose receipt date falls in this IFTA quarter."""
+    _year, _q, start, end = ifta_quarter(date(int(year), (int(quarter) - 1) * 3 + 1, 1))
+    out = []
+    for rec in records or []:
+        if not is_ifta_record(rec):
+            continue
+        day = receipt_date_or_saved(rec)
+        if day is not None and start <= day <= end:
+            out.append(rec)
+    return sort_receipts(out)
+
+
+def ifta_gallons_by_state(records):
+    """{state code: gallons} in jurisdiction order, then any unknown codes."""
+    totals = {}
+    unknown = 0.0
+    for rec in records or []:
+        gallons = ifta_gallons(rec) or 0.0
+        state = ifta_state(rec)
+        if not state:
+            unknown = round(unknown + gallons, 3)
+            continue
+        totals[state] = round(totals.get(state, 0.0) + gallons, 3)
+    out = _ordered(totals, IFTA_JURISDICTION_CODES)
+    if unknown:
+        out["(no state)"] = unknown
+    return out
+
+
+def ifta_state_rows(records):
+    rows = []
+    totals = ifta_gallons_by_state(records)
+    for state, gallons in totals.items():
+        label = ifta_jurisdiction_label(state) if state in IFTA_JURISDICTION_CODES else state
+        rows.append({"State": label, "Gallons": format_gallons(gallons)})
+    if rows:
+        total = round(sum(parse_gallons(r["Gallons"]) or 0.0 for r in rows), 3)
+        rows.append({"State": "All states", "Gallons": format_gallons(total)})
+    return rows
+
+
+def ifta_table_rows(records):
+    rows = []
+    for rec in sort_receipts(records):
+        link = _cell(rec.get("Photo Link"))
+        rows.append({
+            "Receipt date": _cell(rec.get("Date")),
+            "Employee": _cell(rec.get("Employee")),
+            "Vendor": _cell(rec.get("Vendor")),
+            "Category": receipt_category(rec),
+            "Detail": receipt_detail(rec),
+            "State": ifta_state(rec),
+            "Gallons": format_gallons(rec.get("IFTA Gallons")) if parse_gallons(rec.get("IFTA Gallons")) is not None else "",
+            "Amount": format_money(rec.get("Amount")),
+            "Photo": link if link.startswith("http") else "",
+        })
+    return rows
+
+
+def ifta_csv(records, year=None, quarter=None):
+    """CSV of gallons by state, then the fuel receipts in the quarter."""
+    buf = io.StringIO()
+    if year and quarter:
+        _y, _q, start, end = ifta_quarter(date(int(year), (int(quarter) - 1) * 3 + 1, 1))
+        buf.write("IFTA gallons " + ifta_quarter_label(year, quarter) + " (" + period_label(start, end) + ")\n")
+    writer = csv.DictWriter(buf, fieldnames=("State", "Gallons"), lineterminator="\n")
+    writer.writeheader()
+    for row in ifta_state_rows(records):
+        writer.writerow(row)
+    buf.write("\n")
+    writer = csv.DictWriter(buf, fieldnames=list(IFTA_TABLE_COLUMNS), lineterminator="\n")
+    writer.writeheader()
+    for row in ifta_table_rows(records):
+        writer.writerow({k: row.get(k, "") for k in IFTA_TABLE_COLUMNS})
+    return buf.getvalue()
 
 
 # ── Sending ──
@@ -1116,9 +1962,12 @@ def idempotency_key(summary):
     or a filtered view does not clash with a different period or unfiltered send."""
     key = "receipts:" + summary["start"].isoformat() + ":" + summary["end"].isoformat()
     suffix = filter_key(
-        summary.get("employee_filter"),
-        summary.get("job_filter"),
-        summary.get("expense_type_filter"),
+        employee=summary.get("employee_filter"),
+        category=summary.get("category_filter"),
+        subcategory=summary.get("subcategory_filter"),
+        statement_account=summary.get("statement_account_filter"),
+        job=summary.get("job_filter"),
+        expense_type=summary.get("expense_type_filter"),
     )
     if suffix:
         key += ":" + suffix
