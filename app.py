@@ -7903,7 +7903,7 @@ def show_receipt_entry(employee, p, secrets, existing=None, editor="", office=Fa
                 employee_receipts.save_receipt_record(record, _receipts_spreadsheet())
         except Exception as exc:
             st.error("Could not save this receipt to Google Sheets. Try again, or tell the office.")
-            st.caption("Save error: " + type(exc).__name__)
+            st.caption(employee_receipts.format_sheets_save_error(exc))
             return
         clear_receipts_cache()
         label = category

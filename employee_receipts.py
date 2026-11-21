@@ -1391,6 +1391,101 @@ def _worksheet_or_none(spreadsheet, title):
         raise
 
 
+def _worksheet_column_count(ws):
+    """Best known grid width for this worksheet, in columns."""
+    count = getattr(ws, "col_count", None)
+    if isinstance(count, int) and count > 0:
+        return count
+    try:
+        header = ws.row_values(1)
+    except Exception:
+        return 0
+    return len(header or [])
+
+
+def _ensure_worksheet_width(ws, columns_needed):
+    """Grow the worksheet so later header or row writes stay inside the grid.
+
+    Google Sheets rejects update_cell and append_row past the tab's columnCount
+    with APIError 'exceeds grid limits'. Tabs created before new Receipts
+    columns were added are often only as wide as the original header.
+    """
+    columns_needed = int(columns_needed or 0)
+    if columns_needed <= 0:
+        return
+    current = _worksheet_column_count(ws)
+    if current >= columns_needed:
+        return
+    grow = columns_needed - current
+    if hasattr(ws, "add_cols"):
+        ws.add_cols(grow)
+        return
+    if hasattr(ws, "resize"):
+        rows = getattr(ws, "row_count", None)
+        if isinstance(rows, int) and rows > 0:
+            ws.resize(rows=rows, cols=columns_needed)
+        else:
+            ws.resize(cols=columns_needed)
+
+
+def format_sheets_save_error(exc):
+    """Short on-screen caption for a Sheets save failure. No secrets."""
+    name = type(exc).__name__ if exc is not None else "Error"
+    code = getattr(exc, "code", None)
+    message = ""
+    error = getattr(exc, "error", None)
+    if isinstance(error, dict):
+        if code is None:
+            code = error.get("code")
+        message = _cell(error.get("message"))
+    if not message and exc is not None:
+        message = _cell(exc)
+        prefix = name + ":"
+        if message.startswith(prefix):
+            message = message[len(prefix):].strip()
+    if isinstance(code, int) and code < 0:
+        code = None
+    message = _short_sheets_error_message(message, code)
+    parts = ["Save error:", name]
+    if code not in (None, ""):
+        parts.append(str(code))
+    if message:
+        parts.append(message)
+    return " ".join(parts)
+
+
+def _short_sheets_error_message(text, code=None, limit=200):
+    """Keep status text short and drop anything that looks like a secret."""
+    text = " ".join(_cell(text).split())
+    if not text:
+        return ""
+    lowered = text.lower()
+    secret_markers = (
+        "private_key",
+        "begin rsa",
+        "begin private",
+        "password=",
+        'password:"',
+        "password:'",
+        "upload_token",
+        "bearer ",
+        "api_key",
+        "client_secret",
+        "-----begin",
+    )
+    if any(marker in lowered for marker in secret_markers):
+        return "error details omitted"
+    if code not in (None, ""):
+        code_s = str(code)
+        for prefix in (f"[{code_s}]:", f"{code_s}:", f"[{code_s}]"):
+            if text.startswith(prefix):
+                text = text[len(prefix):].strip()
+                break
+    if len(text) > limit:
+        text = text[: limit - 1].rstrip() + "…"
+    return text
+
+
 def _ensure_tab(spreadsheet, title, columns):
     """Create this tab with a header on first use. Leaves an existing header alone."""
     ws = _worksheet_or_none(spreadsheet, title)
@@ -1400,6 +1495,7 @@ def _ensure_tab(spreadsheet, title, columns):
         return ws, True
     header = [_cell(c) for c in ws.row_values(1)]
     if not header:
+        _ensure_worksheet_width(ws, len(columns))
         ws.append_row(list(columns), value_input_option="RAW")
         return ws, True
     return ws, False
@@ -1415,6 +1511,7 @@ def ensure_receipts_columns(ws, columns=None):
     if not missing:
         return False
     start = len(header) + 1
+    _ensure_worksheet_width(ws, start + len(missing) - 1)
     for offset, col in enumerate(missing):
         ws.update_cell(1, start + offset, col)
     return True
@@ -1433,7 +1530,9 @@ def save_receipt_record(record, spreadsheet):
     header = [_cell(c) for c in ws.row_values(1)]
     if not header:
         raise RuntimeError("Receipts worksheet has no header")
-    ws.append_row([str(record.get(c, "")) for c in header], value_input_option="RAW")
+    values = [str(record.get(c, "")) for c in header]
+    _ensure_worksheet_width(ws, len(values))
+    ws.append_row(values, value_input_option="RAW")
     return "Google Sheets (Receipts)"
 
 
