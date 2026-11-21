@@ -13,6 +13,8 @@ import timesheet_company_mail
 import timesheet_pin
 import employee_receipts
 import bnsf_weather
+import bnsf_daily_report
+import bnsf_notice
 from zoneinfo import ZoneInfo
 
 # Helper modules Streamlit can keep stale in sys.modules after a git deploy.
@@ -23,6 +25,8 @@ _LOCAL_HELPER_MODULES = (
     "timesheet_pin",
     "employee_receipts",
     "bnsf_weather",
+    "bnsf_daily_report",
+    "bnsf_notice",
 )
 _LOCAL_MODULE_SIGNATURE_CACHE = "_cvhapp_local_module_signatures"
 
@@ -11147,7 +11151,7 @@ if st.session_state.current_mode == "Pilot":
     st.metric("IGE Hover Ceiling", f"{ige:.0f} ft")
     st.metric("OGE Hover Ceiling", f"{oge:.0f} ft")
     if part == "Part 137":
-        default_aircraft_label = FRAT_AIRCRAFT[0 if selected_aircraft.startswith("Robinson") else 1]
+        default_aircraft_label = next((label for label in FRAT_AIRCRAFT if "N480ML" in label), FRAT_AIRCRAFT[-1])
         bnsf_weather.render_bnsf_ops(
             default_pilot=st.session_state.get("bnsf_ops_pilot") or "",
             default_aircraft=default_aircraft_label,

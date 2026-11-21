@@ -81,12 +81,18 @@ class LocalModuleReloadTests(unittest.TestCase):
                 "timesheet_pin",
                 "employee_receipts",
                 "bnsf_weather",
+                "bnsf_daily_report",
+                "bnsf_notice",
             ),
         )
         import employee_receipts
         import bnsf_weather
+        import bnsf_daily_report
+        import bnsf_notice
         self.assertTrue(hasattr(employee_receipts, "vendor_choice_from_text"))
         self.assertTrue(hasattr(bnsf_weather, "locate_milepost"))
+        self.assertTrue(hasattr(bnsf_daily_report, "gather_daily_report"))
+        self.assertTrue(hasattr(bnsf_notice, "parse_ten_day_notice"))
 
     def test_first_sight_records_signature_and_does_not_reload(self):
         path = _write_helper(self.directory, 1)

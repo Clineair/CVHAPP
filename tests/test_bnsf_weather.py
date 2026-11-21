@@ -189,6 +189,8 @@ class WeatherFetchTests(unittest.TestCase):
                         "windDirection": {"unitCode": "wmoUnit:degree_(angle)", "value": 192},
                         "windSpeed": {"unitCode": "wmoUnit:km_h-1", "value": 8.05},
                         "windGust": {"unitCode": "wmoUnit:km_h-1", "value": 16.09},
+                        "textDescription": "Partly Cloudy",
+                        "precipitationLastHour": {"unitCode": "wmoUnit:m", "value": 0.0},
                     }
                 }
             else:
@@ -205,6 +207,8 @@ class WeatherFetchTests(unittest.TestCase):
         self.assertAlmostEqual(obs.gust_mph, 10.0, places=0)
         self.assertIn("KELN", obs.source_label)
         self.assertIn("mi", obs.source_label)
+        self.assertEqual(obs.sky_condition, "Partly Cloudy")
+        self.assertEqual(obs.precipitation, "None")
 
     def test_nws_calm_observation(self):
         session = mock.Mock()
@@ -252,6 +256,8 @@ class WeatherFetchTests(unittest.TestCase):
                 "wind_speed_10m": 1.5,
                 "wind_direction_10m": 192,
                 "wind_gusts_10m": 1.8,
+                "weather_code": 3,
+                "precipitation": 0.0,
             }
         }
         session.get.return_value = response
@@ -261,6 +267,8 @@ class WeatherFetchTests(unittest.TestCase):
         self.assertEqual(obs.temp_f, 24.7)
         self.assertEqual(obs.wind_mph, 1.5)
         self.assertIn("Open-Meteo", obs.source_label)
+        self.assertEqual(obs.sky_condition, bw.WMO_SKY[3])
+        self.assertEqual(obs.precipitation, "None")
 
     def test_fetch_weather_falls_back_when_nws_fails(self):
         session = mock.Mock()
@@ -464,6 +472,35 @@ class AppHookTests(unittest.TestCase):
         # in the last block immediately before the FRAT tabs.
         self.assertIn("render_bnsf_ops", source[oge:frat])
         self.assertTrue(source[source.rindex('if part == "Part 137":', 0, frat):frat].count("render_bnsf_ops") == 1)
+
+
+
+
+class SkyAndPrecipTests(unittest.TestCase):
+    def test_format_and_unit_conversion(self):
+        self.assertEqual(bw.format_precipitation(0), "None")
+        self.assertEqual(bw.format_precipitation(0.12), "0.12 in")
+        self.assertAlmostEqual(bw.precipitation_to_inches(0.00254, "wmoUnit:m"), 0.1, places=3)
+        self.assertAlmostEqual(bw.precipitation_to_inches(2.54, "mm"), 0.1, places=3)
+        self.assertEqual(bw.precipitation_to_inches(0.25, "inch"), 0.25)
+
+    def test_nws_clear_means_no_precip_when_hour_missing(self):
+        sky, precip = bw.sky_and_precip_from_nws({"textDescription": "Clear"})
+        self.assertEqual(sky, "Clear")
+        self.assertEqual(precip, "None")
+
+    def test_nws_precip_from_meters(self):
+        sky, precip = bw.sky_and_precip_from_nws({
+            "textDescription": "Light Rain",
+            "precipitationLastHour": {"unitCode": "wmoUnit:m", "value": 0.00254},
+        })
+        self.assertEqual(sky, "Light Rain")
+        self.assertEqual(precip, "0.10 in")
+
+    def test_open_meteo_wmo_code(self):
+        sky, precip = bw.sky_and_precip_from_open_meteo({"weather_code": 61, "precipitation": 0.2})
+        self.assertEqual(sky, bw.WMO_SKY[61])
+        self.assertEqual(precip, "0.20 in")
 
 
 if __name__ == "__main__":
