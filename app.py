@@ -7644,67 +7644,165 @@ def show_receipts_office_gate(key_prefix="rc_office"):
 
 
 def show_receipts_summary_page():
-    """Receipts summary for Patti: preview and manual send. Ron Cline and Patti only."""
-    st.title("Receipts summary")
+    """Live receipts for Patti and Ron: look at any range and email a summary."""
+    st.title("Live receipts")
     user = show_receipts_office_gate()
     if not user:
         return
     show_receipts_summary_office("rc_office_", _mail_runtime_secrets(), user)
 
 
+def _receipts_office_filter_names(records, start, end):
+    names = []
+    in_range = employee_receipts.filter_receipts(records, start, end)
+    for name in list(EMPLOYEES) + [_cell(r.get("Employee")) for r in in_range]:
+        if name and name not in names:
+            names.append(name)
+    return names
+
+
 def show_receipts_summary_office(p, secrets, user=""):
-    """Preview and manual send of Patti's receipts summary. Office users only."""
+    """Live receipts table, totals, and manual email of the shown summary. Office users only."""
     if _cell(user) not in employee_receipts.RECEIPTS_OFFICE_USERS:
         return
-    with st.container():
-        st.subheader("Receipts summary email to Patti")
-        options = receipt_summary_period_options()
-        labels = [employee_receipts.period_label(s, e) + (" (in progress)" if i == len(options) - 1 else "")
-                  for i, (s, e) in enumerate(options)]
-        pick = st.selectbox("Pay period", labels, index=0, key=p + "sum_period")
-        start, end = options[labels.index(pick)]
-        try:
-            records = cached_receipt_records(None)
-            audit = employee_receipts.load_mail_audit_readonly(_receipts_spreadsheet())
-        except Exception:
-            st.error("Could not load receipts from Google Sheets.")
-            return
-        summary = employee_receipts.build_summary(records, start, end, employees=EMPLOYEES)
-        auto = employee_receipts.auto_send_enabled(secrets)
-        st.caption(
-            "Automatic email every other Monday: " + ("ON" if auto else "OFF (needs Ron's approval to turn on)") + "."
+    today = datetime.now(ZoneInfo("America/Los_Angeles")).date()
+    if st.button("Refresh", key=p + "refresh", use_container_width=True, help="Reload receipts from the Receipts tab"):
+        clear_receipts_cache()
+        st.session_state[p + "force_refresh"] = True
+        st.rerun()
+    force = bool(st.session_state.pop(p + "force_refresh", False))
+    if not st.session_state.get(p + "loaded"):
+        force = True
+        st.session_state[p + "loaded"] = True
+    try:
+        records = cached_receipt_records(None, force=force)
+        audit = employee_receipts.load_mail_audit_readonly(_receipts_spreadsheet())
+    except Exception:
+        st.error("Could not load receipts from Google Sheets.")
+        return
+    st.caption("Receipts are counted by the day they were entered (Pacific), not the date on the receipt.")
+    kind = st.selectbox(
+        "Show receipts for",
+        list(employee_receipts.SUMMARY_RANGE_CHOICES),
+        index=0,
+        key=p + "sum_range_kind",
+    )
+    period = None
+    custom_start = custom_end = None
+    if kind == employee_receipts.RANGE_PAY_PERIOD:
+        options = receipt_summary_period_options(today)
+        current = employee_receipts.period_for(today)
+        labels = []
+        for start_opt, end_opt in options:
+            label = employee_receipts.period_label(start_opt, end_opt)
+            if (start_opt, end_opt) == current:
+                label += " (in progress)"
+            labels.append(label)
+        pick = st.selectbox("Pay period", labels, index=len(labels) - 1, key=p + "sum_period")
+        period = options[labels.index(pick)]
+    elif kind == employee_receipts.RANGE_CUSTOM:
+        default_start, default_end = employee_receipts.period_to_date(today)
+        left, right = st.columns(2)
+        with left:
+            custom_start = st.date_input("From", value=default_start, key=p + "sum_from")
+        with right:
+            custom_end = st.date_input("Through", value=default_end, key=p + "sum_through")
+    start, end = employee_receipts.resolve_summary_range(
+        kind, today=today, period=period, custom_start=custom_start, custom_end=custom_end,
+    )
+    names = _receipts_office_filter_names(records, start, end)
+    jobs = list(employee_receipts.RECEIPT_JOBS)
+    types = list(employee_receipts.RECEIPT_EXPENSE_TYPES)
+    for rec in employee_receipts.filter_receipts(records, start, end):
+        job = employee_receipts.receipt_job(rec)
+        typ = employee_receipts.receipt_expense_type(rec)
+        if job not in jobs:
+            jobs.append(job)
+        if typ not in types:
+            types.append(typ)
+    employee_col, job_col, type_col = st.columns(3)
+    with employee_col:
+        employee_f = st.selectbox("Employee", [employee_receipts.FILTER_ALL] + names, key=p + "sum_employee")
+    with job_col:
+        job_f = st.selectbox("Job", [employee_receipts.FILTER_ALL] + jobs, key=p + "sum_job")
+    with type_col:
+        type_f = st.selectbox("Expense type", [employee_receipts.FILTER_ALL] + types, key=p + "sum_type")
+    shown = employee_receipts.filter_receipts(
+        records, start, end, employee=employee_f, job=job_f, expense_type=type_f,
+    )
+    summary = employee_receipts.build_summary(
+        records, start, end, employees=EMPLOYEES, employee=employee_f, job=job_f,
+        expense_type=type_f, range_kind=kind,
+    )
+    st.markdown(
+        "**" + summary["label"] + "**  ·  " + str(summary["count"]) + " receipts  ·  Total "
+        + employee_receipts.format_money(summary["total"])
+    )
+    st.markdown("Totals by employee")
+    emp_rows = employee_receipts.employee_totals_rows(shown)
+    if emp_rows:
+        st.dataframe(
+            pd.DataFrame([dict(row, Total=employee_receipts.format_money(row["Total"])) for row in emp_rows]),
+            hide_index=True,
+            use_container_width=True,
         )
-        st.markdown("**To:** " + employee_receipts.recipient(secrets))
-        st.markdown("**From:** " + timesheet_company_mail.mailbox_address(secrets))
-        st.markdown("**Subject:** " + employee_receipts.summary_subject(summary))
-        with st.container(border=True):
-            st.html(employee_receipts.summary_html(summary))
-        ready = employee_receipts.mail_ready(secrets)
-        if not ready:
-            st.info(employee_receipts.MAIL_NOT_READY_MESSAGE)
-        sent_before = employee_receipts.already_sent(audit, summary)
-        resend = False
-        if sent_before:
-            st.warning("This period's summary was already sent to Patti.")
-            resend = st.checkbox("Send it again", key=p + "sum_resend_" + start.isoformat())
-        confirm = st.checkbox("I checked the preview. Send it to Patti.", key=p + "sum_confirm_" + start.isoformat())
-        just_sent = st.session_state.get(p + "sum_just_sent") == employee_receipts.idempotency_key(summary)
-        disabled = (not ready) or (not confirm) or (sent_before and not resend) or just_sent
-        if st.button("Send receipts summary", key=p + "sum_send", type="primary", use_container_width=True, disabled=disabled):
-            result = employee_receipts.send_summary(
-                summary, secrets, trigger="Manual", audit_records=audit, allow_resend=resend,
+    else:
+        st.caption("No receipts in this range.")
+    if shown:
+        st.markdown("Totals by job and expense type")
+        st.dataframe(pd.DataFrame(receipt_totals_rows(shown)), hide_index=True, use_container_width=True)
+        st.markdown("Receipts")
+        st.dataframe(
+            pd.DataFrame(employee_receipts.office_table_rows(shown)),
+            hide_index=True,
+            use_container_width=True,
+            column_config={"Photo": st.column_config.LinkColumn("Photo", display_text="Open")},
+        )
+        st.download_button(
+            "Download CSV",
+            data=employee_receipts.summary_csv(shown),
+            file_name="cvh-receipts-" + start.isoformat() + "-to-" + end.isoformat() + ".csv",
+            mime="text/csv",
+            key=p + "sum_csv",
+            use_container_width=True,
+        )
+    st.subheader("Email this summary")
+    auto = employee_receipts.auto_send_enabled(secrets)
+    st.caption(
+        "Automatic email every other Monday: " + ("ON" if auto else "OFF (needs Ron's approval to turn on)") + "."
+    )
+    st.markdown("**To:** " + employee_receipts.recipient(secrets))
+    st.markdown("**From:** " + timesheet_company_mail.mailbox_address(secrets))
+    st.markdown("**Subject:** " + employee_receipts.summary_subject(summary))
+    with st.container(border=True):
+        st.html(employee_receipts.summary_html(summary))
+    ready = employee_receipts.mail_ready(secrets)
+    if not ready:
+        st.info(employee_receipts.MAIL_NOT_READY_MESSAGE)
+    sent_before = employee_receipts.already_sent(audit, summary)
+    resend = False
+    scope_key = employee_receipts.idempotency_key(summary).replace(":", "_")
+    if sent_before:
+        st.warning("This summary was already sent to Patti.")
+        resend = st.checkbox("Send it again", key=p + "sum_resend_" + scope_key)
+    confirm = st.checkbox("I checked the preview. Send it to Patti.", key=p + "sum_confirm_" + scope_key)
+    just_sent = st.session_state.get(p + "sum_just_sent") == employee_receipts.idempotency_key(summary)
+    disabled = (not ready) or (not confirm) or (sent_before and not resend) or just_sent
+    if st.button("Email this summary", key=p + "sum_send", type="primary", use_container_width=True, disabled=disabled):
+        result = employee_receipts.send_summary(
+            summary, secrets, trigger="Manual", audit_records=audit, allow_resend=resend,
+        )
+        try:
+            employee_receipts.save_mail_audit_record(
+                employee_receipts.build_mail_audit_record(summary, result, sent_by=user), _receipts_spreadsheet(),
             )
-            try:
-                employee_receipts.save_mail_audit_record(
-                    employee_receipts.build_mail_audit_record(summary, result, sent_by=user), _receipts_spreadsheet(),
-                )
-            except Exception:
-                st.caption("The send was not logged to the Receipts Mail tab.")
-            if result["status"] == employee_receipts.STATUS_SENT:
-                st.session_state[p + "sum_just_sent"] = result["idempotency_key"]
-                st.success("Sent to " + result["to"] + ".")
-            else:
-                st.error(result.get("error") or result["status"])
+        except Exception:
+            st.caption("The send was not logged to the Receipts Mail tab.")
+        if result["status"] == employee_receipts.STATUS_SENT:
+            st.session_state[p + "sum_just_sent"] = result["idempotency_key"]
+            st.success("Sent to " + result["to"] + ".")
+        else:
+            st.error(result.get("error") or result["status"])
 
 
 def show_employee_receipts(employee):
@@ -7779,7 +7877,7 @@ def show_employees_page():
     with sum_col:
         sum_label = ("● " if show_summary else "") + "Receipts summary"
         if st.button(sum_label, key="employees_receipts_summary", use_container_width=True, type="primary",
-                     help="Ron and Patti: preview and send the receipts email"):
+                     help="Ron and Patti: look at live receipts and email a summary"):
             st.session_state.employees_show_receipts_summary = True
             st.session_state.employees_show_calendar = False
             st.session_state.employees_selected = None

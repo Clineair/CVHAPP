@@ -9,16 +9,17 @@ SCRIPT = str(Path(__file__).resolve().parent / "receipts_ui_script.py")
 
 
 ENV = ("RECEIPTS_UI_EMPLOYEE", "RECEIPTS_UI_PIN", "RECEIPTS_UI_MAIL", "RECEIPTS_UI_PAGE",
-       "RECEIPTS_UI_REMEMBERED", "RECEIPTS_UI_PATTI_PIN")
+       "RECEIPTS_UI_REMEMBERED", "RECEIPTS_UI_PATTI_PIN", "RECEIPTS_UI_SEED")
 
 
-def _run(employee="Carl Mulvaney", pin="1", mail="1", page="", remembered="", patti_pin="1"):
+def _run(employee="Carl Mulvaney", pin="1", mail="1", page="", remembered="", patti_pin="1", seed=""):
     os.environ["RECEIPTS_UI_EMPLOYEE"] = employee
     os.environ["RECEIPTS_UI_PAGE"] = page
     os.environ["RECEIPTS_UI_REMEMBERED"] = remembered
     os.environ["RECEIPTS_UI_PATTI_PIN"] = patti_pin
     os.environ["RECEIPTS_UI_PIN"] = pin
     os.environ["RECEIPTS_UI_MAIL"] = mail
+    os.environ["RECEIPTS_UI_SEED"] = seed
     at = AppTest.from_file(SCRIPT, default_timeout=30)
     at.run()
     return at
@@ -120,23 +121,23 @@ class ReceiptsUiTests(unittest.TestCase):
     def test_employee_receipts_page_has_no_send_panel(self):
         for who in ("Carl Mulvaney", "Ron Cline"):
             at = _run(who)
-            self.assertFalse(any(b.label == "Send receipts summary" for b in at.button))
+            self.assertFalse(any(b.label == "Email this summary" for b in at.button))
 
     def test_summary_page_ron_remembered_can_preview_and_send(self):
         at = _run(page="summary", remembered="Ron Cline")
         self.assertFalse(at.exception)
-        send = _button(at, "Send receipts summary")
+        send = _button(at, "Email this summary")
         self.assertTrue(send.disabled)
         self.assertTrue(any("OFF" in c.value for c in at.caption))
         at.checkbox[0].check().run()
-        _button(at, "Send receipts summary").click().run()
+        _button(at, "Email this summary").click().run()
         self.assertEqual(len(at.session_state["mails"]), 1)
         self.assertTrue(at.session_state["mails"][0].startswith("CVH employee receipts: "))
         self.assertEqual(at.session_state["writes"], ["Receipts Mail", "Receipts Mail"])
         audit = dict(zip(*at.session_state["store"]["Receipts Mail"][:2]))
         self.assertEqual(audit["Sent By"], "Ron Cline")
         at.run()
-        self.assertTrue(_button(at, "Send receipts summary").disabled)
+        self.assertTrue(_button(at, "Email this summary").disabled)
         self.assertEqual(len(at.session_state["mails"]), 1)
 
     def test_summary_page_patti_signs_in_with_pin(self):
@@ -151,12 +152,12 @@ class ReceiptsUiTests(unittest.TestCase):
         _button(at, "Continue").click().run()
         self.assertFalse(at.exception)
         self.assertEqual(at.session_state["queued_cookie"], "Patti")
-        self.assertTrue(any(b.label == "Send receipts summary" for b in at.button))
+        self.assertTrue(any(b.label == "Email this summary" for b in at.button))
 
     def test_summary_page_blocks_other_employees_and_unset_pin(self):
         at = _run(page="summary", remembered="Carl Mulvaney")
         self.assertTrue(any("Only Ron Cline or Patti" in i.value for i in at.info))
-        self.assertFalse(any(b.label == "Send receipts summary" for b in at.button))
+        self.assertFalse(any(b.label == "Email this summary" for b in at.button))
         at = _run(page="summary", patti_pin="0")
         at.selectbox[0].select("Patti").run()
         self.assertTrue(any("PIN not set up yet" in i.value for i in at.info))
@@ -165,7 +166,55 @@ class ReceiptsUiTests(unittest.TestCase):
         at = _run(page="summary", remembered="Ron Cline", mail="0")
         self.assertTrue(any("email not set up yet" in i.value for i in at.info))
         at.checkbox[0].check().run()
-        self.assertTrue(_button(at, "Send receipts summary").disabled)
+        self.assertTrue(_button(at, "Email this summary").disabled)
+
+    def test_live_view_defaults_to_period_to_date_and_lists_receipts(self):
+        at = _run(page="summary", remembered="Ron Cline", seed="1")
+        self.assertFalse(at.exception)
+        self.assertTrue(any(b.label == "Refresh" for b in at.button))
+        kinds = [s for s in at.selectbox if s.label == "Show receipts for"][0]
+        self.assertEqual(kinds.value, "Period to date")
+        self.assertEqual(kinds.options, ["Period to date", "This month", "Pay period", "Custom dates"])
+        self.assertTrue(any("counted by the day they were entered (Pacific)" in c.value for c in at.caption))
+        # Period to date on Nov 20 is Nov 15–20: the two mid-month receipts, not the Nov 1 one.
+        frames = [df.value for df in at.dataframe]
+        receipts = [df for df in frames if "Saved" in df.columns and "Employee" in df.columns][0]
+        self.assertEqual(list(receipts.columns), [
+            "Saved", "Employee", "Receipt date", "Vendor", "Purpose", "Receipt #",
+            "Job", "Expense type", "Amount", "Photo",
+        ])
+        self.assertEqual(sorted(receipts["Employee"].tolist()), ["Carl Mulvaney", "Gary Grant"])
+        self.assertNotIn("Earlier meal", list(receipts["Purpose"]))
+        emp_totals = [df for df in frames if "Employee" in df.columns and "Receipts" in df.columns][0]
+        self.assertEqual(emp_totals["Total"].tolist()[-1], "$35.50")
+        self.assertTrue(any(b.label == "Download CSV" for b in at.download_button))
+        at.checkbox[0].check().run()
+        _button(at, "Email this summary").click().run()
+        self.assertEqual(at.session_state["mails"], ["CVH employee receipts: Nov 15 – Nov 20, 2026 (period to date)"])
+        audit = dict(zip(*at.session_state["store"]["Receipts Mail"][:2]))
+        self.assertEqual(audit["Idempotency Key"], "receipts:2026-11-15:2026-11-20")
+        self.assertEqual(audit["Sent By"], "Ron Cline")
+
+    def test_custom_range_and_filters_use_a_different_send_key(self):
+        at = _run(page="summary", remembered="Ron Cline", seed="1")
+        kinds = [s for s in at.selectbox if s.label == "Show receipts for"][0]
+        kinds.select("This month").run()
+        frames = [df.value for df in at.dataframe]
+        receipts = [df for df in frames if "Saved" in df.columns][0]
+        self.assertEqual(len(receipts), 3)
+        [s for s in at.selectbox if s.label == "Employee"][0].select("Carl Mulvaney").run()
+        [s for s in at.selectbox if s.label == "Expense type"][0].select("Fuel").run()
+        frames = [df.value for df in at.dataframe]
+        receipts = [df for df in frames if "Saved" in df.columns][0]
+        self.assertEqual(list(receipts["Purpose"]), ["Fuel for truck"])
+        at.checkbox[0].check().run()
+        _button(at, "Email this summary").click().run()
+        self.assertEqual(
+            at.session_state["mails"],
+            ["CVH employee receipts: Nov 1 – Nov 20, 2026 (this month)"],
+        )
+        audit = dict(zip(*at.session_state["store"]["Receipts Mail"][:2]))
+        self.assertEqual(audit["Idempotency Key"], "receipts:2026-11-01:2026-11-20:emp=Carl Mulvaney|type=Fuel")
 
 
 if __name__ == "__main__":

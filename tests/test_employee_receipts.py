@@ -426,6 +426,83 @@ class MailTests(unittest.TestCase):
         self.assertEqual((status, len(sent)), (er.STATUS_DUPLICATE, 1))
 
 
+class LiveViewTests(unittest.TestCase):
+    def test_period_to_date_and_this_month(self):
+        day = date(2026, 11, 20)
+        self.assertEqual(er.period_to_date(day), (date(2026, 11, 15), date(2026, 11, 20)))
+        self.assertEqual(er.month_to_date(day), (date(2026, 11, 1), date(2026, 11, 20)))
+        self.assertEqual(
+            er.resolve_summary_range(er.RANGE_PERIOD_TO_DATE, today=day),
+            (date(2026, 11, 15), date(2026, 11, 20)),
+        )
+        self.assertEqual(
+            er.resolve_summary_range(er.RANGE_THIS_MONTH, today=day),
+            (date(2026, 11, 1), date(2026, 11, 20)),
+        )
+        self.assertEqual(
+            er.resolve_summary_range(er.RANGE_PAY_PERIOD, today=day, period=(date(2026, 11, 1), date(2026, 11, 14))),
+            (date(2026, 11, 1), date(2026, 11, 14)),
+        )
+        self.assertEqual(
+            er.resolve_summary_range(er.RANGE_CUSTOM, today=day, custom_start=date(2026, 11, 20), custom_end=date(2026, 11, 10)),
+            (date(2026, 11, 10), date(2026, 11, 20)),
+        )
+        self.assertEqual(
+            er.summary_range_label(date(2026, 11, 15), date(2026, 11, 20), er.RANGE_PERIOD_TO_DATE),
+            "Nov 15 – Nov 20, 2026 (period to date)",
+        )
+
+    def test_filters_and_employee_totals(self):
+        recs = [
+            _rec("Carl Mulvaney", "10", "Fuel", saved="2026-11-16 08:00:00 PST", job="BNSF"),
+            _rec("Gary Grant", "7", "Parts", saved="2026-11-20 08:00:00 PST", job="CVH"),
+            _rec("Carl Mulvaney", "4", "Meals", saved="2026-11-01 09:00:00 PST", job="CVH"),
+        ]
+        shown = er.filter_receipts(recs, date(2026, 11, 15), date(2026, 11, 20), employee="Carl Mulvaney")
+        self.assertEqual(len(shown), 1)
+        self.assertEqual(er.grand_total(shown), 10.0)
+        rows = er.employee_totals_rows(er.filter_receipts(recs, date(2026, 11, 15), date(2026, 11, 20)))
+        self.assertEqual([r["Employee"] for r in rows], ["Carl Mulvaney", "Gary Grant", "All employees"])
+        self.assertEqual(rows[-1]["Total"], 17.0)
+        table = er.office_table_rows(shown)
+        self.assertEqual(list(table[0]), list(er.OFFICE_TABLE_COLUMNS))
+        self.assertEqual(table[0]["Saved"], "2026-11-16")
+        self.assertIn("https://drive.google.com/file/d/X/view", er.summary_csv(shown))
+
+    def test_dedupe_key_includes_range_and_filters(self):
+        recs = [_rec("Carl Mulvaney", "10", "Fuel", saved="2026-11-16 08:00:00 PST", job="BNSF")]
+        period = er.build_summary(recs, date(2026, 11, 15), date(2026, 11, 28))
+        ptd = er.build_summary(recs, date(2026, 11, 15), date(2026, 11, 20), range_kind=er.RANGE_PERIOD_TO_DATE)
+        filtered = er.build_summary(
+            recs, date(2026, 11, 15), date(2026, 11, 28), employee="Carl Mulvaney", job="BNSF",
+        )
+        custom = er.build_summary(recs, date(2026, 11, 10), date(2026, 11, 20), range_kind=er.RANGE_CUSTOM)
+        self.assertEqual(er.idempotency_key(period), "receipts:2026-11-15:2026-11-28")
+        self.assertEqual(er.idempotency_key(ptd), "receipts:2026-11-15:2026-11-20")
+        self.assertEqual(er.idempotency_key(filtered), "receipts:2026-11-15:2026-11-28:emp=Carl Mulvaney|job=BNSF")
+        self.assertEqual(er.idempotency_key(custom), "receipts:2026-11-10:2026-11-20")
+        self.assertNotEqual(er.idempotency_key(period), er.idempotency_key(ptd))
+        self.assertNotEqual(er.idempotency_key(period), er.idempotency_key(custom))
+        self.assertNotEqual(er.idempotency_key(period), er.idempotency_key(filtered))
+        self.assertIn("Filters: Employee: Carl Mulvaney, Job: BNSF", er.summary_text(filtered))
+        self.assertIn("(period to date)", er.summary_subject(ptd))
+        # A later unfiltered send of the same dates still matches the old period key.
+        again = er.build_summary(recs, date(2026, 11, 15), date(2026, 11, 28))
+        self.assertTrue(er.already_sent([{"Idempotency Key": er.idempotency_key(period), "Status": er.STATUS_SENT}], again))
+        self.assertFalse(er.already_sent([{"Idempotency Key": er.idempotency_key(period), "Status": er.STATUS_SENT}], ptd))
+
+    def test_mail_ready_matches_timesheet_smtp_but_not_graph(self):
+        import timesheet_company_mail as company_mail
+        self.assertTrue(er.mail_ready(SECRETS_MAIL))
+        graph = {"timesheet_company_mail": {
+            "enabled": True, "backend": "graph", "sender": "clineair891@gmail.com",
+            "tenant_id": "tenant", "client_id": "client", "client_secret": "secret",
+        }}
+        self.assertTrue(company_mail.company_mail_ready(graph))
+        self.assertFalse(er.mail_ready(graph))
+        self.assertFalse(er.mail_ready({"timesheet_company_mail": dict(SECRETS_MAIL["timesheet_company_mail"], enabled=False)}))
+
+
 class OfficePinTests(unittest.TestCase):
     def test_patti_is_a_pin_identity_but_not_an_employee(self):
         import timesheet_pin as pin
