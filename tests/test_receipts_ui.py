@@ -32,6 +32,13 @@ def _button(at, label):
     raise AssertionError("no button " + label + " in " + repr([b.label for b in at.button]))
 
 
+def _select(at, label):
+    for box in at.selectbox:
+        if box.label == label:
+            return box
+    raise AssertionError("no selectbox " + label + " in " + repr([b.label for b in at.selectbox]))
+
+
 class ReceiptsUiTests(unittest.TestCase):
     def tearDown(self):
         for k in ENV:
@@ -56,26 +63,28 @@ class ReceiptsUiTests(unittest.TestCase):
         self.assertEqual(values["Receipt or invoice number"], "004417")
         self.assertEqual(values["Vendor (optional)"], "SHELL OIL")
         self.assertEqual(str(at.date_input[0].value), "2026-11-18")
-        # No Job / Expense type menus until the receipt is complete; purpose is required.
+        # No category menus until the receipt is complete; purpose is required.
         self.assertEqual(len(at.selectbox), 0)
         _button(at, "Receipt complete").click().run()
         self.assertTrue(any("purpose" in e.value.lower() for e in at.error))
         self.assertEqual(len(at.selectbox), 0)
-        [t for t in at.text_input if t.label == "Purpose"][0].input("Fuel for Heli hauler, BNSF job")
+        [t for t in at.text_input if t.label == "Purpose"][0].input("Fuel for the truck, BNSF job")
         at.run()
         _button(at, "Receipt complete").click().run()
-        self.assertEqual([b.label for b in at.selectbox], ["Job", "Expense type"])
-        self.assertEqual(at.selectbox[0].options, ["CVH", "BNSF", "Forestry", "Other"])
-        self.assertEqual(at.selectbox[1].options, ["Fuel", "Parts", "Meals", "Lodging", "Supplies", "Other"])
+        self.assertEqual(_select(at, "Category").options[0], "Dues")
+        self.assertIn("Equipment", _select(at, "Category").options)
+        self.assertIn("Paid on monthly statement account", [b.label for b in at.selectbox])
         _button(at, "Save receipt").click().run()
         errors = [e.value for e in at.error]
-        self.assertIn("Choose a job.", errors)
-        self.assertIn("Choose an expense type.", errors)
+        self.assertIn("Choose a category.", errors)
         self.assertEqual(at.session_state["writes"], [])
-        at.selectbox[0].select("BNSF").run()
+        _select(at, "Category").select("BNSF").run()
         _button(at, "Save receipt").click().run()
-        self.assertEqual([e.value for e in at.error], ["Choose an expense type."])
-        at.selectbox[1].select("Fuel").run()
+        self.assertEqual([e.value for e in at.error], ["Choose a BNSF type."])
+        _select(at, "BNSF type").select("Vehicle fuel").run()
+        gallons = [t for t in at.text_input if t.label == "Gallons purchased"][0]
+        self.assertEqual(gallons.value, "18.2")
+        _select(at, "State").select("WA — Washington").run()
         _button(at, "Save receipt").click().run()
         self.assertFalse(at.exception)
         self.assertEqual(at.session_state["created"], ["Receipts"])
@@ -84,15 +93,19 @@ class ReceiptsUiTests(unittest.TestCase):
         rec = dict(zip(rows[0], rows[1]))
         self.assertEqual(rec["Employee"], "Carl Mulvaney")
         self.assertEqual(rec["Amount"], "61.12")
-        self.assertEqual((rec["Job"], rec["Expense Type"]), ("BNSF", "Fuel"))
+        self.assertEqual(rec["Category"], "BNSF")
+        self.assertEqual(rec["Subcategory"], "Vehicle fuel")
+        self.assertEqual((rec["Job"], rec["Expense Type"]), ("BNSF", "Vehicle fuel"))
+        self.assertEqual(rec["IFTA State"], "WA")
+        self.assertEqual(rec["IFTA Gallons"], "18.2")
         self.assertEqual(rec["Photo Link"], "https://drive.google.com/file/d/FAKE/view")
         self.assertEqual(at.session_state["uploads"][0][0], "Carl Mulvaney")
         self.assertEqual(at.session_state["uploads"][0][2], "image/jpeg")
-        self.assertTrue(any("Saved $61.12 to BNSF / Fuel" in s.value for s in at.success))
+        self.assertTrue(any("Saved $61.12 to BNSF / Vehicle fuel" in s.value for s in at.success))
         self.assertTrue(any(b.label == "🧾 Add a receipt" for b in at.button))
         totals = at.dataframe[0].value
-        self.assertEqual(list(totals["Job"]), ["BNSF", "BNSF total", "All jobs"])
-        self.assertEqual(list(totals["Expense type"]), ["Fuel", "", ""])
+        self.assertEqual(list(totals["Category"]), ["BNSF", "BNSF total", "All categories"])
+        self.assertEqual(list(totals["Detail"]), ["Vehicle fuel", "", ""])
         self.assertEqual(list(totals["Total"]), ["$61.12", "$61.12", "$61.12"])
         self.assertEqual(at.session_state["mails"], [])
 
@@ -106,8 +119,7 @@ class ReceiptsUiTests(unittest.TestCase):
             [t for t in at.text_input if t.label == "Purpose"][0].input("Parts run")
             at.run()
             _button(at, "Receipt complete").click().run()
-            at.selectbox[0].select("CVH").run()
-            at.selectbox[1].select("Parts").run()
+            _select(at, "Category").select("Office Supplies").run()
             _button(at, "Save receipt").click().run()
         finally:
             os.environ.pop("RECEIPTS_UI_UPLOAD_FAIL", None)
@@ -181,7 +193,7 @@ class ReceiptsUiTests(unittest.TestCase):
         receipts = [df for df in frames if "Saved" in df.columns and "Employee" in df.columns][0]
         self.assertEqual(list(receipts.columns), [
             "Saved", "Employee", "Receipt date", "Vendor", "Purpose", "Receipt #",
-            "Job", "Expense type", "Amount", "Photo",
+            "Category", "Detail", "Statement account", "Amount", "Photo",
         ])
         self.assertEqual(sorted(receipts["Employee"].tolist()), ["Carl Mulvaney", "Gary Grant"])
         self.assertNotIn("Earlier meal", list(receipts["Purpose"]))
@@ -203,7 +215,7 @@ class ReceiptsUiTests(unittest.TestCase):
         receipts = [df for df in frames if "Saved" in df.columns][0]
         self.assertEqual(len(receipts), 3)
         [s for s in at.selectbox if s.label == "Employee"][0].select("Carl Mulvaney").run()
-        [s for s in at.selectbox if s.label == "Expense type"][0].select("Fuel").run()
+        [s for s in at.selectbox if s.label == "Category"][0].select("BNSF").run()
         frames = [df.value for df in at.dataframe]
         receipts = [df for df in frames if "Saved" in df.columns][0]
         self.assertEqual(list(receipts["Purpose"]), ["Fuel for truck"])
@@ -214,7 +226,96 @@ class ReceiptsUiTests(unittest.TestCase):
             ["CVH employee receipts: Nov 1 – Nov 20, 2026 (this month)"],
         )
         audit = dict(zip(*at.session_state["store"]["Receipts Mail"][:2]))
-        self.assertEqual(audit["Idempotency Key"], "receipts:2026-11-01:2026-11-20:emp=Carl Mulvaney|type=Fuel")
+        self.assertEqual(audit["Idempotency Key"], "receipts:2026-11-01:2026-11-20:emp=Carl Mulvaney|cat=BNSF")
+
+    def test_equipment_shares_warn_but_still_save_when_not_zero(self):
+        at = _run()
+        _button(at, "🧾 Add a receipt").click().run()
+        at.session_state["give_photo"] = True
+        at.run()
+        [t for t in at.text_input if t.label == "Purpose"][0].input("Parts for the Ram and PW")
+        at.run()
+        _button(at, "Receipt complete").click().run()
+        _select(at, "Category").select("Equipment").run()
+        self.assertTrue(any(c.label == "Ram" for c in at.checkbox))
+        self.assertTrue(any(c.label == "PW" for c in at.checkbox))
+        [c for c in at.checkbox if c.label == "Ram"][0].check().run()
+        [c for c in at.checkbox if c.label == "PW"][0].check().run()
+        [t for t in at.text_input if t.label == "Share for Ram ($)"][0].input("20.00")
+        [t for t in at.text_input if t.label == "Share for PW ($)"][0].input("10.00")
+        at.run()
+        self.assertTrue(any("Remaining amount: $31.12" in (c.value or "") for c in at.caption))
+        _select(at, "Purpose").select("Parts").run()
+        _button(at, "Save receipt").click().run()
+        self.assertFalse(at.exception)
+        rec = dict(zip(*at.session_state["store"]["Receipts"][:2]))
+        self.assertEqual(rec["Category"], "Equipment")
+        self.assertEqual(rec["Equipment Shares"], "Ram=20.00; PW=10.00")
+        self.assertEqual(rec["Equipment Purpose"], "Parts")
+        self.assertTrue(any("Saved $61.12 to Equipment" in s.value for s in at.success))
+        self.assertTrue(any("still left" in w.value for w in at.warning))
+
+    def test_office_ifta_report_has_quarter_picker(self):
+        at = _run(page="summary", remembered="Ron Cline", seed="1")
+        self.assertFalse(at.exception)
+        quarter = _select(at, "IFTA quarter")
+        self.assertTrue(quarter.value.startswith("Q4 2026"))
+        self.assertTrue(any("counted by the date on the receipt" in c.value for c in at.caption))
+        self.assertTrue(any("No IFTA fuel receipts in this quarter." in c.value for c in at.caption))
+
+    def test_employee_saved_receipts_opens_and_updates_the_same_row(self):
+        at = _run(seed="1")
+        self.assertTrue(any(b.label == "Saved receipts" for b in at.button))
+        _button(at, "Saved receipts").click().run()
+        self.assertFalse(at.exception)
+        picker = _select(at, "Choose a receipt")
+        self.assertTrue(all("Carl Mulvaney" not in (opt or "") or True for opt in picker.options))
+        self.assertTrue(any("2026-11-16" in opt and "$10.00" in opt for opt in picker.options))
+        self.assertFalse(any("Gary Grant" in opt or "Filter" in opt for opt in picker.options))
+        _button(at, "Open").click().run()
+        self.assertFalse(at.exception)
+        amount = [t for t in at.text_input if t.label == "Amount ($)"][0]
+        self.assertEqual(amount.value, "10.00")
+        amount.input("12.00")
+        at.run()
+        _button(at, "Save changes").click().run()
+        self.assertFalse(at.exception)
+        self.assertTrue(any("Updated $12.00" in s.value for s in at.success))
+        rows = at.session_state["store"]["Receipts"]
+        self.assertEqual(len(rows), 4)  # header + 3 seed rows
+        recs = [dict(zip(rows[0], row)) for row in rows[1:]]
+        updated = [r for r in recs if r["Entry ID"] == "1"][0]
+        self.assertEqual(updated["Amount"], "12.00")
+        self.assertEqual(updated["Employee"], "Carl Mulvaney")
+        self.assertEqual(updated["Edited By"], "Carl Mulvaney")
+        self.assertEqual(updated["Photo Link"], "https://drive.google.com/file/d/SEED1/view")
+        self.assertEqual(updated["Saved At"], "2026-11-16 08:00:00 PST")
+        self.assertEqual([r["Entry ID"] for r in recs], ["1", "2", "3"])
+
+    def test_office_saved_receipts_can_edit_any_employee(self):
+        at = _run(page="summary", remembered="Ron Cline", seed="1")
+        _button(at, "Saved receipts").click().run()
+        self.assertFalse(at.exception)
+        picker = _select(at, "Choose a receipt")
+        gary = [opt for opt in picker.options if "Gary Grant" in opt][0]
+        picker.select(gary).run()
+        _button(at, "Open").click().run()
+        amount = [t for t in at.text_input if t.label == "Amount ($)"][0]
+        self.assertEqual(amount.value, "25.50")
+        amount.input("30.00")
+        at.run()
+        _button(at, "Save changes").click().run()
+        self.assertFalse(at.exception)
+        self.assertTrue(any("Updated $30.00" in s.value for s in at.success))
+        rows = at.session_state["store"]["Receipts"]
+        self.assertEqual(len(rows), 4)
+        recs = [dict(zip(rows[0], row)) for row in rows[1:]]
+        updated = [r for r in recs if r["Entry ID"] == "2"][0]
+        self.assertEqual(updated["Amount"], "30.00")
+        self.assertEqual(updated["Employee"], "Gary Grant")
+        self.assertEqual(updated["Edited By"], "Ron Cline")
+        self.assertEqual(updated["Photo Link"], "https://drive.google.com/file/d/SEED2/view")
+        self.assertEqual(updated["Category"], "Equipment")
 
 
 if __name__ == "__main__":

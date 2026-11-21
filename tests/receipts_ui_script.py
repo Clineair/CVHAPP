@@ -36,6 +36,15 @@ class FakeWS:
     def get_all_values(self):
         return [list(r) for r in self.store[self.title]]
 
+    def update_cell(self, row, col, value):
+        rows = self.store[self.title]
+        while len(rows) < row:
+            rows.append([])
+        line = rows[row - 1]
+        while len(line) < col:
+            line.append("")
+        line[col - 1] = value
+
 
 class NotFound(Exception):
     pass
@@ -111,7 +120,7 @@ def fake_store(data, name, employee, d, amount, secrets, when=None):
 
 
 def fake_read(data, filename="", **kw):
-    return {"date": date(2026, 11, 18), "amount": "61.12", "number": "004417", "vendor": "SHELL OIL"}, employee_receipts.READ_NOTE
+    return {"date": date(2026, 11, 18), "amount": "61.12", "number": "004417", "vendor": "SHELL OIL", "gallons": "18.2"}, employee_receipts.READ_NOTE
 
 
 mod_proxy = types.SimpleNamespace(**{n: getattr(employee_receipts, n) for n in dir(employee_receipts) if not n.startswith("__")})
@@ -135,7 +144,10 @@ src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "app.p
 tree = ast.parse(src)
 want = {
     "cached_receipt_records", "clear_receipts_cache", "receipt_records_for_view", "receipt_totals_rows",
-    "receipt_table_rows", "_reset_receipt_entry", "apply_receipt_fields_to_session", "show_receipt_entry",
+    "receipt_statement_totals_rows",
+    "receipt_table_rows", "_reset_receipt_entry", "apply_receipt_fields_to_session",
+    "apply_existing_receipt_to_session", "_receipt_options", "_receipt_by_id",
+    "show_receipt_entry", "show_saved_receipts_picker",
     "show_receipt_list", "receipt_summary_period_options", "show_receipts_summary_office",
     "show_employee_receipts", "employee_button_key", "_cell", "show_receipts_office_gate",
     "show_receipts_summary_page", "_receipts_office_filter_names",
@@ -163,6 +175,10 @@ ns = {
     "_timesheet_queue_cookie": lambda who, secret: st.session_state.__setitem__("queued_cookie", who),
     "timesheet_access_message": lambda state: "locked",
     "timesheet_pin": timesheet_pin,
+    "receipts_equipment_choices": lambda: ["Heli1", "Ram", "PW", "F250"],
+    "is_active_equipment": lambda rec: True,
+    "OFFICIAL_EQUIPMENT_NAMES": ["Heli1", "Ram", "PW", "F250"],
+    "load_equipment_records_readonly": lambda spreadsheet=None: [],
 }
 exec(compile(ast.Module(body=nodes, type_ignores=[]), "app", "exec"), ns)
 if os.environ.get("RECEIPTS_UI_PAGE") == "summary":
