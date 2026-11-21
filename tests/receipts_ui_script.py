@@ -144,7 +144,7 @@ src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "app.p
 tree = ast.parse(src)
 want = {
     "cached_receipt_records", "clear_receipts_cache", "receipt_records_for_view", "receipt_totals_rows",
-    "receipt_statement_totals_rows",
+    "receipt_statement_totals_rows", "receipt_vendor_totals_rows",
     "receipt_table_rows", "_reset_receipt_entry", "apply_receipt_fields_to_session",
     "apply_existing_receipt_to_session", "_receipt_options", "_receipt_by_id",
     "show_receipt_entry", "show_saved_receipts_picker",

@@ -112,10 +112,9 @@ RECEIPT_EQUIPMENT_PURPOSES = (
     "AvGas",
     "Parts",
 )
-RECEIPT_STATEMENT_NONE = "None"
-# Paid-on-monthly-statement accounts. Edit this list when vendors change.
-RECEIPT_STATEMENT_ACCOUNTS = (
-    RECEIPT_STATEMENT_NONE,
+RECEIPT_VENDOR_OTHER = "Other"
+# Vendor menu on the receipt form. Edit this list when vendors change.
+RECEIPT_VENDORS = (
     "Bruckners",
     "Mid State Co-Op",
     "Knudson",
@@ -124,7 +123,13 @@ RECEIPT_STATEMENT_ACCOUNTS = (
     "Napa",
     "Oxac",
     "Les Schwab",
+    RECEIPT_VENDOR_OTHER,
 )
+RECEIPT_VENDORS_LISTED = tuple(v for v in RECEIPT_VENDORS if v != RECEIPT_VENDOR_OTHER)
+VENDOR_NONE_LABEL = "(no vendor)"
+# Older Statement Account values, including None, still appear on saved rows.
+RECEIPT_STATEMENT_NONE = "None"
+RECEIPT_STATEMENT_ACCOUNTS = (RECEIPT_STATEMENT_NONE,) + RECEIPT_VENDORS_LISTED
 # IFTA member jurisdictions: 48 contiguous US states and 10 Canadian provinces.
 # Same set the Equipment IFTA forms use.
 IFTA_JURISDICTIONS = [
@@ -217,11 +222,14 @@ RECEIPT_MIME_TYPES = {
 # counted from this Sunday. Change it to line up with the pay period.
 RECEIPTS_PERIOD_ANCHOR = date(2026, 11, 15)
 RECEIPTS_PERIOD_DAYS = 14
+RANGE_ALL_DATES = "All dates"
 RANGE_PERIOD_TO_DATE = "Period to date"
 RANGE_THIS_MONTH = "This month"
 RANGE_PAY_PERIOD = "Pay period"
 RANGE_CUSTOM = "Custom dates"
+# All dates is first so it is easy to pick on the office query page.
 SUMMARY_RANGE_CHOICES = (
+    RANGE_ALL_DATES,
     RANGE_PERIOD_TO_DATE,
     RANGE_THIS_MONTH,
     RANGE_PAY_PERIOD,
@@ -237,7 +245,6 @@ OFFICE_TABLE_COLUMNS = (
     "Receipt #",
     "Category",
     "Detail",
-    "Statement account",
     "Amount",
     "Photo",
 )
@@ -465,6 +472,64 @@ def find_vendor(text):
         if letters >= 3 and letters >= len(cleaned) * 0.5 and not find_dates(cleaned):
             return cleaned[:60]
     return ""
+
+
+def _vendor_tokens(text):
+    """Lowercase words with punctuation stripped, for matching a listed vendor."""
+    return re.sub(r"[^a-z0-9]+", " ", _cell(text).lower()).split()
+
+
+def match_listed_vendor(text, vendors=None):
+    """Return the listed vendor name if text matches one, case- and punctuation-insensitive.
+
+    'NAPA Auto Parts' matches Napa. A listed name must appear as a whole-word
+    sequence, so 'Home Depot' does not match Ranch & Home.
+    """
+    tokens = _vendor_tokens(text)
+    if not tokens:
+        return ""
+    text_key = " ".join(tokens)
+    compact = "".join(tokens)
+    for name in (vendors if vendors is not None else RECEIPT_VENDORS_LISTED):
+        if name == RECEIPT_VENDOR_OTHER:
+            continue
+        name_tokens = _vendor_tokens(name)
+        if not name_tokens:
+            continue
+        name_key = " ".join(name_tokens)
+        name_compact = "".join(name_tokens)
+        if text_key == name_key or compact == name_compact:
+            return name
+        n = len(name_tokens)
+        if any(tokens[i:i + n] == name_tokens for i in range(len(tokens) - n + 1)):
+            return name
+        # MidStateCoOp vs Mid State Co-Op (punctuation already stripped into tokens).
+        if compact == name_compact:
+            return name
+    return ""
+
+
+def vendor_choice_from_text(text):
+    """(dropdown choice, Other-box text) from OCR or a saved vendor string.
+
+    A listed vendor is preselected. Any other non-empty text selects Other and
+    fills the box. Empty text leaves both blank so the employee can choose.
+    """
+    raw = _cell(text)
+    if not raw:
+        return "", ""
+    matched = match_listed_vendor(raw)
+    if matched:
+        return matched, ""
+    return RECEIPT_VENDOR_OTHER, raw
+
+
+def resolve_vendor(choice, other=""):
+    """Value stored in the Vendor column from the dropdown and Other box."""
+    choice = _cell(choice)
+    if not choice or choice == RECEIPT_VENDOR_OTHER:
+        return _cell(other)
+    return match_listed_vendor(choice) or choice
 
 
 _GALLONS_AFTER_RE = re.compile(
@@ -1136,6 +1201,33 @@ def receipt_statement_account(record):
     return value
 
 
+def receipt_vendor(record):
+    """Vendor shown on the office page, filters, and totals.
+
+    Old receipts: the saved statement-account vendor if it was set, otherwise
+    the free-text Vendor. Listed names are canonicalized (NAPA -> Napa).
+    """
+    account = receipt_statement_account(record)
+    if account:
+        return match_listed_vendor(account) or account
+    vendor = _cell(record.get("Vendor"))
+    return match_listed_vendor(vendor) or vendor
+
+
+def receipt_memo(record):
+    """Memo text for the form: the Memo column, or older Notes when Memo is empty.
+
+    For an Other receipt, Notes holds the required comment, so it is not used
+    as a fallback for Memo.
+    """
+    memo = _cell(record.get("Memo"))
+    if memo:
+        return memo
+    if receipt_category(record) == CATEGORY_OTHER:
+        return ""
+    return _cell(record.get("Notes"))
+
+
 def is_ifta_record(record):
     return is_ifta_fuel(
         receipt_category(record),
@@ -1246,13 +1338,22 @@ def build_receipt_record(employee, fields, category, subcategory="", subcategory
     subcategory = _cell(subcategory)
     subcategory_detail = _cell(subcategory_detail)
     equipment_purpose = _cell(equipment_purpose)
-    memo = _cell(memo) or _cell(fields.get("memo"))
-    comment = _cell(fields.get("other_comment")) or _cell(fields.get("notes"))
+    memo = _cell(memo) or _cell(fields.get("memo")) or _cell(fields.get("notes"))
+    other_comment = _cell(fields.get("other_comment"))
+    # Other receipts keep the required comment in Notes. Everyone else stores
+    # the memo in both Memo and Notes so older Notes-only readers still see it.
+    notes = other_comment if (other_comment or category == CATEGORY_OTHER) else memo
     job, expense_type = derived_job_and_expense(category, subcategory, equipment_purpose)
     receipt_date = parse_receipt_date(fields.get("date"))
-    account = _cell(statement_account)
-    if not account or account == RECEIPT_STATEMENT_NONE:
-        account = ""
+    vendor = resolve_vendor(fields.get("vendor_choice"), fields.get("vendor_other"))
+    if not vendor:
+        vendor = _cell(fields.get("vendor"))
+    listed = match_listed_vendor(vendor)
+    # Keep the Statement Account column (append-only; never delete it). Write
+    # the listed vendor there so old statement-based totals stay in sync, and
+    # clear it for a typed Other vendor so a leftover account cannot override
+    # the new choice on a later edit.
+    account = listed
     return {
         "Saved At": format_saved_at(when),
         "Entry ID": entry_id or new_entry_id(when),
@@ -1260,13 +1361,13 @@ def build_receipt_record(employee, fields, category, subcategory="", subcategory
         "Date": receipt_date.isoformat() if receipt_date else "",
         "Amount": format_amount(fields.get("amount")),
         "Receipt Number": _cell(fields.get("number")),
-        "Vendor": _cell(fields.get("vendor")),
+        "Vendor": listed or vendor,
         "Purpose": _cell(fields.get("purpose")),
         "Job": job,
         "Expense Type": expense_type,
         "Photo Link": _cell(photo_link),
         "Photo File": _cell(photo_file),
-        "Notes": comment,
+        "Notes": notes,
         "Category": category,
         "Subcategory": subcategory,
         "Subcategory Detail": subcategory_detail,
@@ -1541,10 +1642,15 @@ def _ordered_dates(start, end):
 
 
 def resolve_summary_range(kind, today=None, period=None, custom_start=None, custom_end=None, anchor=None):
-    """(start, end) for a live-view range choice. Dates are inclusive, counted by day entered."""
+    """(start, end) for a live-view range choice. Dates are inclusive, counted by day entered.
+
+    All dates returns (None, None), meaning no date filter.
+    """
     today = today or now_pacific().date()
     if isinstance(today, datetime):
         today = _as_pacific(today).date()
+    if kind == RANGE_ALL_DATES:
+        return None, None
     if kind == RANGE_PERIOD_TO_DATE:
         return period_to_date(today, anchor)
     if kind == RANGE_THIS_MONTH:
@@ -1560,6 +1666,8 @@ def resolve_summary_range(kind, today=None, period=None, custom_start=None, cust
 
 
 def summary_range_label(start, end, kind=""):
+    if kind == RANGE_ALL_DATES or start is None or end is None:
+        return "All dates"
     label = period_label(start, end)
     if kind == RANGE_PERIOD_TO_DATE:
         return label + " (period to date)"
@@ -1576,26 +1684,30 @@ def _filter_value(value):
 
 
 def filter_receipts(records, start, end, employee=None, category=None, subcategory=None,
-                    statement_account=None, job=None, expense_type=None):
-    """Receipts saved in [start, end] (Pacific), optionally narrowed by employee, category, or statement account."""
+                    vendor=None, statement_account=None, job=None, expense_type=None):
+    """Receipts saved in [start, end] (Pacific), optionally narrowed by employee, category, or vendor."""
     employee = _filter_value(employee)
     category = _filter_value(category)
     subcategory = _filter_value(subcategory)
-    statement_account = _filter_value(statement_account)
+    vendor = _filter_value(vendor) or _filter_value(statement_account)
     job = _filter_value(job)
     expense_type = _filter_value(expense_type)
-    out = [r for r in (records or []) if in_period(r, start, end)]
+    if start is None or end is None:
+        out = list(records or [])
+    else:
+        out = [r for r in (records or []) if in_period(r, start, end)]
     if employee:
         out = [r for r in out if _cell(r.get("Employee")) == employee]
     if category:
         out = [r for r in out if receipt_category(r) == category]
     if subcategory:
         out = [r for r in out if receipt_subcategory(r) == subcategory]
-    if statement_account:
-        if statement_account == RECEIPT_STATEMENT_NONE:
-            out = [r for r in out if not receipt_statement_account(r)]
+    if vendor:
+        if vendor in (RECEIPT_STATEMENT_NONE, VENDOR_NONE_LABEL):
+            out = [r for r in out if not receipt_vendor(r)]
         else:
-            out = [r for r in out if receipt_statement_account(r) == statement_account]
+            wanted = match_listed_vendor(vendor) or vendor
+            out = [r for r in out if receipt_vendor(r) == wanted]
     if job:
         out = [r for r in out if receipt_job(r) == job]
     if expense_type:
@@ -1603,14 +1715,14 @@ def filter_receipts(records, start, end, employee=None, category=None, subcatego
     return out
 
 
-def filter_key(employee=None, category=None, subcategory=None, statement_account=None,
-               job=None, expense_type=None):
+def filter_key(employee=None, category=None, subcategory=None, vendor=None,
+               statement_account=None, job=None, expense_type=None):
     """Stable suffix for the send-dedupe key. Empty when no filters are on."""
     parts = []
     employee = _filter_value(employee)
     category = _filter_value(category)
     subcategory = _filter_value(subcategory)
-    statement_account = _filter_value(statement_account)
+    vendor = _filter_value(vendor) or _filter_value(statement_account)
     job = _filter_value(job)
     expense_type = _filter_value(expense_type)
     if employee:
@@ -1619,8 +1731,8 @@ def filter_key(employee=None, category=None, subcategory=None, statement_account
         parts.append("cat=" + category)
     if subcategory:
         parts.append("sub=" + subcategory)
-    if statement_account:
-        parts.append("acct=" + statement_account)
+    if vendor:
+        parts.append("vendor=" + vendor)
     if job:
         parts.append("job=" + job)
     if expense_type:
@@ -1712,36 +1824,78 @@ def statement_month_label(key):
     return parsed.strftime("%b %Y") if parsed else key
 
 
-def statement_account_totals(records):
-    """{account: {"total": x, "months": {YYYY-MM: y}}} including a None bucket."""
-    by_acct = {}
+def vendor_totals(records):
+    """{vendor: {"total": x, "months": {YYYY-MM: y}}} including a no-vendor bucket."""
+    by_vendor = {}
     for rec in records or []:
-        account = receipt_statement_account(rec) or RECEIPT_STATEMENT_NONE
-        by_acct.setdefault(account, []).append(rec)
-    order = list(RECEIPT_STATEMENT_ACCOUNTS)
+        name = receipt_vendor(rec) or VENDOR_NONE_LABEL
+        by_vendor.setdefault(name, []).append(rec)
+    order = list(RECEIPT_VENDORS_LISTED)
     out = {}
-    for account, mine in _ordered(by_acct, order).items():
+    for name, mine in _ordered(by_vendor, order).items():
         months = {}
         for rec in mine:
             key = statement_month_key(rec)
             if not key:
                 continue
             months[key] = round(months.get(key, 0.0) + (parse_amount(rec.get("Amount")) or 0.0), 2)
-        out[account] = {"total": grand_total(mine), "months": dict(sorted(months.items()))}
+        out[name] = {"total": grand_total(mine), "months": dict(sorted(months.items()))}
     return out
 
 
-def statement_totals_rows(records):
-    """Rows for Statement account / Month / Total, then each vendor subtotal, then the grand total."""
+def vendor_totals_rows(records):
+    """Rows for Vendor / Month / Total, then each vendor subtotal, then the grand total."""
     rows = []
-    grouped = statement_account_totals(records)
-    for account, info in grouped.items():
+    grouped = vendor_totals(records)
+    for name, info in grouped.items():
         for month, amount in info["months"].items():
-            rows.append({"Statement account": account, "Month": statement_month_label(month), "Total": amount})
-        rows.append({"Statement account": account + " total", "Month": "", "Total": info["total"]})
+            rows.append({"Vendor": name, "Month": statement_month_label(month), "Total": amount})
+        rows.append({"Vendor": name + " total", "Month": "", "Total": info["total"]})
     if rows:
-        rows.append({"Statement account": "All statement accounts", "Month": "", "Total": grand_total(records)})
+        rows.append({"Vendor": "All vendors", "Month": "", "Total": grand_total(records)})
     return rows
+
+
+def statement_account_totals(records):
+    """Back-compat alias for vendor_totals."""
+    return vendor_totals(records)
+
+
+def statement_totals_rows(records):
+    """Back-compat rows using the Vendor heading."""
+    return vendor_totals_rows(records)
+
+
+def query_subtotal_sections(employee=None, vendor=None, category=None):
+    """Headings and kinds of sub-total tables for the current office query.
+
+    One employee: break down by category (and vendor). One vendor: by employee
+    (and category). One category: by employee (and vendor). Otherwise show all
+    three breakdowns.
+    """
+    emp = _filter_value(employee)
+    vend = _filter_value(vendor)
+    cat = _filter_value(category)
+    if emp and not vend and not cat:
+        return (
+            ("Totals by category", "category"),
+            ("Totals by vendor and month", "vendor"),
+        )
+    if vend and not emp and not cat:
+        return (
+            ("Totals by employee", "employee"),
+            ("Totals by category", "category"),
+        )
+    if cat and not emp and not vend:
+        return (
+            ("Totals by employee", "employee"),
+            ("Totals by vendor and month", "vendor"),
+        )
+    return (
+        ("Totals by employee", "employee"),
+        ("Totals by category", "category"),
+        ("Totals by vendor and month", "vendor"),
+    )
 
 
 def grand_total(records):
@@ -1774,12 +1928,11 @@ def office_table_rows(records):
             "Saved": saved[:10] if saved else "",
             "Employee": _cell(rec.get("Employee")),
             "Receipt date": _cell(rec.get("Date")),
-            "Vendor": _cell(rec.get("Vendor")),
+            "Vendor": receipt_vendor(rec),
             "Purpose": _cell(rec.get("Purpose")),
             "Receipt #": _cell(rec.get("Receipt Number")),
             "Category": receipt_category(rec),
             "Detail": receipt_detail(rec),
-            "Statement account": receipt_statement_account(rec) or RECEIPT_STATEMENT_NONE,
             "Amount": format_money(rec.get("Amount")),
             "Photo": link if link.startswith("http") else "",
         })
@@ -1797,11 +1950,11 @@ def summary_csv(records):
 
 
 def build_summary(records, start, end, employees=None, employee=None, category=None, subcategory=None,
-                  statement_account=None, job=None, expense_type=None, range_kind=""):
+                  vendor=None, statement_account=None, job=None, expense_type=None, range_kind=""):
     """Per-employee totals and line items for receipts saved in [start, end], optionally filtered."""
     chosen = filter_receipts(
         records, start, end, employee=employee, category=category, subcategory=subcategory,
-        statement_account=statement_account, job=job, expense_type=expense_type,
+        vendor=vendor, statement_account=statement_account, job=job, expense_type=expense_type,
     )
     names = []
     for name in list(employees or []) + [_cell(r.get("Employee")) for r in chosen]:
@@ -1828,7 +1981,7 @@ def build_summary(records, start, end, employees=None, employee=None, category=N
         "employee_filter": _filter_value(employee),
         "category_filter": _filter_value(category),
         "subcategory_filter": _filter_value(subcategory),
-        "statement_account_filter": _filter_value(statement_account),
+        "vendor_filter": _filter_value(vendor) or _filter_value(statement_account),
         "job_filter": _filter_value(job),
         "expense_type_filter": _filter_value(expense_type),
         "employees": people,
@@ -1845,8 +1998,8 @@ def summary_filters_label(summary):
         parts.append("Category: " + summary["category_filter"])
     if summary.get("subcategory_filter"):
         parts.append("Detail: " + summary["subcategory_filter"])
-    if summary.get("statement_account_filter"):
-        parts.append("Statement account: " + summary["statement_account_filter"])
+    if summary.get("vendor_filter"):
+        parts.append("Vendor: " + summary["vendor_filter"])
     if summary.get("job_filter"):
         parts.append("Job: " + summary["job_filter"])
     if summary.get("expense_type_filter"):
@@ -1858,9 +2011,15 @@ def summary_subject(summary):
     return "CVH employee receipts: " + summary["label"]
 
 
+def summary_intro(summary):
+    if summary.get("range_kind") == RANGE_ALL_DATES or not summary.get("start"):
+        return "All employee receipts."
+    return "Employee receipts saved " + summary["label"] + "."
+
+
 def summary_text(summary):
     lines = [
-        "Employee receipts saved " + summary["label"] + ".",
+        summary_intro(summary),
         "Receipts: " + str(summary["count"]) + "   Total: " + format_money(summary["total"]),
     ]
     filters = summary_filters_label(summary)
@@ -1885,12 +2044,10 @@ def summary_text(summary):
                 receipt_category(rec) + ((" / " + receipt_detail(rec)) if receipt_detail(rec) else ""),
                 rec.get("Purpose") or "",
             ]
-            if rec.get("Vendor"):
-                bits.append(rec["Vendor"])
+            if receipt_vendor(rec):
+                bits.append(receipt_vendor(rec))
             if rec.get("Receipt Number"):
                 bits.append("#" + rec["Receipt Number"])
-            if receipt_statement_account(rec):
-                bits.append("Statement: " + receipt_statement_account(rec))
             lines.append("  - " + " | ".join(b for b in bits if b))
             lines.append("    Photo: " + (rec.get("Photo Link") or "not on Drive (" + (rec.get("Photo File") or "no file") + ")"))
         lines.append("")
@@ -1900,7 +2057,7 @@ def summary_text(summary):
 
 def summary_html(summary):
     out = [
-        "<p>Employee receipts saved <b>" + escape(summary["label"]) + "</b>.<br>",
+        "<p>" + escape(summary_intro(summary)) + "<br>",
         "Receipts: " + str(summary["count"]) + " &nbsp; Total: <b>" + escape(format_money(summary["total"])) + "</b>",
     ]
     filters = summary_filters_label(summary)
@@ -1924,7 +2081,7 @@ def summary_html(summary):
         out.append("<p>By category: " + escape(", ".join(
             category + " " + format_money(info["total"]) for category, info in person["categories"].items())) + "</p>")
         out.append('<table style="border-collapse:collapse"><tr>' + "".join(
-            "<th " + cell + ">" + h + "</th>" for h in ("Date", "Amount", "Category", "Detail", "Purpose", "Vendor", "Receipt #", "Statement", "Photo")
+            "<th " + cell + ">" + h + "</th>" for h in ("Date", "Amount", "Category", "Detail", "Purpose", "Vendor", "Receipt #", "Photo")
         ) + "</tr>")
         for rec in person["items"]:
             link = _cell(rec.get("Photo Link"))
@@ -1933,8 +2090,8 @@ def summary_html(summary):
             out.append("<tr>" + "".join("<td " + cell + ">" + v + "</td>" for v in (
                 escape(rec.get("Date") or ""), escape(format_money(rec.get("Amount"))), escape(receipt_category(rec)),
                 escape(receipt_detail(rec)),
-                escape(rec.get("Purpose") or ""), escape(rec.get("Vendor") or ""), escape(rec.get("Receipt Number") or ""),
-                escape(receipt_statement_account(rec)), photo,
+                escape(rec.get("Purpose") or ""), escape(receipt_vendor(rec)), escape(rec.get("Receipt Number") or ""),
+                photo,
             )) + "</tr>")
         out.append("</table>")
     out.append("<p style=\"color:#666\">Sent by the CVH Employee Tool.</p>")
@@ -2065,12 +2222,15 @@ def recipient(secrets):
 def idempotency_key(summary):
     """Dedupe key for a send. Includes the date range, and any filters, so a custom range
     or a filtered view does not clash with a different period or unfiltered send."""
-    key = "receipts:" + summary["start"].isoformat() + ":" + summary["end"].isoformat()
+    if summary.get("range_kind") == RANGE_ALL_DATES or not summary.get("start") or not summary.get("end"):
+        key = "receipts:all"
+    else:
+        key = "receipts:" + summary["start"].isoformat() + ":" + summary["end"].isoformat()
     suffix = filter_key(
         employee=summary.get("employee_filter"),
         category=summary.get("category_filter"),
         subcategory=summary.get("subcategory_filter"),
-        statement_account=summary.get("statement_account_filter"),
+        vendor=summary.get("vendor_filter"),
         job=summary.get("job_filter"),
         expense_type=summary.get("expense_type_filter"),
     )
@@ -2163,8 +2323,8 @@ def send_summary(summary, secrets, *, trigger="Manual", audit_records=None, allo
 def build_mail_audit_record(summary, result, when=None, sent_by=""):
     return {
         "Timestamp": format_saved_at(when),
-        "Period Start": summary["start"].isoformat(),
-        "Period End": summary["end"].isoformat(),
+        "Period Start": summary["start"].isoformat() if summary.get("start") else "",
+        "Period End": summary["end"].isoformat() if summary.get("end") else "",
         "Trigger": _cell(result.get("trigger")),
         "Sent By": _cell(sent_by) or ("Schedule" if result.get("trigger") == "Automatic" else ""),
         "Status": _cell(result.get("status")),
