@@ -8,8 +8,8 @@ class RawRiskDisplayTests(unittest.TestCase):
     def test_boundary_scores_display_and_unchanged_gates(self):
         at = AppTest.from_string(offline_app(), default_timeout=30).run()
         # Use real sliders and classification across every FAR mode, not a test copy.
-        boundaries = [(0, "Low Risk"), (30, "Low Risk"), (31, "Medium Risk"),
-                      (39, "Medium Risk"), (60, "Medium Risk"), (61, "High Risk")]
+        boundaries = [(0, "Low Risk"), (44, "Low Risk"), (45, "Medium Risk"),
+                      (60, "Medium Risk"), (61, "High Risk")]
         cases = [(part, score, category) for part in ["Part 91", "Part 135", "Part 137", "Part 133"]
                  for score, category in boundaries]
         for part, score, category in cases:
@@ -30,7 +30,7 @@ class RawRiskDisplayTests(unittest.TestCase):
                 self.assertNotIn("%", current[0])
                 self.assertNotIn("/", current[0])
                 self.assertFalse(any("conic-gradient" in m.value for m in at.markdown))
-                self.assertTrue(any(c.value == "Low 0–30 · Medium 31–60 · High 61+" for c in at.caption))
+                self.assertTrue(any(c.value == "Low 0–44 · Medium 45–60 · High 61+" for c in at.caption))
                 # No current-assessment Markdown exposes a percentage or fraction.
                 self.assertFalse(any("%" in m.value or f"{score} / " in m.value
                                      for m in at.markdown if "Risk" in m.value))
