@@ -599,8 +599,9 @@ PART_STOPS = {
         ("stop_airworthy", "Aircraft airworthy with no open grounding squawks"),
     ],
 }
-# Raw-total cutoffs per part (Ron to decide rescaling): Low <= low_max, Medium <= med_max, else High
-RISK_CUTOFFS = {p: {"low_max": 30, "med_max": 60} for p in PARTS}
+# Raw-total cutoffs per part: Low <= low_max, Medium <= med_max, else High
+# Nov 23, 2026: Low 0–44, Medium 45–60, High 61+ (was Low 0–30, Medium 31–60)
+RISK_CUTOFFS = {p: {"low_max": 44, "med_max": 60} for p in PARTS}
 
 CONFIG_FIELDS = ["pilot_weight", "fuel_gal", "pax_count", "pax_weight", "baggage_weight",
                  "hopper_gal", "product_density", "ext_load_weight", "longline_ft", "hook_equip_weight",

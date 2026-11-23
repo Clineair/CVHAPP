@@ -49,7 +49,7 @@ class AssessmentResetTests(unittest.TestCase):
                 at.date_input(key=widget_key(at, "frat_date")).set_value(date(2020, 1, 1))
                 at.text_input(key=widget_key(at, "frat_route")).set_value("Unsaved flight")
                 for i, slider in enumerate(at.slider):
-                    slider.set_value(10 if i < 3 else 1)  # medium risk for all FAR modes
+                    slider.set_value(10 if i < 4 else 1)  # medium risk (45–60) for all FAR modes
                 for radio in at.radio:
                     if "Yes" in radio.options:
                         radio.set_value("Yes")
