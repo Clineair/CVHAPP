@@ -621,15 +621,387 @@ FRAT_COLUMNS = (["timestamp", "date", "part", "pilot", "aircraft", "route_job"] 
                 + ["total", "max_total", "percent", "risk_level", "mitigations", "approver",
                    "approved", "pilot_signature", "decision", "ron_unreachable", "pilot_attests"])
 
-def _gsheets_spreadsheet():
+
+SHEETS_DATA_TTL_SECONDS = 60
+SHEETS_RETRY_ATTEMPTS = 4
+SHEETS_RETRY_DELAYS = (2, 4, 8)
+SHEETS_BUSY_MESSAGE = "Google Sheets is busy, please try again in a minute"
+FRAT_CACHE_KEY = "FRAT"
+
+
+def is_sheets_quota_error(exc):
+    """True when Google Sheets rejected a call because the read quota was hit."""
+    if exc is None:
+        return False
+    status = None
+    response = getattr(exc, "response", None)
+    if response is not None:
+        status = getattr(response, "status_code", None)
+        if status is None:
+            status = getattr(response, "status", None)
+    code = getattr(exc, "code", None)
+    if status == 429 or code == 429:
+        return True
+    text = str(exc)
+    lowered = text.lower()
+    if "429" in text and ("quota" in lowered or "rate limit" in lowered or "too many requests" in lowered):
+        return True
+    return "quota exceeded" in lowered
+
+
+def friendly_sheets_error_message(exc):
+    """User-facing Sheets error; quota failures stay short and do not show the raw API text."""
+    if is_sheets_quota_error(exc):
+        return SHEETS_BUSY_MESSAGE
+    return str(exc)
+
+
+def sheets_retry(func, *, attempts=None, delays=None, sleep=None, jitter=None):
+    """Retry a Sheets call on HTTP 429 with exponential backoff and jitter."""
+    import random
+    import time
+    attempts = SHEETS_RETRY_ATTEMPTS if attempts is None else int(attempts)
+    delays = SHEETS_RETRY_DELAYS if delays is None else tuple(delays)
+    if sleep is None:
+        sleep = time.sleep
+    if attempts < 1:
+        attempts = 1
+    last_exc = None
+    for index in range(attempts):
+        try:
+            return func()
+        except Exception as exc:
+            last_exc = exc
+            if not is_sheets_quota_error(exc) or index >= attempts - 1:
+                raise
+            delay = delays[min(index, len(delays) - 1)]
+            if jitter is None:
+                delay = delay + random.random()
+            elif callable(jitter):
+                delay = delay + float(jitter())
+            else:
+                delay = delay + float(jitter)
+            if delay > 0:
+                sleep(delay)
+    raise last_exc
+
+
+def _open_gsheets_spreadsheet():
     """Open the production spreadsheet; does not select or modify a worksheet."""
     if "gcp_service_account" not in st.secrets:
         raise RuntimeError("Google Sheets service account is not configured")
     import gspread
     gc = gspread.service_account_from_dict(dict(st.secrets["gcp_service_account"]))
     sheet_id = st.secrets.get("frat_sheet_id")
-    return (gc.open_by_key(sheet_id) if sheet_id else
-            gc.open(st.secrets.get("frat_sheet_name") or FRAT_SHEET_NAME))
+
+    def _open():
+        return (gc.open_by_key(sheet_id) if sheet_id else
+                gc.open(st.secrets.get("frat_sheet_name") or FRAT_SHEET_NAME))
+
+    spreadsheet = sheets_retry(_open)
+    try:
+        spreadsheet._cvh_cacheable = True
+    except Exception:
+        pass
+    return spreadsheet
+
+
+def _cached_sheet_values_uncached(spreadsheet_id, title):
+    """Raw values for one tab; used by st.cache_data in production."""
+    spreadsheet = _gsheets_spreadsheet()
+    ws = _worksheet_or_none(spreadsheet, title)
+    if ws is None:
+        return []
+    return sheet_all_values(ws)
+
+
+try:
+    _cached_gsheets_spreadsheet = st.cache_resource(_open_gsheets_spreadsheet)
+except Exception:
+    _cached_gsheets_spreadsheet = _open_gsheets_spreadsheet
+
+try:
+    _st_cached_sheet_values = st.cache_data(
+        ttl=SHEETS_DATA_TTL_SECONDS, show_spinner=False
+    )(_cached_sheet_values_uncached)
+except Exception:
+    _st_cached_sheet_values = None
+
+
+def _gsheets_spreadsheet():
+    """Open the production spreadsheet; reused across reruns via st.cache_resource."""
+    try:
+        cached = getattr(_gsheets_spreadsheet, "_cached", None)
+        if cached is None:
+            cache_resource = getattr(st, "cache_resource", None)
+            if callable(cache_resource):
+                cached = cache_resource(_open_gsheets_spreadsheet)
+            else:
+                cached = _cached_gsheets_spreadsheet
+            _gsheets_spreadsheet._cached = cached
+        spreadsheet = sheets_retry(cached)
+    except Exception:
+        spreadsheet = _open_gsheets_spreadsheet()
+    try:
+        spreadsheet._cvh_cacheable = True
+    except Exception:
+        pass
+    return spreadsheet
+
+
+def _records_cache_store():
+    """Shared TTL cache for sheet rows. Lives in st.cache_resource when available."""
+    try:
+        cache_resource = getattr(st, "cache_resource", None)
+        if callable(cache_resource):
+            cached = getattr(_records_cache_store, "_cached_fn", None)
+            if cached is None:
+                def _shared_sheet_records_store():
+                    return {}
+                cached = cache_resource(_shared_sheet_records_store)
+                _records_cache_store._cached_fn = cached
+            return cached()
+    except Exception:
+        pass
+    return globals().setdefault("_SHEETS_RECORDS_CACHE", {})
+
+
+def read_sheet_records_cache(cache, key, loader, now=None, ttl=None, force=False):
+    """Short-lived read-through cache keyed by worksheet title."""
+    import time
+    ttl = SHEETS_DATA_TTL_SECONDS if ttl is None else ttl
+    now_ts = time.time() if now is None else now
+    cache = cache if cache is not None else {}
+    if force:
+        cache.pop(key, None)
+    entry = cache.get(key)
+    if entry and entry.get("records") is not None and now_ts < (entry.get("expires") or 0):
+        return list(entry["records"])
+    records = list(loader() or [])
+    cache[key] = {"records": list(records), "expires": now_ts + ttl}
+    return list(records)
+
+
+def spreadsheet_is_cacheable(spreadsheet):
+    """Cache only the live production spreadsheet, never a test double."""
+    return bool(spreadsheet is not None and getattr(spreadsheet, "_cvh_cacheable", False))
+
+
+def clear_sheet_records_cache(title=None, spreadsheet=None):
+    """Drop cached rows so a save shows up immediately for this user."""
+    store = _records_cache_store()
+    if title is None:
+        store.clear()
+    else:
+        store.pop(title, None)
+    if spreadsheet is not None:
+        ws_map = getattr(spreadsheet, "_cvh_ws_map", None) or {}
+        ws = ws_map.get(title) if title else None
+        if ws is not None and hasattr(ws, "_cvh_values"):
+            try:
+                ws._cvh_values = None
+            except Exception:
+                pass
+        if title is None:
+            try:
+                spreadsheet._cvh_ws_map = None
+                spreadsheet._cvh_ws_map_expires = 0
+            except Exception:
+                pass
+    cached_values = globals().get("_st_cached_sheet_values")
+    if cached_values is not None and hasattr(cached_values, "clear"):
+        try:
+            cached_values.clear()
+        except Exception:
+            pass
+    if title in (None, BLT_CHECKS_SHEET_TITLE):
+        try:
+            clear_blt_checks_cache()
+        except NameError:
+            pass
+    if title in (None, "Receipts", "Receipts Deleted", "Receipts Mail"):
+        try:
+            clear_receipts_cache()
+        except NameError:
+            pass
+
+
+def load_cached_sheet_records(title, loader, spreadsheet=None, force=False, now=None):
+    """Cache loader() results for a short TTL on the live spreadsheet only."""
+    if not spreadsheet_is_cacheable(spreadsheet):
+        return loader()
+    return read_sheet_records_cache(
+        _records_cache_store(),
+        title,
+        loader,
+        now=now,
+        ttl=SHEETS_DATA_TTL_SECONDS,
+        force=force,
+    )
+
+
+def load_records_with_ensure(title, columns, ensure_fn, spreadsheet=None):
+    ss = spreadsheet if spreadsheet is not None else _gsheets_spreadsheet()
+    def _load():
+        cols = columns() if callable(columns) else columns
+        ws, _created = ensure_fn(ss)
+        return records_from_worksheet(ws, cols)
+    return load_cached_sheet_records(title, _load, spreadsheet=ss)
+
+
+def load_records_readonly(title, columns, spreadsheet=None, attempts=None):
+    ss = spreadsheet if spreadsheet is not None else _gsheets_spreadsheet()
+    def _load():
+        cols = columns() if callable(columns) else columns
+        ws = _worksheet_or_none(ss, title)
+        if ws is None:
+            return []
+        values = sheet_all_values(ws, attempts=attempts)
+        if not values or not any(_cell(c) for c in values[0]):
+            return []
+        return records_from_values(values, cols)
+    return load_cached_sheet_records(title, _load, spreadsheet=ss)
+
+
+def worksheet_map(spreadsheet, force=False):
+    """One worksheets() call per TTL, cached on the spreadsheet object."""
+    import time
+    if spreadsheet is None or not hasattr(spreadsheet, "worksheets"):
+        return None
+    cache = getattr(spreadsheet, "_cvh_ws_map", None)
+    expires = getattr(spreadsheet, "_cvh_ws_map_expires", 0) or 0
+    now = time.time()
+    if not force and cache is not None and now < expires:
+        return cache
+    sheets = sheets_retry(lambda: spreadsheet.worksheets())
+    mapping = {ws.title: ws for ws in (sheets or [])}
+    try:
+        spreadsheet._cvh_ws_map = mapping
+        spreadsheet._cvh_ws_map_expires = now + SHEETS_DATA_TTL_SECONDS
+    except Exception:
+        pass
+    return mapping
+
+
+def remember_worksheet(spreadsheet, ws):
+    if spreadsheet is None or ws is None:
+        return
+    mapping = getattr(spreadsheet, "_cvh_ws_map", None)
+    title = getattr(ws, "title", None)
+    if mapping is None or not title:
+        return
+    mapping[title] = ws
+
+
+def begin_ensure_worksheet(spreadsheet, title):
+    """If this spreadsheet already ran ensure for title, return the cached tab."""
+    done = getattr(spreadsheet, "_cvh_ensured", None) or set()
+    if title in done:
+        ws = _worksheet_or_none(spreadsheet, title)
+        if ws is not None:
+            return ws, False, True
+        try:
+            done.discard(title)
+        except Exception:
+            pass
+    return None, False, False
+
+
+def finish_ensure_worksheet(spreadsheet, title, ws):
+    done = getattr(spreadsheet, "_cvh_ensured", None)
+    if done is None:
+        done = set()
+        try:
+            spreadsheet._cvh_ensured = done
+        except Exception:
+            pass
+    done.add(title)
+    remember_worksheet(spreadsheet, ws)
+    return ws
+
+
+def sheet_all_values(ws, attempts=None):
+    return sheets_retry(lambda: ws.get_all_values(), attempts=attempts)
+
+
+def sheet_row_values(ws, row=1, attempts=None):
+    return sheets_retry(lambda: ws.row_values(row), attempts=attempts)
+
+
+def records_from_values(values, expected_columns):
+    """Turn a header-plus-rows table into dicts keyed by the first-row header."""
+    if not values:
+        return []
+    header = [_cell(c) for c in values[0]]
+    records = []
+    for row in values[1:]:
+        if not any(_cell(c) for c in row):
+            continue
+        record = {col: "" for col in expected_columns}
+        for idx, col in enumerate(header):
+            if col:
+                record[col] = _cell(row[idx]) if idx < len(row) else ""
+        records.append(record)
+    return records
+
+
+def values_batch_get_sheets(spreadsheet, titles):
+    """Read several tabs in one Sheets call when the client supports it."""
+    if spreadsheet is None or not titles or not hasattr(spreadsheet, "values_batch_get"):
+        return None
+    ranges = ["'" + str(title).replace("'", "''") + "'" for title in titles]
+    response = sheets_retry(lambda: spreadsheet.values_batch_get(ranges))
+    if isinstance(response, dict):
+        value_ranges = response.get("valueRanges") or []
+        return [list(item.get("values") or []) for item in value_ranges]
+    if isinstance(response, list):
+        out = []
+        for item in response:
+            if isinstance(item, dict):
+                out.append(list(item.get("values") or []))
+            else:
+                out.append(list(item or []))
+        return out
+    return None
+
+
+def load_equipment_and_squawk_records(spreadsheet=None):
+    """Load Equipment and Squawks together, using one batch read when possible."""
+    ss = spreadsheet or _gsheets_spreadsheet()
+
+    def _load():
+        ews, _created_e = ensure_equipment_worksheet(ss)
+        sws, _created_s = ensure_squawks_worksheet(ss)
+        batched = values_batch_get_sheets(ss, [EQUIPMENT_SHEET_TITLE, SQUAWKS_SHEET_TITLE])
+        if batched is not None and len(batched) >= 2:
+            return (
+                records_from_values(batched[0], EQUIPMENT_COLUMNS),
+                records_from_values(batched[1], SQUAWK_COLUMNS),
+            )
+        return (
+            records_from_worksheet(ews, EQUIPMENT_COLUMNS),
+            records_from_worksheet(sws, SQUAWK_COLUMNS),
+        )
+
+    if not spreadsheet_is_cacheable(ss):
+        return _load()
+    store = _records_cache_store()
+    equipment = store.get(EQUIPMENT_SHEET_TITLE)
+    squawks = store.get(SQUAWKS_SHEET_TITLE)
+    import time
+    now = time.time()
+    if (equipment and squawks
+            and equipment.get("records") is not None
+            and squawks.get("records") is not None
+            and now < (equipment.get("expires") or 0)
+            and now < (squawks.get("expires") or 0)):
+        return list(equipment["records"]), list(squawks["records"])
+    units, items = _load()
+    expires = now + SHEETS_DATA_TTL_SECONDS
+    store[EQUIPMENT_SHEET_TITLE] = {"records": list(units), "expires": expires}
+    store[SQUAWKS_SHEET_TITLE] = {"records": list(items), "expires": expires}
+    return list(units), list(items)
+
 
 
 def _gsheets_worksheet():
@@ -640,19 +1012,33 @@ def _gsheets_worksheet():
 def save_frat_record(record):
     """Append only to Google Sheets. Never silently fall back to a local file."""
     ws = _gsheets_worksheet()
-    header = ws.row_values(1)
+    header = sheet_row_values(ws, 1)
     if not header:
         ws.append_row(FRAT_COLUMNS, value_input_option="RAW")
     elif header != FRAT_COLUMNS:
         raise RuntimeError("FRAT worksheet headers do not match this app; check the live sheet")
     ws.append_row([str(record.get(c, "")) for c in FRAT_COLUMNS], value_input_option="RAW")
+    clear_sheet_records_cache(FRAT_CACHE_KEY)
     return "Google Sheets (live FRAT log)"
 
 
 def load_frat_records():
     """Read Sheets only; the history UI reports unavailable configuration or service."""
-    ws = _gsheets_worksheet()
-    return pd.DataFrame(ws.get_all_records())
+    def _load():
+        ws = _gsheets_worksheet()
+        values = sheet_all_values(ws)
+        if not values:
+            return []
+        header = [_cell(c) for c in values[0]]
+        rows = []
+        for row in values[1:]:
+            if not any(_cell(c) for c in row):
+                continue
+            padded = list(row) + [""] * (len(header) - len(row))
+            rows.append(dict(zip(header, padded[:len(header)])))
+        return rows
+
+    return pd.DataFrame(load_cached_sheet_records(FRAT_CACHE_KEY, _load, spreadsheet=_gsheets_spreadsheet()))
 
 # ────────────────────────────────────────────────
 # Equipment squawks (same spreadsheet, separate tabs; never writes the FRAT sheet)
@@ -1197,25 +1583,15 @@ def apply_equipment_info_button_styles(units):
 
 def records_from_worksheet(ws, expected_columns):
     """Read rows as dicts keyed by the first-row header; missing columns stay empty."""
-    values = ws.get_all_values()
-    if not values:
-        return []
-    header = [_cell(c) for c in values[0]]
-    records = []
-    for row in values[1:]:
-        if not any(_cell(c) for c in row):
-            continue
-        record = {col: "" for col in expected_columns}
-        for idx, col in enumerate(header):
-            if col:
-                record[col] = _cell(row[idx]) if idx < len(row) else ""
-        records.append(record)
-    return records
+    return records_from_values(sheet_all_values(ws), expected_columns)
 
 
 def _worksheet_or_none(spreadsheet, title):
+    mapping = worksheet_map(spreadsheet)
+    if mapping is not None:
+        return mapping.get(title)
     try:
-        return spreadsheet.worksheet(title)
+        return sheets_retry(lambda: spreadsheet.worksheet(title))
     except Exception as exc:
         name = type(exc).__name__
         message = str(exc).lower()
@@ -1457,6 +1833,10 @@ def ensure_blt_checks_worksheet(spreadsheet):
     Existing BLT Checks headers are left in place. Never writes the FRAT
     worksheet or any other tab.
     """
+    ws, created, skip = begin_ensure_worksheet(spreadsheet, BLT_CHECKS_SHEET_TITLE)
+    if skip:
+        return ws, created
+
     cols = list(BLT_CHECKS_COLUMNS)
     ws = _worksheet_or_none(spreadsheet, BLT_CHECKS_SHEET_TITLE)
     created = False
@@ -1465,32 +1845,28 @@ def ensure_blt_checks_worksheet(spreadsheet):
         ws.append_row(cols, value_input_option="RAW")
         created = True
     else:
-        header = [_cell(c) for c in ws.row_values(1)]
+        header = [_cell(c) for c in sheet_row_values(ws, 1)]
         if not header:
             ws.append_row(cols, value_input_option="RAW")
             created = True
+    finish_ensure_worksheet(spreadsheet, BLT_CHECKS_SHEET_TITLE, ws)
     return ws, created
 
 
 def save_blt_check_record(record, spreadsheet=None):
     """Append one check to the BLT Checks tab only. Never touches other tabs."""
     ws, _created = ensure_blt_checks_worksheet(spreadsheet or _gsheets_spreadsheet())
-    header = [_cell(c) for c in ws.row_values(1)]
+    header = [_cell(c) for c in sheet_row_values(ws, 1)]
     if not header:
         raise RuntimeError("BLT Checks worksheet has no header")
     ws.append_row([str(record.get(c, "")) for c in header], value_input_option="RAW")
+    clear_sheet_records_cache(BLT_CHECKS_SHEET_TITLE, spreadsheet=spreadsheet)
     return "Google Sheets (BLT Checks)"
 
 
 def load_blt_check_records_readonly(spreadsheet=None):
     """Read the BLT Checks tab without creating or changing it."""
-    ws = _worksheet_or_none(spreadsheet or _gsheets_spreadsheet(), BLT_CHECKS_SHEET_TITLE)
-    if ws is None:
-        return []
-    header = [_cell(c) for c in ws.row_values(1)]
-    if not header:
-        return []
-    return records_from_worksheet(ws, BLT_CHECKS_COLUMNS)
+    return load_records_readonly(BLT_CHECKS_SHEET_TITLE, BLT_CHECKS_COLUMNS, spreadsheet=spreadsheet)
 
 
 def _blt_check_sort_key(record):
@@ -2084,6 +2460,10 @@ def _write_equipment_rows(ws, rows):
 
 def ensure_equipment_worksheet(spreadsheet):
     """Create the Equipment tab, or replace a leftover placeholder seed, with Ron's list."""
+    ws, created, skip = begin_ensure_worksheet(spreadsheet, EQUIPMENT_SHEET_TITLE)
+    if skip:
+        return ws, created
+
     ws = _worksheet_or_none(spreadsheet, EQUIPMENT_SHEET_TITLE)
     created = False
     official = official_equipment_rows()
@@ -2093,18 +2473,19 @@ def ensure_equipment_worksheet(spreadsheet):
         created = True
     else:
         records = records_from_worksheet(ws, EQUIPMENT_COLUMNS)
-        header = [_cell(c) for c in ws.row_values(1)]
+        header = [_cell(c) for c in sheet_row_values(ws, 1)]
         if not header or not records or is_placeholder_equipment_seed(records):
             _write_equipment_rows(ws, official)
             created = not records
         else:
             ensure_equipment_info_columns(ws)
+    finish_ensure_worksheet(spreadsheet, EQUIPMENT_SHEET_TITLE, ws)
     return ws, created
 
 
 def ensure_equipment_info_columns(ws):
     """Add any missing info-column headers on the right; do not invent or overwrite values."""
-    header = [_cell(c) for c in ws.row_values(1)]
+    header = [_cell(c) for c in sheet_row_values(ws, 1)]
     if not header:
         return False
     missing = [col for col in EQUIPMENT_COLUMNS if col not in header]
@@ -2118,6 +2499,10 @@ def ensure_equipment_info_columns(ws):
 
 def ensure_squawks_worksheet(spreadsheet):
     """Create the Squawks tab with a header only when the tab is missing or has no header."""
+    ws, created, skip = begin_ensure_worksheet(spreadsheet, SQUAWKS_SHEET_TITLE)
+    if skip:
+        return ws, created
+
     ws = _worksheet_or_none(spreadsheet, SQUAWKS_SHEET_TITLE)
     created = False
     if ws is None:
@@ -2125,26 +2510,23 @@ def ensure_squawks_worksheet(spreadsheet):
         ws.append_row(SQUAWK_COLUMNS, value_input_option="RAW")
         created = True
     else:
-        header = [_cell(c) for c in ws.row_values(1)]
+        header = [_cell(c) for c in sheet_row_values(ws, 1)]
         if not header:
             ws.append_row(SQUAWK_COLUMNS, value_input_option="RAW")
             created = True
         elif header != SQUAWK_COLUMNS:
             raise RuntimeError("Squawks worksheet headers do not match this app; check the live sheet")
+    finish_ensure_worksheet(spreadsheet, SQUAWKS_SHEET_TITLE, ws)
     return ws, created
 
 
 def load_equipment_records(spreadsheet=None):
-    ws, _created = ensure_equipment_worksheet(spreadsheet or _gsheets_spreadsheet())
-    return records_from_worksheet(ws, EQUIPMENT_COLUMNS)
+    return load_records_with_ensure(EQUIPMENT_SHEET_TITLE, EQUIPMENT_COLUMNS, ensure_equipment_worksheet, spreadsheet)
 
 
 def load_equipment_records_readonly(spreadsheet=None):
     """Read the Equipment tab without creating it or adding columns."""
-    ws = _worksheet_or_none(spreadsheet or _gsheets_spreadsheet(), EQUIPMENT_SHEET_TITLE)
-    if ws is None:
-        return []
-    return records_from_worksheet(ws, EQUIPMENT_COLUMNS)
+    return load_records_readonly(EQUIPMENT_SHEET_TITLE, EQUIPMENT_COLUMNS, spreadsheet=spreadsheet)
 
 
 def receipts_equipment_choices():
@@ -2159,8 +2541,7 @@ def receipts_equipment_choices():
 
 
 def load_squawk_records(spreadsheet=None):
-    ws, _created = ensure_squawks_worksheet(spreadsheet or _gsheets_spreadsheet())
-    return records_from_worksheet(ws, SQUAWK_COLUMNS)
+    return load_records_with_ensure(SQUAWKS_SHEET_TITLE, SQUAWK_COLUMNS, ensure_squawks_worksheet, spreadsheet)
 
 
 def build_squawk_record(unit, reported_by, when, category, severity, description, odometer=""):
@@ -2196,6 +2577,7 @@ def save_squawk_record(record, spreadsheet=None):
     """Append one squawk to the Squawks tab only. Never writes the FRAT worksheet."""
     ws, _created = ensure_squawks_worksheet(spreadsheet or _gsheets_spreadsheet())
     ws.append_row([str(record.get(c, "")) for c in SQUAWK_COLUMNS], value_input_option="RAW")
+    clear_sheet_records_cache(SQUAWKS_SHEET_TITLE, spreadsheet=spreadsheet)
     return "Google Sheets (Squawks)"
 
 
@@ -2206,7 +2588,7 @@ def resolve_squawk(timestamp, unit_id, resolved_by, notes="", when=None, spreads
         raise ValueError("Resolved By is required")
     when = when or datetime.now(ZoneInfo("America/Los_Angeles"))
     ws, _created = ensure_squawks_worksheet(spreadsheet or _gsheets_spreadsheet())
-    values = ws.get_all_values()
+    values = sheet_all_values(ws)
     if not values:
         raise RuntimeError("Squawks worksheet has no header")
     header = [_cell(c) for c in values[0]]
@@ -2233,6 +2615,7 @@ def resolve_squawk(timestamp, unit_id, resolved_by, notes="", when=None, spreads
             if _cell(notes):
                 existing = _cell(row[notes_col - 1]) if notes_col - 1 < len(row) else ""
                 ws.update_cell(row_number, notes_col, (existing + " " + _cell(notes)).strip() if existing else _cell(notes))
+            clear_sheet_records_cache(SQUAWKS_SHEET_TITLE, spreadsheet=spreadsheet)
             return True
     raise RuntimeError("Could not find that open squawk on the Squawks tab")
 
@@ -2265,7 +2648,7 @@ def update_equipment_record(unit_id, fields, spreadsheet=None):
     ws = _worksheet_or_none(spreadsheet, EQUIPMENT_SHEET_TITLE)
     if ws is None:
         raise RuntimeError("Equipment worksheet not found")
-    values = ws.get_all_values()
+    values = sheet_all_values(ws)
     if not values:
         raise RuntimeError("Equipment worksheet has no header")
     header = [_cell(c) for c in values[0]]
@@ -2283,6 +2666,7 @@ def update_equipment_record(unit_id, fields, spreadsheet=None):
                 continue
             col_number = header.index(col_name) + 1
             ws.update_cell(row_number, col_number, value)
+        clear_sheet_records_cache(EQUIPMENT_SHEET_TITLE, spreadsheet=spreadsheet)
         return True
     raise RuntimeError("Could not find that unit on the Equipment tab")
 
@@ -2307,6 +2691,10 @@ def ensure_safety_meetings_worksheet(spreadsheet):
     Existing headers are left in place; any newly added item columns are
     appended on the right. Never writes FRAT, Squawks, or Equipment.
     """
+    ws, created, skip = begin_ensure_worksheet(spreadsheet, SAFETY_MEETINGS_SHEET_TITLE)
+    if skip:
+        return ws, created
+
     cols = safety_meeting_columns()
     ws = _worksheet_or_none(spreadsheet, SAFETY_MEETINGS_SHEET_TITLE)
     created = False
@@ -2315,7 +2703,7 @@ def ensure_safety_meetings_worksheet(spreadsheet):
         ws.append_row(cols, value_input_option="RAW")
         created = True
     else:
-        header = [_cell(c) for c in ws.row_values(1)]
+        header = [_cell(c) for c in sheet_row_values(ws, 1)]
         if not header:
             ws.append_row(cols, value_input_option="RAW")
             created = True
@@ -2325,12 +2713,12 @@ def ensure_safety_meetings_worksheet(spreadsheet):
                 start = len(header) + 1
                 for offset, col in enumerate(missing):
                     ws.update_cell(1, start + offset, col)
+    finish_ensure_worksheet(spreadsheet, SAFETY_MEETINGS_SHEET_TITLE, ws)
     return ws, created
 
 
 def load_safety_meeting_records(spreadsheet=None):
-    ws, _created = ensure_safety_meetings_worksheet(spreadsheet or _gsheets_spreadsheet())
-    return records_from_worksheet(ws, safety_meeting_columns())
+    return load_records_with_ensure(SAFETY_MEETINGS_SHEET_TITLE, safety_meeting_columns, ensure_safety_meetings_worksheet, spreadsheet)
 
 
 def format_safety_meeting_attendees(selected, other=""):
@@ -2367,10 +2755,11 @@ def build_safety_meeting_record(meeting_date, recorded_by, attendees, item_state
 def save_safety_meeting_record(record, spreadsheet=None):
     """Append one meeting to the Safety Meetings tab only."""
     ws, _created = ensure_safety_meetings_worksheet(spreadsheet or _gsheets_spreadsheet())
-    header = [_cell(c) for c in ws.row_values(1)]
+    header = [_cell(c) for c in sheet_row_values(ws, 1)]
     if not header:
         raise RuntimeError("Safety Meetings worksheet has no header")
     ws.append_row([str(record.get(c, "")) for c in header], value_input_option="RAW")
+    clear_sheet_records_cache(SAFETY_MEETINGS_SHEET_TITLE, spreadsheet=spreadsheet)
     return "Google Sheets (Safety Meetings)"
 
 
@@ -2381,7 +2770,7 @@ def update_safety_meeting_discussion(timestamp, notes, spreadsheet=None, meeting
     if not timestamp:
         raise ValueError("Timestamp is required")
     ws, _created = ensure_safety_meetings_worksheet(spreadsheet or _gsheets_spreadsheet())
-    values = ws.get_all_values()
+    values = sheet_all_values(ws)
     if not values:
         raise RuntimeError("Safety Meetings worksheet has no header")
     header = [_cell(c) for c in values[0]]
@@ -2404,6 +2793,7 @@ def update_safety_meeting_discussion(timestamp, notes, spreadsheet=None, meeting
     if not matches:
         raise RuntimeError("Could not find that meeting on the Safety Meetings tab")
     ws.update_cell(matches[-1], notes_col, _cell(notes))
+    clear_sheet_records_cache(SAFETY_MEETINGS_SHEET_TITLE, spreadsheet=spreadsheet)
     return True
 
 
@@ -2451,15 +2841,15 @@ def safety_meeting_entry_date(record):
     return parse_equipment_date((record or {}).get("Meeting Date"))
 
 
-def load_safety_meeting_records_readonly(spreadsheet=None):
+def load_safety_meeting_records_readonly(spreadsheet=None, retry=True):
     """Read the Safety Meetings tab without creating or changing it."""
-    ws = _worksheet_or_none(spreadsheet or _gsheets_spreadsheet(), SAFETY_MEETINGS_SHEET_TITLE)
-    if ws is None:
-        return []
-    header = [_cell(c) for c in ws.row_values(1)]
-    if not header:
-        return []
-    return records_from_worksheet(ws, safety_meeting_columns())
+    attempts = SHEETS_RETRY_ATTEMPTS if retry else 1
+    return load_records_readonly(
+        SAFETY_MEETINGS_SHEET_TITLE,
+        safety_meeting_columns,
+        spreadsheet=spreadsheet,
+        attempts=attempts,
+    )
 
 
 def safety_meeting_months_with_entries(meetings, year):
@@ -2519,7 +2909,7 @@ def safety_meeting_month_strip_markup(year, meetings, today=None):
 def apply_monthly_safety_header_style(spreadsheet=None, today=None):
     """Color the Monthly Safety Meeting header button from the current Pacific month."""
     try:
-        meetings = load_safety_meeting_records_readonly(spreadsheet)
+        meetings = load_safety_meeting_records_readonly(spreadsheet, retry=False)
         color = safety_meeting_header_color(meetings, today=today)
     except Exception:
         return None
@@ -2750,7 +3140,7 @@ def show_safety_meetings_page():
         spreadsheet = _gsheets_spreadsheet()
         meetings = load_safety_meeting_records(spreadsheet)
     except Exception as exc:
-        st.error(f"Could not load safety meetings: {exc}")
+        st.error("Could not load safety meetings: " + friendly_sheets_error_message(exc))
         return
 
     if st.session_state.get("safety_meeting_saved"):
@@ -3024,6 +3414,10 @@ def ensure_yearly_items_worksheet(spreadsheet):
 
     Never alters an existing header, and never writes FRAT or other tabs.
     """
+    ws, created, skip = begin_ensure_worksheet(spreadsheet, YEARLY_ITEMS_SHEET_TITLE)
+    if skip:
+        return ws, created
+
     cols = list(YEARLY_ITEMS_COLUMNS)
     ws = _worksheet_or_none(spreadsheet, YEARLY_ITEMS_SHEET_TITLE)
     created = False
@@ -3032,27 +3426,21 @@ def ensure_yearly_items_worksheet(spreadsheet):
         ws.append_row(cols, value_input_option="RAW")
         created = True
     else:
-        header = [_cell(c) for c in ws.row_values(1)]
+        header = [_cell(c) for c in sheet_row_values(ws, 1)]
         if not header:
             ws.append_row(cols, value_input_option="RAW")
             created = True
+    finish_ensure_worksheet(spreadsheet, YEARLY_ITEMS_SHEET_TITLE, ws)
     return ws, created
 
 
 def load_yearly_item_records(spreadsheet=None):
-    ws, _created = ensure_yearly_items_worksheet(spreadsheet or _gsheets_spreadsheet())
-    return records_from_worksheet(ws, YEARLY_ITEMS_COLUMNS)
+    return load_records_with_ensure(YEARLY_ITEMS_SHEET_TITLE, YEARLY_ITEMS_COLUMNS, ensure_yearly_items_worksheet, spreadsheet)
 
 
 def load_yearly_item_records_readonly(spreadsheet=None):
     """Read the Yearly Items tab without creating or changing it."""
-    ws = _worksheet_or_none(spreadsheet or _gsheets_spreadsheet(), YEARLY_ITEMS_SHEET_TITLE)
-    if ws is None:
-        return []
-    header = [_cell(c) for c in ws.row_values(1)]
-    if not header:
-        return []
-    return records_from_worksheet(ws, YEARLY_ITEMS_COLUMNS)
+    return load_records_readonly(YEARLY_ITEMS_SHEET_TITLE, YEARLY_ITEMS_COLUMNS, spreadsheet=spreadsheet)
 
 
 def yearly_item_year_value(record):
@@ -3108,10 +3496,11 @@ def build_yearly_item_record(year, group, item, date_done, done_by, notes, when=
 
 def save_yearly_item_record(record, spreadsheet=None):
     ws, _created = ensure_yearly_items_worksheet(spreadsheet or _gsheets_spreadsheet())
-    header = [_cell(c) for c in ws.row_values(1)]
+    header = [_cell(c) for c in sheet_row_values(ws, 1)]
     if not header:
         raise RuntimeError("Yearly Items worksheet has no header")
     ws.append_row([str(record.get(c, "")) for c in header], value_input_option="RAW")
+    clear_sheet_records_cache(YEARLY_ITEMS_SHEET_TITLE, spreadsheet=spreadsheet)
     return "Google Sheets (Yearly Items)"
 
 
@@ -3223,7 +3612,7 @@ def show_yearly_items_page():
     except Exception as exc:
         records = []
         load_ok = False
-        st.error("Could not load yearly items: " + str(exc))
+        st.error("Could not load yearly items: " + friendly_sheets_error_message(exc))
 
     years = yearly_item_years(records, today=today)
     if st.session_state.get("yearly_items_year") not in years:
@@ -3290,7 +3679,7 @@ def show_yearly_group_page(group):
     try:
         records = load_yearly_item_records_readonly()
     except Exception as exc:
-        st.error("Could not load yearly items: " + str(exc))
+        st.error("Could not load yearly items: " + friendly_sheets_error_message(exc))
         return
 
     years = yearly_item_years(records, today=today)
@@ -3739,7 +4128,7 @@ def time_off_month_grid_markup(year, month, records, today=None, employee=None):
 
 def _append_time_off_header_column(ws, column):
     """Append one header cell without moving columns already on the sheet."""
-    header = [_cell(c) for c in ws.row_values(1)]
+    header = [_cell(c) for c in sheet_row_values(ws, 1)]
     if not header or column in header:
         return False
     if hasattr(ws, "add_cols"):
@@ -3778,6 +4167,10 @@ def ensure_time_off_worksheet(spreadsheet):
     name cell still load with those fields blank. Never writes FRAT or other
     tabs.
     """
+    ws, created, skip = begin_ensure_worksheet(spreadsheet, TIME_OFF_SHEET_TITLE)
+    if skip:
+        return ws, created
+
     cols = list(TIME_OFF_COLUMNS)
     ws = _worksheet_or_none(spreadsheet, TIME_OFF_SHEET_TITLE)
     created = False
@@ -3786,30 +4179,24 @@ def ensure_time_off_worksheet(spreadsheet):
         ws.append_row(cols, value_input_option="RAW")
         created = True
     else:
-        header = [_cell(c) for c in ws.row_values(1)]
+        header = [_cell(c) for c in sheet_row_values(ws, 1)]
         if not header:
             ws.append_row(cols, value_input_option="RAW")
             created = True
         else:
             ensure_time_off_project_column(ws)
             ensure_time_off_holiday_name_column(ws)
+    finish_ensure_worksheet(spreadsheet, TIME_OFF_SHEET_TITLE, ws)
     return ws, created
 
 
 def load_time_off_records(spreadsheet=None):
-    ws, _created = ensure_time_off_worksheet(spreadsheet or _gsheets_spreadsheet())
-    return records_from_worksheet(ws, TIME_OFF_COLUMNS)
+    return load_records_with_ensure(TIME_OFF_SHEET_TITLE, TIME_OFF_COLUMNS, ensure_time_off_worksheet, spreadsheet)
 
 
 def load_time_off_records_readonly(spreadsheet=None):
     """Read the Time Off tab without creating or changing it."""
-    ws = _worksheet_or_none(spreadsheet or _gsheets_spreadsheet(), TIME_OFF_SHEET_TITLE)
-    if ws is None:
-        return []
-    header = [_cell(c) for c in ws.row_values(1)]
-    if not header:
-        return []
-    return records_from_worksheet(ws, TIME_OFF_COLUMNS)
+    return load_records_readonly(TIME_OFF_SHEET_TITLE, TIME_OFF_COLUMNS, spreadsheet=spreadsheet)
 
 
 def build_time_off_record(
@@ -3923,10 +4310,11 @@ def build_time_off_cancel_record(record, when=None):
 
 def save_time_off_record(record, spreadsheet=None):
     ws, _created = ensure_time_off_worksheet(spreadsheet or _gsheets_spreadsheet())
-    header = [_cell(c) for c in ws.row_values(1)]
+    header = [_cell(c) for c in sheet_row_values(ws, 1)]
     if not header:
         raise RuntimeError("Time Off worksheet has no header")
     ws.append_row([str(record.get(c, "")) for c in header], value_input_option="RAW")
+    clear_sheet_records_cache(TIME_OFF_SHEET_TITLE, spreadsheet=spreadsheet)
     return "Google Sheets (Time Off)"
 
 
@@ -3949,7 +4337,7 @@ def show_time_off_calendar_page():
     except Exception as exc:
         records = []
         load_ok = False
-        st.error("Could not load time off: " + str(exc))
+        st.error("Could not load time off: " + friendly_sheets_error_message(exc))
 
     if st.session_state.get("time_off_year") is None or st.session_state.get("time_off_month") is None:
         st.session_state.time_off_year = today.year
@@ -4970,7 +5358,7 @@ def ensure_timesheet_leave_columns(ws):
     are added on the right so saves can persist them. Rows that predate those
     columns still load as 0.
     """
-    header = [_cell(c) for c in ws.row_values(1)]
+    header = [_cell(c) for c in sheet_row_values(ws, 1)]
     if not header:
         return False
     missing = [col for col in timesheet_leave_columns() if col not in header]
@@ -4993,6 +5381,10 @@ def ensure_timesheets_worksheet(spreadsheet):
     An existing header is not reordered or rewritten. Missing Vacation and
     Sick columns are appended. Never writes FRAT or other tabs.
     """
+    ws, created, skip = begin_ensure_worksheet(spreadsheet, TIMESHEET_SHEET_TITLE)
+    if skip:
+        return ws, created
+
     cols = list(timesheet_columns())
     ws = _worksheet_or_none(spreadsheet, TIMESHEET_SHEET_TITLE)
     created = False
@@ -5001,18 +5393,18 @@ def ensure_timesheets_worksheet(spreadsheet):
         ws.append_row(cols, value_input_option="RAW")
         created = True
     else:
-        header = [_cell(c) for c in ws.row_values(1)]
+        header = [_cell(c) for c in sheet_row_values(ws, 1)]
         if not header:
             ws.append_row(cols, value_input_option="RAW")
             created = True
         else:
             ensure_timesheet_leave_columns(ws)
+    finish_ensure_worksheet(spreadsheet, TIMESHEET_SHEET_TITLE, ws)
     return ws, created
 
 
 def load_timesheet_records(spreadsheet=None):
-    ws, _created = ensure_timesheets_worksheet(spreadsheet or _gsheets_spreadsheet())
-    return records_from_worksheet(ws, timesheet_columns())
+    return load_records_with_ensure(TIMESHEET_SHEET_TITLE, timesheet_columns, ensure_timesheets_worksheet, spreadsheet)
 
 
 def load_timesheet_records_readonly(spreadsheet=None, employee=None):
@@ -5022,13 +5414,7 @@ def load_timesheet_records_readonly(spreadsheet=None, employee=None):
     employee's payroll is not loaded for display.
     """
     book = spreadsheet or _gsheets_spreadsheet()
-    ws = _worksheet_or_none(book, TIMESHEET_SHEET_TITLE)
-    if ws is None:
-        return []
-    header = [_cell(c) for c in ws.row_values(1)]
-    if not header:
-        return []
-    records = records_from_worksheet(ws, timesheet_columns())
+    records = load_records_readonly(TIMESHEET_SHEET_TITLE, timesheet_columns, spreadsheet=book)
     records = attach_timesheet_mileage_trips(records, book)
     wanted = _cell(employee)
     if wanted:
@@ -5041,6 +5427,10 @@ def ensure_timesheet_mileage_worksheet(spreadsheet):
 
     Never alters an existing header, and never writes FRAT or Time Sheets headers.
     """
+    ws, created, skip = begin_ensure_worksheet(spreadsheet, TIMESHEET_MILEAGE_SHEET_TITLE)
+    if skip:
+        return ws, created
+
     cols = list(TIMESHEET_MILEAGE_COLUMNS)
     ws = _worksheet_or_none(spreadsheet, TIMESHEET_MILEAGE_SHEET_TITLE)
     created = False
@@ -5049,22 +5439,17 @@ def ensure_timesheet_mileage_worksheet(spreadsheet):
         ws.append_row(cols, value_input_option="RAW")
         created = True
     else:
-        header = [_cell(c) for c in ws.row_values(1)]
+        header = [_cell(c) for c in sheet_row_values(ws, 1)]
         if not header:
             ws.append_row(cols, value_input_option="RAW")
             created = True
+    finish_ensure_worksheet(spreadsheet, TIMESHEET_MILEAGE_SHEET_TITLE, ws)
     return ws, created
 
 
 def load_timesheet_mileage_records_readonly(spreadsheet=None):
     """Read dated mileage trips without creating or changing any tab."""
-    ws = _worksheet_or_none(spreadsheet or _gsheets_spreadsheet(), TIMESHEET_MILEAGE_SHEET_TITLE)
-    if ws is None:
-        return []
-    header = [_cell(c) for c in ws.row_values(1)]
-    if not header:
-        return []
-    return records_from_worksheet(ws, TIMESHEET_MILEAGE_COLUMNS)
+    return load_records_readonly(TIMESHEET_MILEAGE_SHEET_TITLE, TIMESHEET_MILEAGE_COLUMNS, spreadsheet=spreadsheet)
 
 
 def attach_timesheet_mileage_trips(records, spreadsheet=None):
@@ -5103,7 +5488,7 @@ def save_timesheet_mileage_trips(record, spreadsheet=None):
         return None
     book = spreadsheet or _gsheets_spreadsheet()
     ws, _created = ensure_timesheet_mileage_worksheet(book)
-    header = [_cell(c) for c in ws.row_values(1)]
+    header = [_cell(c) for c in sheet_row_values(ws, 1)]
     if not header:
         raise RuntimeError("Time Sheet Mileage worksheet has no header")
     for index, trip in enumerate(trips, start=1):
@@ -5125,6 +5510,7 @@ def save_timesheet_mileage_trips(record, spreadsheet=None):
             "Status": _cell(record.get("Status")),
         }
         ws.append_row([str(row.get(c, "")) for c in header], value_input_option="RAW")
+    clear_sheet_records_cache(TIMESHEET_MILEAGE_SHEET_TITLE, spreadsheet=book)
     return "Google Sheets (Time Sheet Mileage)"
 
 
@@ -5160,7 +5546,7 @@ def _upsert_week_row(ws, header, values, record):
     """
     employee = _cell((record or {}).get("Employee"))
     week = format_equipment_date((record or {}).get("Week Of"))
-    existing = ws.get_all_values() if hasattr(ws, "get_all_values") else []
+    existing = sheet_all_values(ws) if hasattr(ws, "get_all_values") else []
     columns = [_cell(c) for c in (existing[0] if existing else header)]
     try:
         emp_col = columns.index("Employee")
@@ -5194,7 +5580,7 @@ def _upsert_week_row(ws, header, values, record):
 def save_timesheet_record(record, spreadsheet=None):
     book = spreadsheet or _gsheets_spreadsheet()
     ws, _created = ensure_timesheets_worksheet(book)
-    header = [_cell(c) for c in ws.row_values(1)]
+    header = [_cell(c) for c in sheet_row_values(ws, 1)]
     if not header:
         raise RuntimeError("Time Sheets worksheet has no header")
     values = []
@@ -5206,6 +5592,7 @@ def save_timesheet_record(record, spreadsheet=None):
             values.append(str(value or ""))
     _upsert_week_row(ws, header, values, record)
     mileage_dest = save_timesheet_mileage_trips(record, book)
+    clear_sheet_records_cache(TIMESHEET_SHEET_TITLE, spreadsheet=book)
     if mileage_dest:
         return "Google Sheets (Time Sheets, Time Sheet Mileage)"
     return "Google Sheets (Time Sheets)"
@@ -5582,6 +5969,10 @@ def timesheet_mail_columns():
 
 def ensure_timesheet_mail_worksheet(spreadsheet):
     """Create the Time Sheet Mail audit tab on first write only. Never alter an existing header."""
+    ws, created, skip = begin_ensure_worksheet(spreadsheet, TIMESHEET_MAIL_SHEET_TITLE)
+    if skip:
+        return ws, created
+
     cols = timesheet_mail_columns()
     ws = _worksheet_or_none(spreadsheet, TIMESHEET_MAIL_SHEET_TITLE)
     created = False
@@ -5590,21 +5981,16 @@ def ensure_timesheet_mail_worksheet(spreadsheet):
         ws.append_row(cols, value_input_option="RAW")
         created = True
     else:
-        header = [_cell(c) for c in ws.row_values(1)]
+        header = [_cell(c) for c in sheet_row_values(ws, 1)]
         if not header:
             ws.append_row(cols, value_input_option="RAW")
             created = True
+    finish_ensure_worksheet(spreadsheet, TIMESHEET_MAIL_SHEET_TITLE, ws)
     return ws, created
 
 
 def load_timesheet_mail_records_readonly(spreadsheet=None):
-    ws = _worksheet_or_none(spreadsheet or _gsheets_spreadsheet(), TIMESHEET_MAIL_SHEET_TITLE)
-    if ws is None:
-        return []
-    header = [_cell(c) for c in ws.row_values(1)]
-    if not header:
-        return []
-    return records_from_worksheet(ws, timesheet_mail_columns())
+    return load_records_readonly(TIMESHEET_MAIL_SHEET_TITLE, timesheet_mail_columns, spreadsheet=spreadsheet)
 
 
 def build_timesheet_mail_audit_record(record, action=None, user=None, when=None, status=None, idempotency_key=None, provider=None, detail=None, recipient=None, pin_employee=None, updated_copy=False):
@@ -5656,10 +6042,11 @@ def apply_timesheet_send_result(record, result, user=None, spreadsheet=None, whe
 
 def save_timesheet_mail_audit_record(audit, spreadsheet=None):
     ws, _created = ensure_timesheet_mail_worksheet(spreadsheet or _gsheets_spreadsheet())
-    header = [_cell(c) for c in ws.row_values(1)]
+    header = [_cell(c) for c in sheet_row_values(ws, 1)]
     if not header:
         raise RuntimeError("Time Sheet Mail worksheet has no header")
     ws.append_row([str(audit.get(c, "")) for c in header], value_input_option="RAW")
+    clear_sheet_records_cache(TIMESHEET_MAIL_SHEET_TITLE, spreadsheet=spreadsheet)
     return "Google Sheets (Time Sheet Mail)"
 
 
@@ -6565,6 +6952,10 @@ def ensure_anthony_timesheets_worksheet(spreadsheet):
 
     Never alters an existing header, and never writes FRAT, Time Sheets, or other tabs.
     """
+    ws, created, skip = begin_ensure_worksheet(spreadsheet, ANTHONY_TIMESHEET_SHEET_TITLE)
+    if skip:
+        return ws, created
+
     cols = list(anthony_timesheet_columns())
     ws = _worksheet_or_none(spreadsheet, ANTHONY_TIMESHEET_SHEET_TITLE)
     created = False
@@ -6573,16 +6964,16 @@ def ensure_anthony_timesheets_worksheet(spreadsheet):
         ws.append_row(cols, value_input_option="RAW")
         created = True
     else:
-        header = [_cell(c) for c in ws.row_values(1)]
+        header = [_cell(c) for c in sheet_row_values(ws, 1)]
         if not header:
             ws.append_row(cols, value_input_option="RAW")
             created = True
+    finish_ensure_worksheet(spreadsheet, ANTHONY_TIMESHEET_SHEET_TITLE, ws)
     return ws, created
 
 
 def load_anthony_timesheet_records(spreadsheet=None):
-    ws, _created = ensure_anthony_timesheets_worksheet(spreadsheet or _gsheets_spreadsheet())
-    return records_from_worksheet(ws, anthony_timesheet_columns())
+    return load_records_with_ensure(ANTHONY_TIMESHEET_SHEET_TITLE, anthony_timesheet_columns, ensure_anthony_timesheets_worksheet, spreadsheet)
 
 
 def load_anthony_timesheet_records_readonly(spreadsheet=None, employee=None):
@@ -6590,13 +6981,7 @@ def load_anthony_timesheet_records_readonly(spreadsheet=None, employee=None):
 
     When employee is set, only that person's rows are returned.
     """
-    ws = _worksheet_or_none(spreadsheet or _gsheets_spreadsheet(), ANTHONY_TIMESHEET_SHEET_TITLE)
-    if ws is None:
-        return []
-    header = [_cell(c) for c in ws.row_values(1)]
-    if not header:
-        return []
-    records = records_from_worksheet(ws, anthony_timesheet_columns())
+    records = load_records_readonly(ANTHONY_TIMESHEET_SHEET_TITLE, anthony_timesheet_columns, spreadsheet=spreadsheet)
     wanted = _cell(employee)
     if wanted:
         records = [row for row in records if _cell(row.get("Employee")) == wanted]
@@ -6605,10 +6990,11 @@ def load_anthony_timesheet_records_readonly(spreadsheet=None, employee=None):
 
 def save_anthony_timesheet_record(record, spreadsheet=None):
     ws, _created = ensure_anthony_timesheets_worksheet(spreadsheet or _gsheets_spreadsheet())
-    header = [_cell(c) for c in ws.row_values(1)]
+    header = [_cell(c) for c in sheet_row_values(ws, 1)]
     if not header:
         raise RuntimeError("Anthony Time Sheets worksheet has no header")
     _upsert_week_row(ws, header, [str(record.get(c, "")) for c in header], record)
+    clear_sheet_records_cache(ANTHONY_TIMESHEET_SHEET_TITLE, spreadsheet=spreadsheet)
     return "Google Sheets (Anthony Time Sheets)"
 
 
@@ -6754,7 +7140,7 @@ def show_anthony_timesheet(employee):
     except Exception as exc:
         records = []
         load_ok = False
-        st.error("Could not load time sheets: " + str(exc))
+        st.error("Could not load time sheets: " + friendly_sheets_error_message(exc))
 
     default_week = timesheet_week_start(today, today=today)
     if st.session_state.get("anthony_ts_week_" + employee) is None:
@@ -6902,7 +7288,7 @@ def show_employee_timesheet(employee):
     except Exception as exc:
         records = []
         load_ok = False
-        st.error("Could not load time sheets: " + str(exc))
+        st.error("Could not load time sheets: " + friendly_sheets_error_message(exc))
 
     default_week = timesheet_week_start(today, today=today)
     if st.session_state.get("timesheet_week_" + employee) is None:
@@ -8685,6 +9071,10 @@ def ensure_aircraft_maint_worksheet(spreadsheet):
     Existing headers are left in place; any newly added columns are appended
     on the right. Never writes FRAT, Equipment, Squawks, or Safety Meetings.
     """
+    ws, created, skip = begin_ensure_worksheet(spreadsheet, AIRCRAFT_MAINT_SHEET_TITLE)
+    if skip:
+        return ws, created
+
     cols = list(AIRCRAFT_MAINT_COLUMNS)
     ws = _worksheet_or_none(spreadsheet, AIRCRAFT_MAINT_SHEET_TITLE)
     created = False
@@ -8693,7 +9083,7 @@ def ensure_aircraft_maint_worksheet(spreadsheet):
         ws.append_row(cols, value_input_option="RAW")
         created = True
     else:
-        header = [_cell(c) for c in ws.row_values(1)]
+        header = [_cell(c) for c in sheet_row_values(ws, 1)]
         if not header:
             ws.append_row(cols, value_input_option="RAW")
             created = True
@@ -8703,12 +9093,12 @@ def ensure_aircraft_maint_worksheet(spreadsheet):
                 start = len(header) + 1
                 for offset, col in enumerate(missing):
                     ws.update_cell(1, start + offset, col)
+    finish_ensure_worksheet(spreadsheet, AIRCRAFT_MAINT_SHEET_TITLE, ws)
     return ws, created
 
 
 def load_aircraft_maint_records(spreadsheet=None, aircraft_id=None):
-    ws, _created = ensure_aircraft_maint_worksheet(spreadsheet or _gsheets_spreadsheet())
-    records = records_from_worksheet(ws, AIRCRAFT_MAINT_COLUMNS)
+    records = load_records_with_ensure(AIRCRAFT_MAINT_SHEET_TITLE, AIRCRAFT_MAINT_COLUMNS, ensure_aircraft_maint_worksheet, spreadsheet)
     if aircraft_id:
         wanted = _cell(aircraft_id)
         records = [r for r in records if _cell(r.get("Aircraft")) == wanted]
@@ -8749,10 +9139,11 @@ def build_aircraft_maint_record(
 def save_aircraft_maint_record(record, spreadsheet=None):
     """Append one maintenance entry to the Aircraft Maint tab only."""
     ws, _created = ensure_aircraft_maint_worksheet(spreadsheet or _gsheets_spreadsheet())
-    header = [_cell(c) for c in ws.row_values(1)]
+    header = [_cell(c) for c in sheet_row_values(ws, 1)]
     if not header:
         raise RuntimeError("Aircraft Maint worksheet has no header")
     ws.append_row([str(record.get(c, "")) for c in header], value_input_option="RAW")
+    clear_sheet_records_cache(AIRCRAFT_MAINT_SHEET_TITLE, spreadsheet=spreadsheet)
     return "Google Sheets (Aircraft Maint)"
 
 
@@ -8780,7 +9171,7 @@ def show_aircraft_annual_page(aircraft_id, profile, spreadsheet=None):
         spreadsheet = spreadsheet or _gsheets_spreadsheet()
         history = load_aircraft_maint_records(spreadsheet, aircraft_id=aid)
     except Exception as exc:
-        st.error(f"Could not load aircraft maintenance: {exc}")
+        st.error("Could not load aircraft maintenance: " + friendly_sheets_error_message(exc))
         return
     latest = latest_aircraft_maint_record(history)
 
@@ -8983,6 +9374,10 @@ def ensure_n480ml_maint_worksheet(spreadsheet):
     Never alters an existing header, and never writes Aircraft Maint, FRAT,
     Equipment, Squawks, or Safety Meetings.
     """
+    ws, created, skip = begin_ensure_worksheet(spreadsheet, N480ML_MAINT_SHEET_TITLE)
+    if skip:
+        return ws, created
+
     cols = n480ml_maint_columns()
     ws = _worksheet_or_none(spreadsheet, N480ML_MAINT_SHEET_TITLE)
     created = False
@@ -8991,16 +9386,16 @@ def ensure_n480ml_maint_worksheet(spreadsheet):
         ws.append_row(cols, value_input_option="RAW")
         created = True
     else:
-        header = [_cell(c) for c in ws.row_values(1)]
+        header = [_cell(c) for c in sheet_row_values(ws, 1)]
         if not header:
             ws.append_row(cols, value_input_option="RAW")
             created = True
+    finish_ensure_worksheet(spreadsheet, N480ML_MAINT_SHEET_TITLE, ws)
     return ws, created
 
 
 def load_n480ml_maint_records(spreadsheet=None):
-    ws, _created = ensure_n480ml_maint_worksheet(spreadsheet or _gsheets_spreadsheet())
-    records = records_from_worksheet(ws, n480ml_maint_columns())
+    records = load_records_with_ensure(N480ML_MAINT_SHEET_TITLE, n480ml_maint_columns, ensure_n480ml_maint_worksheet, spreadsheet)
     return [r for r in records if _cell(r.get("Aircraft")) in {"", "N480ML"}]
 
 
@@ -9043,10 +9438,11 @@ def build_n480ml_maint_record(
 def save_n480ml_maint_record(record, spreadsheet=None):
     """Append one N480ML maintenance entry to the N480ML Maint tab only."""
     ws, _created = ensure_n480ml_maint_worksheet(spreadsheet or _gsheets_spreadsheet())
-    header = [_cell(c) for c in ws.row_values(1)]
+    header = [_cell(c) for c in sheet_row_values(ws, 1)]
     if not header:
         raise RuntimeError("N480ML Maint worksheet has no header")
     ws.append_row([str(record.get(c, "")) for c in header], value_input_option="RAW")
+    clear_sheet_records_cache(N480ML_MAINT_SHEET_TITLE, spreadsheet=spreadsheet)
     return "Google Sheets (N480ML Maint)"
 
 
@@ -9061,7 +9457,7 @@ def update_n480ml_grease_checkpoint(timestamp, offset, initials, hobbs, when=Non
     when = when or datetime.now(ZoneInfo("America/Los_Angeles"))
     done_col, initials_col, when_col = grease_checkpoint_columns(offset)
     ws, _created = ensure_n480ml_maint_worksheet(spreadsheet or _gsheets_spreadsheet())
-    values = ws.get_all_values()
+    values = sheet_all_values(ws)
     if not values:
         raise RuntimeError("N480ML Maint worksheet has no header")
     header = [_cell(c) for c in values[0]]
@@ -9079,6 +9475,7 @@ def update_n480ml_grease_checkpoint(timestamp, offset, initials, hobbs, when=Non
         ws.update_cell(row_number, done_number, "Yes")
         ws.update_cell(row_number, initials_number, initials)
         ws.update_cell(row_number, when_number, format_grease_hobbs_date(hobbs, when))
+        clear_sheet_records_cache(N480ML_MAINT_SHEET_TITLE, spreadsheet=spreadsheet)
         return True
     raise RuntimeError("Could not find that N480ML maintenance entry")
 
@@ -9110,7 +9507,7 @@ def show_n480ml_annual_page(profile, spreadsheet=None):
         spreadsheet = spreadsheet or _gsheets_spreadsheet()
         history = load_n480ml_maint_records(spreadsheet)
     except Exception as exc:
-        st.error(f"Could not load N480ML maintenance: {exc}")
+        st.error("Could not load N480ML maintenance: " + friendly_sheets_error_message(exc))
         return
     latest = latest_aircraft_maint_record(history)
 
@@ -9296,13 +9693,7 @@ def show_n480ml_annual_page(profile, spreadsheet=None):
 
 def load_aircraft_maint_records_readonly(spreadsheet=None, aircraft_id=None):
     """Read the Aircraft Maint tab without creating or changing it."""
-    ws = _worksheet_or_none(spreadsheet or _gsheets_spreadsheet(), AIRCRAFT_MAINT_SHEET_TITLE)
-    if ws is None:
-        return []
-    header = [_cell(c) for c in ws.row_values(1)]
-    if not header:
-        return []
-    records = records_from_worksheet(ws, AIRCRAFT_MAINT_COLUMNS)
+    records = load_records_readonly(AIRCRAFT_MAINT_SHEET_TITLE, AIRCRAFT_MAINT_COLUMNS, spreadsheet=spreadsheet)
     if aircraft_id:
         wanted = _cell(aircraft_id)
         records = [r for r in records if _cell(r.get("Aircraft")) == wanted]
@@ -9311,13 +9702,7 @@ def load_aircraft_maint_records_readonly(spreadsheet=None, aircraft_id=None):
 
 def load_n480ml_maint_records_readonly(spreadsheet=None):
     """Read the N480ML Maint tab without creating or changing it."""
-    ws = _worksheet_or_none(spreadsheet or _gsheets_spreadsheet(), N480ML_MAINT_SHEET_TITLE)
-    if ws is None:
-        return []
-    header = [_cell(c) for c in ws.row_values(1)]
-    if not header:
-        return []
-    records = records_from_worksheet(ws, n480ml_maint_columns())
+    records = load_records_readonly(N480ML_MAINT_SHEET_TITLE, n480ml_maint_columns, spreadsheet=spreadsheet)
     return [r for r in records if _cell(r.get("Aircraft")) in {"", "N480ML"}]
 
 
@@ -9435,6 +9820,10 @@ def ensure_system_maint_worksheet(spreadsheet):
     Never alters an existing header, and never writes Aircraft Maint,
     N480ML Maint, FRAT, Equipment, Squawks, or Safety Meetings.
     """
+    ws, created, skip = begin_ensure_worksheet(spreadsheet, SYSTEM_MAINT_SHEET_TITLE)
+    if skip:
+        return ws, created
+
     cols = list(SYSTEM_MAINT_COLUMNS)
     ws = _worksheet_or_none(spreadsheet, SYSTEM_MAINT_SHEET_TITLE)
     created = False
@@ -9443,10 +9832,11 @@ def ensure_system_maint_worksheet(spreadsheet):
         ws.append_row(cols, value_input_option="RAW")
         created = True
     else:
-        header = [_cell(c) for c in ws.row_values(1)]
+        header = [_cell(c) for c in sheet_row_values(ws, 1)]
         if not header:
             ws.append_row(cols, value_input_option="RAW")
             created = True
+    finish_ensure_worksheet(spreadsheet, SYSTEM_MAINT_SHEET_TITLE, ws)
     return ws, created
 
 
@@ -9474,8 +9864,7 @@ def _system_maint_sort_key(record):
 
 
 def load_system_maint_records(spreadsheet=None, aircraft_id=None):
-    ws, _created = ensure_system_maint_worksheet(spreadsheet or _gsheets_spreadsheet())
-    records = records_from_worksheet(ws, SYSTEM_MAINT_COLUMNS)
+    records = load_records_with_ensure(SYSTEM_MAINT_SHEET_TITLE, SYSTEM_MAINT_COLUMNS, ensure_system_maint_worksheet, spreadsheet)
     if aircraft_id:
         wanted = _cell(aircraft_id)
         records = [r for r in records if _cell(r.get("Aircraft")) == wanted]
@@ -9513,10 +9902,11 @@ def build_system_maint_record(aircraft_id, entry_date, hobbs, system, work_done,
 def save_system_maint_record(record, spreadsheet=None):
     """Append one system maintenance entry to the System Maint tab only."""
     ws, _created = ensure_system_maint_worksheet(spreadsheet or _gsheets_spreadsheet())
-    header = [_cell(c) for c in ws.row_values(1)]
+    header = [_cell(c) for c in sheet_row_values(ws, 1)]
     if not header:
         raise RuntimeError("System Maint worksheet has no header")
     ws.append_row([str(record.get(c, "")) for c in header], value_input_option="RAW")
+    clear_sheet_records_cache(SYSTEM_MAINT_SHEET_TITLE, spreadsheet=spreadsheet)
     return "Google Sheets (System Maint)"
 
 
@@ -9543,7 +9933,7 @@ def show_system_maint_page(aircraft_id, spreadsheet=None):
         spreadsheet = spreadsheet or _gsheets_spreadsheet()
         history = load_system_maint_records(spreadsheet, aircraft_id=aid)
     except Exception as exc:
-        st.error(f"Could not load system maintenance: {exc}")
+        st.error("Could not load system maintenance: " + friendly_sheets_error_message(exc))
         return
 
     if st.session_state.get("system_maint_saved"):
@@ -9949,6 +10339,10 @@ def ifta_in_quarter(record, year, quarter):
 
 def _ensure_ifta_worksheet(spreadsheet, title, columns):
     """Create an IFTA tab with a header when it is missing. Never alter an existing header."""
+    ws, created, skip = begin_ensure_worksheet(spreadsheet, title)
+    if skip:
+        return ws, created
+
     cols = list(columns)
     ws = _worksheet_or_none(spreadsheet, title)
     created = False
@@ -9957,10 +10351,11 @@ def _ensure_ifta_worksheet(spreadsheet, title, columns):
         ws.append_row(cols, value_input_option="RAW")
         created = True
     else:
-        header = [_cell(c) for c in ws.row_values(1)]
+        header = [_cell(c) for c in sheet_row_values(ws, 1)]
         if not header:
             ws.append_row(cols, value_input_option="RAW")
             created = True
+    finish_ensure_worksheet(spreadsheet, title, ws)
     return ws, created
 
 
@@ -10007,8 +10402,7 @@ def ifta_receipt_from_record(record):
 
 
 def load_ifta_trip_records(spreadsheet=None, unit_id=None):
-    ws, _created = ensure_ifta_trips_worksheet(spreadsheet or _gsheets_spreadsheet())
-    records = records_from_worksheet(ws, IFTA_TRIPS_COLUMNS)
+    records = load_records_with_ensure(IFTA_TRIPS_SHEET_TITLE, IFTA_TRIPS_COLUMNS, ensure_ifta_trips_worksheet, spreadsheet)
     if unit_id:
         wanted = _cell(unit_id)
         records = [r for r in records if _cell(r.get("Unit")) == wanted]
@@ -10016,8 +10410,7 @@ def load_ifta_trip_records(spreadsheet=None, unit_id=None):
 
 
 def load_ifta_fuel_records(spreadsheet=None, unit_id=None):
-    ws, _created = ensure_ifta_fuel_worksheet(spreadsheet or _gsheets_spreadsheet())
-    records = records_from_worksheet(ws, IFTA_FUEL_COLUMNS)
+    records = load_records_with_ensure(IFTA_FUEL_SHEET_TITLE, IFTA_FUEL_COLUMNS, ensure_ifta_fuel_worksheet, spreadsheet)
     if unit_id:
         wanted = _cell(unit_id)
         records = [r for r in records if _cell(r.get("Unit")) == wanted]
@@ -10081,19 +10474,21 @@ def build_ifta_fuel_record(entry_date, unit_id, jurisdiction, gallons, price_per
 
 def save_ifta_trip_record(record, spreadsheet=None):
     ws, _created = ensure_ifta_trips_worksheet(spreadsheet or _gsheets_spreadsheet())
-    header = [_cell(c) for c in ws.row_values(1)]
+    header = [_cell(c) for c in sheet_row_values(ws, 1)]
     if not header:
         raise RuntimeError("IFTA Trips worksheet has no header")
     ws.append_row([str(record.get(c, "")) for c in header], value_input_option="RAW")
+    clear_sheet_records_cache(IFTA_TRIPS_SHEET_TITLE, spreadsheet=spreadsheet)
     return "Google Sheets (IFTA Trips)"
 
 
 def save_ifta_fuel_record(record, spreadsheet=None):
     ws, _created = ensure_ifta_fuel_worksheet(spreadsheet or _gsheets_spreadsheet())
-    header = [_cell(c) for c in ws.row_values(1)]
+    header = [_cell(c) for c in sheet_row_values(ws, 1)]
     if not header:
         raise RuntimeError("IFTA Fuel worksheet has no header")
     ws.append_row([str(record.get(c, "")) for c in header], value_input_option="RAW")
+    clear_sheet_records_cache(IFTA_FUEL_SHEET_TITLE, spreadsheet=spreadsheet)
     return "Google Sheets (IFTA Fuel)"
 
 
@@ -10354,7 +10749,7 @@ def show_ifta_page(unit, spreadsheet):
         trips = load_ifta_trip_records(spreadsheet)
         fuel = load_ifta_fuel_records(spreadsheet)
     except Exception as exc:
-        st.error(f"Could not load IFTA records: {exc}")
+        st.error("Could not load IFTA records: " + friendly_sheets_error_message(exc))
         return
 
     if "ifta_view" not in st.session_state:
@@ -10578,11 +10973,11 @@ def _show_ifta_summary(unit_id, trips, fuel, today):
 def show_equipment_page():
     try:
         spreadsheet = _gsheets_spreadsheet()
-        units = [u for u in load_equipment_records(spreadsheet) if is_active_equipment(u) and _cell(u.get("Unit ID"))]
-        squawks = load_squawk_records(spreadsheet)
+        units_all, squawks = load_equipment_and_squawk_records(spreadsheet)
+        units = [u for u in units_all if is_active_equipment(u) and _cell(u.get("Unit ID"))]
     except Exception as e:
         st.title("Equipment Squawks")
-        st.error(f"Could not load equipment or squawks: {e}")
+        st.error("Could not load equipment or squawks: " + friendly_sheets_error_message(e))
         return
 
     ifta_id = _cell(st.session_state.get("ifta_unit_id"))
@@ -10943,7 +11338,7 @@ def show_frat_history():
     try:
         df = load_frat_records()
     except Exception as e:
-        st.error(f"Could not load records: {e}")
+        st.error("Could not load records: " + friendly_sheets_error_message(e))
         return
     if df.empty:
         st.info("No assessments saved yet.")
