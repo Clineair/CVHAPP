@@ -88,7 +88,7 @@ def _exec_equipment_helpers():
         "yearly_item_status_markup", "apply_yearly_group_button_styles",
         "employee_button_key",
         "employee_has_timesheet", "employee_has_official_weekly_timesheet", "employee_has_anthony_timesheet", "timesheet_week_start", "timesheet_day_dates",
-        "anthony_timesheet_columns", "anthony_timesheet_template_labels", "anthony_timesheet_display_label", "anthony_timesheet_display_headers", "anthony_timesheet_legend_pairs", "anthony_timesheet_legend_lines", "anthony_timesheet_legend_text", "anthony_timesheet_content_payload",
+        "anthony_timesheet_columns", "anthony_timesheet_template_labels", "anthony_timesheet_display_label", "anthony_timesheet_display_headers", "anthony_timesheet_legend_pairs", "anthony_timesheet_legend_lines", "anthony_timesheet_legend_text", "anthony_timesheet_column_totals", "anthony_timesheet_total_values", "anthony_timesheet_grid_markup", "anthony_timesheet_content_payload",
         "new_anthony_timesheet_entry_id", "build_anthony_timesheet_record",
         "ensure_anthony_timesheets_worksheet", "load_anthony_timesheet_records",
         "load_anthony_timesheet_records_readonly", "save_anthony_timesheet_record",
@@ -130,7 +130,7 @@ def _exec_equipment_helpers():
         "time_off_covers_date", "_time_off_sort_key", "time_off_entry_id",
         "time_off_is_active", "latest_time_off_record", "current_time_off_records",
         "active_time_off_records", "time_off_for_date", "time_off_for_month",
-        "format_time_off_date_display", "time_off_partial_hours", "time_off_days_in_month", "time_off_hours_in_month", "time_off_anthony_month_rows", "time_off_identity", "time_off_duplicate_active", "time_off_summary_text",
+        "format_time_off_date_display", "time_off_identity", "time_off_duplicate_active", "time_off_summary_text",
         "time_off_month_grid_markup", "time_off_applies_to_filter",
         "_append_time_off_header_column", "ensure_time_off_project_column",
         "ensure_time_off_holiday_name_column", "ensure_time_off_worksheet",
@@ -2036,6 +2036,13 @@ class PlaceholderAndLogicTests(unittest.TestCase):
             self.assertIn(header_size, _sizes(short), short)
         self.assertIn(value_size, _sizes("2026-11-08"))
         self.assertIn(value_size, _sizes("Shop"))
+        self.assertIn(value_size, _sizes("Total"))
+        self.assertEqual(s["anthony_timesheet_total_values"](rec)[:4], ["Total", "2", "3.5", "40"])
+        self.assertEqual(s["anthony_timesheet_total_values"](rec)[-2], "60.00")
+        self.assertEqual(s["anthony_timesheet_total_values"](rec)[-1], "")
+        self.assertIn(">Total<", s["anthony_timesheet_grid_markup"](rec))
+        self.assertIn("ats-grid", s["anthony_timesheet_grid_markup"](rec))
+        self.assertIn("2026-11-08", s["anthony_timesheet_grid_markup"](rec))
         legend_spans = [span for span in spans if "L&I Ground Hours" in span["text"]]
         self.assertTrue(legend_spans)
         self.assertTrue(all(abs(span["size"] - legend_size) < 0.2 for span in legend_spans))
@@ -2073,7 +2080,17 @@ class PlaceholderAndLogicTests(unittest.TestCase):
         self.assertIn("Gnd = L&I Ground Hours", legend)
         self.assertIn("Surv = Survery Hrs", legend)
         self.assertNotIn("Survey Hrs", legend)
-        for row in range(16, 31):
+        self.assertEqual(ws["A16"].value, "Total")
+        self.assertEqual(str(ws["B16"].value), "2")
+        self.assertEqual(str(ws["C16"].value), "3.5")
+        self.assertEqual(str(ws["D16"].value), "40")
+        self.assertEqual(str(ws["E16"].value), "0")
+        self.assertEqual(str(ws["J16"].value), "60.00")
+        self.assertIsNone(ws["K16"].value)
+        self.assertTrue(ws["A16"].font.bold)
+        self.assertEqual(ws["A16"].font.size, 12)
+        self.assertNotIn("Total", header)
+        for row in range(17, 31):
             for col in range(1, 12):
                 self.assertIsNone(ws.cell(row, col).value, "%s,%s" % (row, col))
         self.assertEqual(ws["A32"].value, "Initials: AR")
@@ -2087,8 +2104,8 @@ class PlaceholderAndLogicTests(unittest.TestCase):
         self.assertEqual(s["anthony_timesheet_pdf_filename"](rec), "Anthony_Time_Sheet_Anthony_Root_2026-11-08.pdf")
         self.assertEqual(s["anthony_timesheet_xlsx_filename"](rec), "Anthony_Time_Sheet_Anthony_Root_2026-11-08.xlsx")
 
-    def test_calendar_display_dates_and_anthony_month_totals(self):
-        from datetime import date, time, datetime
+    def test_calendar_display_dates_stay_month_day_year(self):
+        from datetime import date, datetime
         from zoneinfo import ZoneInfo
         s = self.s
         today = date(2026, 11, 10)
@@ -2101,42 +2118,8 @@ class PlaceholderAndLogicTests(unittest.TestCase):
             "Anthony Root", "Vacation", date(2026, 11, 2),
             end_date=date(2026, 11, 4), when=when, entry_id="TO-ANT-VAC", today=today,
         )
-        partial = s["build_time_off_record"](
-            "Anthony Root", "Partial day", date(2026, 11, 19),
-            start_time=time(8, 0), end_time=time(12, 30),
-            when=when, entry_id="TO-ANT-PART", today=today,
-        )
-        ron = s["build_time_off_record"](
-            "Ron Cline", "Full day off", date(2026, 11, 18),
-            when=when, entry_id="TO-RON", today=today,
-        )
-        holiday = s["build_time_off_record"](
-            "All employees", "Company Holiday", date(2026, 11, 26),
-            end_date=date(2026, 11, 26), holiday_name="Thanksgiving",
-            when=when, entry_id="TO-HOL", today=today,
-        )
-        cross = s["build_time_off_record"](
-            "Anthony Root", "Project", date(2026, 11, 30),
-            end_date=date(2026, 12, 2), project="BNSF",
-            when=when, entry_id="TO-ANT-CROSS", today=today,
-        )
         self.assertEqual(vacation["Start Date"], "2026-11-02")
         self.assertEqual(s["time_off_summary_text"](vacation), "Anthony Root — Vacation — 11/02/2026 to 11/04/2026")
-        self.assertEqual(s["time_off_partial_hours"](partial), 4.5)
-        self.assertEqual(s["time_off_partial_hours"](vacation), 0.0)
-        self.assertEqual(s["time_off_days_in_month"](cross, 2026, 11), 1)
-        self.assertEqual(s["time_off_days_in_month"](cross, 2026, 12), 2)
-        rows = s["time_off_anthony_month_rows"]([vacation, partial, ron, holiday, cross], 2026, 11)
-        self.assertEqual([row["Type"] for row in rows], [
-            "Vacation", "Partial", "🎉 CVH Holiday – Thanksgiving", "Project – BNSF", "Total",
-        ])
-        self.assertEqual(rows[0]["Start"], "11/02/2026")
-        self.assertEqual(rows[0]["End"], "11/04/2026")
-        self.assertEqual(rows[-1], {"Type": "Total", "Start": "", "End": "", "Days": 6, "Hours": 4.5})
-        self.assertNotIn("Ron Cline", " ".join(row["Type"] for row in rows))
-        december = s["time_off_anthony_month_rows"]([vacation, partial, ron, holiday, cross], 2026, 12)
-        self.assertEqual(december[-1]["Days"], 2)
-        self.assertEqual(december[-1]["Hours"], 0.0)
 
     def test_time_off_records_validation_grid_and_cancel_history(self):
 
@@ -5515,22 +5498,12 @@ class HeaderAndEquipmentPageTests(unittest.TestCase):
         self.assertFalse(list(at.dataframe))
         next(s for s in at.selectbox if s.label == "Show").select("Anthony Root").run()
         self.assertFalse(list(at.exception))
-        self.assertEqual(len(list(at.dataframe)), 1)
-        table = at.dataframe[0].value
-        self.assertEqual(list(table.columns), ["Type", "Start", "End", "Days", "Hours"])
-        self.assertEqual(str(table.iloc[-1]["Type"]), "Total")
-        # Company holiday 11/26 (1 day) + vacation 11/02-11/04 (3) + partial 11/19 (1).
-        self.assertEqual(int(table.iloc[-1]["Days"]), 5)
-        self.assertAlmostEqual(float(table.iloc[-1]["Hours"]), 4.5)
-        shown_dates = " ".join(str(value) for value in list(table["Start"]) + list(table["End"]))
-        self.assertIn("11/02/2026", shown_dates)
-        self.assertIn("11/04/2026", shown_dates)
-        self.assertIn("11/19/2026", shown_dates)
-        self.assertIn("11/26/2026", shown_dates)
-        self.assertNotRegex(shown_dates, r"\d{4}-\d{2}-\d{2}")
+        self.assertFalse(list(at.dataframe))
         md = " ".join(m.value or "" for m in at.markdown)
         self.assertIn("Anthony Root — Vacation — 11/02/2026 to 11/04/2026", md)
         self.assertIn("11/19/2026", md)
+        self.assertIn("11/26/2026", md)
+        self.assertNotIn("Days are the days in this month", md)
         next(s for s in at.selectbox if s.label == "Show").select("Ron Cline").run()
         self.assertFalse(list(at.dataframe))
         next(s for s in at.selectbox if s.label == "Show").select("All employees").run()
@@ -5747,6 +5720,9 @@ class HeaderAndEquipmentPageTests(unittest.TestCase):
             self.assertIn("Gnd = L&I Ground Hours", caption)
             self.assertIn("Surv = Survery Hrs", caption)
             self.assertIn("font-size: 18px", " ".join(m.value or "" for m in at.markdown))
+            grid = " ".join(m.value or "" for m in at.markdown)
+            self.assertIn("ats-grid", grid)
+            self.assertIn(">Total<", grid)
             next(t for t in at.text_input if t.label == "Gnd").set_value("2")
             next(t for t in at.text_input if t.label == "Initials (required before email)").set_value("AR")
             next(b for b in at.button if b.label == "Save week").click().run()
@@ -5757,6 +5733,9 @@ class HeaderAndEquipmentPageTests(unittest.TestCase):
             self.assertIn("Sun L&I Ground Hours", header)
             self.assertEqual(row[header.index("Sun L&I Ground Hours")], "2")
             self.assertNotIn("Sun Gnd", header)
+            self.assertNotIn("Total", header)
+            saved_grid = " ".join(m.value or "" for m in at.markdown)
+            self.assertIn(">Total</td><td>2</td>", saved_grid)
         finally:
             secrets_singleton._programmatic_secrets = previous
             secrets_singleton._secrets = None

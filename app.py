@@ -4019,69 +4019,6 @@ def format_time_off_date_display(value):
     return parsed.strftime("%m/%d/%Y")
 
 
-def time_off_partial_hours(record):
-    """Hours between the start and end time of a partial day. Other types are 0."""
-    if _cell((record or {}).get("Type")) != TIME_OFF_TYPE_PARTIAL:
-        return 0.0
-    start = parse_time_off_time((record or {}).get("Start Time"))
-    end = parse_time_off_time((record or {}).get("End Time"))
-    if start is None or end is None or end <= start:
-        return 0.0
-    minutes = (end.hour * 60 + end.minute) - (start.hour * 60 + start.minute)
-    return round(minutes / 60.0, 2)
-
-
-def time_off_days_in_month(record, year, month):
-    """Days of this entry that fall in the shown month."""
-    start = time_off_start_date(record)
-    end = time_off_end_date(record)
-    if start is None:
-        return 0
-    if end is None:
-        end = start
-    first = date(int(year), int(month), 1)
-    if int(month) == 12:
-        last = date(int(year), 12, 31)
-    else:
-        last = date(int(year), int(month) + 1, 1) - timedelta(days=1)
-    overlap_start = start if start > first else first
-    overlap_end = end if end < last else last
-    if overlap_end < overlap_start:
-        return 0
-    return (overlap_end - overlap_start).days + 1
-
-
-def time_off_hours_in_month(record, year, month):
-    if time_off_days_in_month(record, year, month) <= 0:
-        return 0.0
-    return time_off_partial_hours(record)
-
-
-def time_off_anthony_month_rows(records, year, month):
-    """Anthony Root's month table, with a Total row under the numeric columns.
-
-    The calendar has no per-employee grid of numbers. This table is the one
-    shown when the calendar filter is Anthony Root. Days are days in the
-    shown month. Hours are partial-day time. Company holidays stored as
-    All employees are included because they appear on his calendar.
-    """
-    rows = []
-    for record in time_off_for_month(records, year, month, employee=ANTHONY_TIMESHEET_EMPLOYEE):
-        rows.append({
-            "Type": time_off_type_label(
-                record.get("Type"), record.get("Project"), record.get("Holiday Name")
-            ),
-            "Start": format_time_off_date_display(time_off_start_date(record)),
-            "End": format_time_off_date_display(time_off_end_date(record)),
-            "Days": time_off_days_in_month(record, year, month),
-            "Hours": time_off_hours_in_month(record, year, month),
-        })
-    days = sum(row["Days"] for row in rows)
-    hours = round(sum(row["Hours"] for row in rows), 2)
-    rows.append({"Type": "Total", "Start": "", "End": "", "Days": days, "Hours": hours})
-    return rows
-
-
 def time_off_identity(record):
     return (
         _cell((record or {}).get("Employee")),
@@ -4487,18 +4424,6 @@ def show_time_off_calendar_page():
         )
     else:
         st.info("Calendar grid is unavailable until the list can be loaded.")
-
-    if load_ok and employee_filter == ANTHONY_TIMESHEET_EMPLOYEE:
-        st.subheader("Anthony Root")
-        st.caption(
-            "Days are the days in this month. Hours are partial-day time. "
-            "Dates are month/day/year."
-        )
-        st.dataframe(
-            pd.DataFrame(time_off_anthony_month_rows(records, year, month)),
-            hide_index=True,
-            use_container_width=True,
-        )
 
     st.markdown("---")
     st.subheader("Agenda")
@@ -7006,6 +6931,83 @@ def anthony_timesheet_legend_text():
     return "  ·  ".join(short + " = " + full for short, full in anthony_timesheet_legend_pairs())
 
 
+def anthony_timesheet_column_totals(record):
+    """Week sums for Anthony's numeric columns. Notes are not totaled.
+
+    Per Diem is summed as dollars, the same amount stored on each day.
+    Blank cells count as zero. Display only; these sums are not stored.
+    """
+    totals = {}
+    for field, _label in ANTHONY_TIMESHEET_DAY_FIELDS:
+        if field == "Notes":
+            continue
+        total = 0.0
+        for day in ANTHONY_TIMESHEET_DAYS:
+            number = timesheet_parse_number((record or {}).get(timesheet_day_column(day, field)))
+            if number is not None:
+                total += float(number)
+        totals[field] = round(total, 2)
+    return totals
+
+
+def anthony_timesheet_total_values(record):
+    """Display cells for the Total row: Total, each numeric sum, blank notes."""
+    totals = anthony_timesheet_column_totals(record)
+    values = ["Total"]
+    for field, _label in ANTHONY_TIMESHEET_DAY_FIELDS:
+        if field == "Notes":
+            values.append("")
+        elif field == "Per Diem":
+            values.append(timesheet_format_money(totals.get(field)))
+        else:
+            values.append(timesheet_format_hours(totals.get(field)))
+    return values
+
+
+def anthony_timesheet_grid_markup(record):
+    """On-screen week grid with abbreviated headers and a Total row."""
+    def _html(text):
+        return (
+            _cell(text)
+            .replace("&", "&amp;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
+        )
+
+    headers = anthony_timesheet_display_headers()
+    week = (record or {}).get("Week Of")
+    dates = timesheet_day_dates(week) if parse_equipment_date(week) else [""] * len(ANTHONY_TIMESHEET_DAYS)
+    parts = [
+        "<style>"
+        ".ats-grid{width:100%;border-collapse:collapse;table-layout:fixed;font-size:15px;}"
+        ".ats-grid th,.ats-grid td{border:1px solid #d1d5db;padding:4px 2px;text-align:center;"
+        "white-space:nowrap;overflow:hidden;}"
+        ".ats-grid th{background:#f3f4f6;font-weight:700;}"
+        ".ats-grid tr.total td{font-weight:700;background:#eef6ff;border-top:2px solid #111;}"
+        "</style>",
+        "<table class='ats-grid'><thead><tr>",
+    ]
+    for label in headers:
+        parts.append("<th>" + _html(label) + "</th>")
+    parts.append("</tr></thead><tbody>")
+    for index, day in enumerate(ANTHONY_TIMESHEET_DAYS):
+        shown_date = format_equipment_date(dates[index]) if dates[index] else _cell(
+            (record or {}).get(timesheet_day_column(day, "Date"))
+        )
+        cells = [shown_date]
+        for field, _label in ANTHONY_TIMESHEET_DAY_FIELDS:
+            cells.append(_cell((record or {}).get(timesheet_day_column(day, field))))
+        parts.append("<tr>")
+        for value in cells:
+            parts.append("<td>" + _html(value) + "</td>")
+        parts.append("</tr>")
+    parts.append("<tr class='total'>")
+    for value in anthony_timesheet_total_values(record):
+        parts.append("<td>" + _html(value) + "</td>")
+    parts.append("</tr></tbody></table>")
+    return "".join(parts)
+
+
 def anthony_timesheet_content_payload(record):
     """Fields that initials lock on Anthony's form; initials metadata excluded."""
     days = {}
@@ -7195,7 +7197,14 @@ def build_anthony_timesheet_xlsx(record):
             value_cell = ws.cell(row, col, _cell(record.get(timesheet_day_column(day, field))))
             value_cell.font = value_font
             value_cell.alignment = center
-    # Official grid continues through row 30; leave those extra rows empty.
+    total_font = Font(name="Calibri", size=ANTHONY_TIMESHEET_XLSX_VALUE_FONT, bold=True)
+    for col, value in enumerate(anthony_timesheet_total_values(record), start=1):
+        if value == "" and col == len(ANTHONY_TIMESHEET_DAY_FIELDS) + 1:
+            continue
+        cell = ws.cell(16, col, value)
+        cell.font = total_font
+        cell.alignment = center
+    # Rows 17-30 stay blank. The Total row is display-only and is not stored.
     initials = _cell(record.get("Initials"))
     if initials:
         ws["A32"] = "Initials: " + initials
@@ -7265,10 +7274,11 @@ def build_anthony_timesheet_pdf(record, logo_path=None):
         col_w = [w * scale for w in col_w]
     header_h = 0.32 * inch
     row_h = 0.34 * inch
-    rows = 1 + ANTHONY_TIMESHEET_WEEK_ROWS
+    # Header, seven days, and the Total row.
+    rows = 2 + ANTHONY_TIMESHEET_WEEK_ROWS
     cols = len(headers)
     grid_top = y - 16
-    grid_height = header_h + row_h * ANTHONY_TIMESHEET_WEEK_ROWS
+    grid_height = header_h + row_h * (ANTHONY_TIMESHEET_WEEK_ROWS + 1)
     grid_width = sum(col_w)
     c.setStrokeColor(black)
     c.setLineWidth(0.6)
@@ -7311,6 +7321,15 @@ def build_anthony_timesheet_pdf(record, logo_path=None):
                 c.drawCentredString(xx + col_w[i] / 2, yy - row_h + 10, shown)
             xx += col_w[i]
         yy -= row_h
+
+    total_values = anthony_timesheet_total_values(record)
+    xx = left
+    for i, val in enumerate(total_values):
+        _s(value_size, True)
+        shown = _clip(val, header_font, value_size, col_w[i] - 6)
+        if shown:
+            c.drawCentredString(xx + col_w[i] / 2, yy - row_h + 10, shown)
+        xx += col_w[i]
 
     y = grid_top - grid_height - 18
     _s(ANTHONY_TIMESHEET_PDF_INITIALS_FONT, True)
@@ -7402,6 +7421,21 @@ def show_anthony_timesheet(employee):
                     value=_saved(timesheet_day_column(day, field)),
                     key=key,
                 )
+
+    try:
+        live_days = {}
+        for day in ANTHONY_TIMESHEET_DAYS:
+            live_days[day] = {}
+            for field, _label in ANTHONY_TIMESHEET_DAY_FIELDS:
+                key = prefix + day + "_" + field.replace(" ", "_")
+                live_days[day][field] = st.session_state.get(key, _saved(timesheet_day_column(day, field)))
+        live_grid = build_anthony_timesheet_record(
+            employee, week, day_values=live_days, initials="", today=today,
+        )
+    except Exception:
+        live_grid = None
+    if live_grid:
+        st.markdown(anthony_timesheet_grid_markup(live_grid), unsafe_allow_html=True)
 
     st.text_input("Initials (required before email)", value=_saved("Initials"), key=prefix + "initials")
 
