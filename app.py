@@ -15,6 +15,7 @@ import employee_receipts
 import bnsf_weather
 import bnsf_daily_report
 import bnsf_notice
+import driver_checklists
 from zoneinfo import ZoneInfo
 
 # Helper modules Streamlit can keep stale in sys.modules after a git deploy.
@@ -27,6 +28,7 @@ _LOCAL_HELPER_MODULES = (
     "bnsf_weather",
     "bnsf_daily_report",
     "bnsf_notice",
+    "driver_checklists",
 )
 _LOCAL_MODULE_SIGNATURE_CACHE = "_cvhapp_local_module_signatures"
 
@@ -11258,7 +11260,7 @@ elif st.session_state.current_mode == "Driver":
     st.subheader("📋 Saved Job Type Checklists")
     checklist_type = st.selectbox(
         "Select Job Type Checklist",
-        ["Forestry", "Mt. Vernon", "Seeding", "Local Spraying", "BNSF", "Survey"],
+        ["Forestry", "Mt. Vernon", "Seeding", "Local Spraying", driver_checklists.BNSF_HELI2_SPRAY_LABEL, "Survey"],
         help="Load your pre-defined checklist for this job"
     )
 
@@ -11363,16 +11365,22 @@ elif st.session_state.current_mode == "Driver":
             st.checkbox("Temp Gun – 1")
             st.checkbox("Wind Meter – 1")
 
-        elif checklist_type == "BNSF":
-            st.checkbox("Confirm proximity to BNSF rail line")
-            st.checkbox("Verify no spraying over or near railroad tracks")
-            st.checkbox("Check BNSF specific safety protocols")
-            st.checkbox("Confirm altitude and swath width for BNSF area")
-            st.checkbox("Verify no drift risk to rail corridor")
-            st.checkbox("Load Secured Properly – All")
-            st.checkbox("Pre-Check Vehicles – All")
-            st.checkbox("Fire Extinguisher – Checked")
-            st.checkbox("Spill Kit – Full")
+        elif checklist_type == driver_checklists.BNSF_HELI2_SPRAY_LABEL:
+            st.markdown("**" + driver_checklists.BNSF_HELI2_SPRAY_TITLE + "**")
+            st.markdown(driver_checklists.must_check_legend_html(), unsafe_allow_html=True)
+            for item in driver_checklists.BNSF_HELI2_SPRAY_CHECKLIST:
+                label = driver_checklists.format_checklist_item_label(item)
+                key = driver_checklists.checklist_item_key(item)
+                if driver_checklists.is_must_check(item):
+                    box_col, text_col = st.columns([0.12, 0.88])
+                    with box_col:
+                        st.checkbox(label, key=key, label_visibility="collapsed")
+                    with text_col:
+                        st.markdown(driver_checklists.must_check_item_html(item), unsafe_allow_html=True)
+                else:
+                    st.checkbox(label, key=key)
+                if item.get("note"):
+                    st.caption(item["note"])
 
         elif checklist_type in ["Seeding", "Local Spraying"]:
             st.checkbox("Load Secured Properly – All")
