@@ -1203,6 +1203,29 @@ ANTHONY_TIMESHEET_NUMERIC_FIELDS = {
     "Forestry App Acres", "BNSF App Acres", "Seeding Acres",
     "Survery Hrs", "Standby Hrs",
 }
+# Screen, PDF, and generated workbook headers only. Sheet column names stay the official labels.
+ANTHONY_TIMESHEET_DISPLAY_LABELS = {
+    "Date": "Date",
+    "L&I Ground Hours": "Gnd",
+    "L&I Flight Hours": "Flt",
+    "Spraying App Acres": "Spray",
+    "Forestry App Acres": "ForAc",
+    "BNSF App Acres": "BNSF",
+    "Seeding Acres": "Seed",
+    "Survery Hrs": "Surv",
+    "Standby Hrs": "Stby",
+    "Per Diem": "Diem",
+    "Notes": "Notes",
+}
+# PDF headers were 6.5pt Helvetica-Bold and wrapped onto several lines. Values were 7pt.
+ANTHONY_TIMESHEET_PDF_HEADER_FONT = 14
+ANTHONY_TIMESHEET_PDF_VALUE_FONT = 13
+ANTHONY_TIMESHEET_PDF_LEGEND_FONT = 9
+ANTHONY_TIMESHEET_PDF_INITIALS_FONT = 12
+# Generated workbook headers were 11pt Calibri bold with wrap. Day values used the template's 11pt.
+ANTHONY_TIMESHEET_XLSX_HEADER_FONT = 14
+ANTHONY_TIMESHEET_XLSX_VALUE_FONT = 12
+ANTHONY_TIMESHEET_SCREEN_LABEL_PX = 18
 TIMESHEET_DAYS = ("Sun", "Mon", "Tues", "Wed", "Thur", "Fri", "Sat")
 # Vacation and Sick sit with the worked-hour rows on the official weekly form only.
 TIMESHEET_WORKED_HOUR_FIELDS = ("CVH Hours", "Forestry Hours", "BNSF Hours")
@@ -3986,6 +4009,79 @@ def time_off_for_month(records, year, month, employee=None, include_cancelled=Fa
     return rows
 
 
+def format_time_off_date_display(value):
+    """Show a calendar date as MM/DD/YYYY. Sheet cells stay YYYY-MM-DD."""
+    if hasattr(value, "strftime") and hasattr(value, "year"):
+        return value.strftime("%m/%d/%Y")
+    parsed = parse_equipment_date(value)
+    if parsed is None:
+        return ""
+    return parsed.strftime("%m/%d/%Y")
+
+
+def time_off_partial_hours(record):
+    """Hours between the start and end time of a partial day. Other types are 0."""
+    if _cell((record or {}).get("Type")) != TIME_OFF_TYPE_PARTIAL:
+        return 0.0
+    start = parse_time_off_time((record or {}).get("Start Time"))
+    end = parse_time_off_time((record or {}).get("End Time"))
+    if start is None or end is None or end <= start:
+        return 0.0
+    minutes = (end.hour * 60 + end.minute) - (start.hour * 60 + start.minute)
+    return round(minutes / 60.0, 2)
+
+
+def time_off_days_in_month(record, year, month):
+    """Days of this entry that fall in the shown month."""
+    start = time_off_start_date(record)
+    end = time_off_end_date(record)
+    if start is None:
+        return 0
+    if end is None:
+        end = start
+    first = date(int(year), int(month), 1)
+    if int(month) == 12:
+        last = date(int(year), 12, 31)
+    else:
+        last = date(int(year), int(month) + 1, 1) - timedelta(days=1)
+    overlap_start = start if start > first else first
+    overlap_end = end if end < last else last
+    if overlap_end < overlap_start:
+        return 0
+    return (overlap_end - overlap_start).days + 1
+
+
+def time_off_hours_in_month(record, year, month):
+    if time_off_days_in_month(record, year, month) <= 0:
+        return 0.0
+    return time_off_partial_hours(record)
+
+
+def time_off_anthony_month_rows(records, year, month):
+    """Anthony Root's month table, with a Total row under the numeric columns.
+
+    The calendar has no per-employee grid of numbers. This table is the one
+    shown when the calendar filter is Anthony Root. Days are days in the
+    shown month. Hours are partial-day time. Company holidays stored as
+    All employees are included because they appear on his calendar.
+    """
+    rows = []
+    for record in time_off_for_month(records, year, month, employee=ANTHONY_TIMESHEET_EMPLOYEE):
+        rows.append({
+            "Type": time_off_type_label(
+                record.get("Type"), record.get("Project"), record.get("Holiday Name")
+            ),
+            "Start": format_time_off_date_display(time_off_start_date(record)),
+            "End": format_time_off_date_display(time_off_end_date(record)),
+            "Days": time_off_days_in_month(record, year, month),
+            "Hours": time_off_hours_in_month(record, year, month),
+        })
+    days = sum(row["Days"] for row in rows)
+    hours = round(sum(row["Hours"] for row in rows), 2)
+    rows.append({"Type": "Total", "Start": "", "End": "", "Days": days, "Hours": hours})
+    return rows
+
+
 def time_off_identity(record):
     return (
         _cell((record or {}).get("Employee")),
@@ -4013,8 +4109,8 @@ def time_off_duplicate_active(records, record, ignore_entry_id=None):
 def time_off_summary_text(record, include_employee=True):
     employee = _cell((record or {}).get("Employee"))
     kind = _cell((record or {}).get("Type"))
-    start = format_equipment_date((record or {}).get("Start Date"))
-    end = format_equipment_date((record or {}).get("End Date"))
+    start = format_time_off_date_display((record or {}).get("Start Date"))
+    end = format_time_off_date_display((record or {}).get("End Date"))
     bits = []
     if include_employee and employee:
         bits.append(employee)
@@ -4392,6 +4488,18 @@ def show_time_off_calendar_page():
     else:
         st.info("Calendar grid is unavailable until the list can be loaded.")
 
+    if load_ok and employee_filter == ANTHONY_TIMESHEET_EMPLOYEE:
+        st.subheader("Anthony Root")
+        st.caption(
+            "Days are the days in this month. Hours are partial-day time. "
+            "Dates are month/day/year."
+        )
+        st.dataframe(
+            pd.DataFrame(time_off_anthony_month_rows(records, year, month)),
+            hide_index=True,
+            use_container_width=True,
+        )
+
     st.markdown("---")
     st.subheader("Agenda")
     st.caption("Time off that falls in this month. Cancel keeps a history row instead of deleting.")
@@ -4480,10 +4588,10 @@ def show_time_off_calendar_page():
             default_day = date(year, month, 1)
         ranged = kind in (TIME_OFF_TYPE_VACATION, TIME_OFF_TYPE_HOLIDAY, TIME_OFF_TYPE_PROJECT)
         if ranged:
-            st.date_input("Start Date", value=default_day, format="YYYY-MM-DD", key=prefix + "start")
-            st.date_input("End Date", value=default_day, format="YYYY-MM-DD", key=prefix + "end")
+            st.date_input("Start Date", value=default_day, format="MM/DD/YYYY", key=prefix + "start")
+            st.date_input("End Date", value=default_day, format="MM/DD/YYYY", key=prefix + "end")
         else:
-            st.date_input("Date", value=default_day, format="YYYY-MM-DD", key=prefix + "start")
+            st.date_input("Date", value=default_day, format="MM/DD/YYYY", key=prefix + "start")
         if kind == TIME_OFF_TYPE_PARTIAL:
             st.time_input("Start Time (Pacific)", value=dt_time(8, 0), key=prefix + "start_time")
             st.time_input("End Time (Pacific)", value=dt_time(12, 0), key=prefix + "end_time")
@@ -5821,12 +5929,12 @@ def timesheet_can_view_or_edit(employee, user=None, auth_configured=None, mappin
 
 
 def timesheet_email_can_send(record=None, configured=None, user=None, secrets=None, **kwargs):
-    import timesheet_company_mail
     """True only when the company mailbox, PIN identity, initials, and PDF are ready.
 
     Google sign-in and the Cloud Run callback are not consulted.
     Default configuration keeps this False.
     """
+    import timesheet_company_mail
     identity = kwargs.get("user_employee")
     if identity is None:
         identity = kwargs.get("pin_employee")
@@ -6863,6 +6971,41 @@ def anthony_timesheet_template_labels():
     ]
 
 
+def anthony_timesheet_display_label(field):
+    """Short header for the screen, PDF, and generated workbook. Storage keys stay official."""
+    key = _cell(field)
+    return ANTHONY_TIMESHEET_DISPLAY_LABELS.get(key, key)
+
+
+def anthony_timesheet_display_headers():
+    return ["Date"] + [
+        anthony_timesheet_display_label(field) for field, _label in ANTHONY_TIMESHEET_DAY_FIELDS
+    ]
+
+
+def anthony_timesheet_legend_pairs():
+    """Abbreviations that are not already the official name."""
+    pairs = []
+    for field, label in ANTHONY_TIMESHEET_DAY_FIELDS:
+        short = anthony_timesheet_display_label(field)
+        if short != field and short != label:
+            pairs.append((short, field))
+    return pairs
+
+
+def anthony_timesheet_legend_lines():
+    """Short legend lines that fit a letter page on one line each."""
+    parts = [short + " = " + full for short, full in anthony_timesheet_legend_pairs()]
+    lines = []
+    for i in range(0, len(parts), 3):
+        lines.append("   ".join(parts[i:i + 3]))
+    return lines
+
+
+def anthony_timesheet_legend_text():
+    return "  ·  ".join(short + " = " + full for short, full in anthony_timesheet_legend_pairs())
+
+
 def anthony_timesheet_content_payload(record):
     """Fields that initials lock on Anthony's form; initials metadata excluded."""
     days = {}
@@ -7013,9 +7156,15 @@ def anthony_timesheet_xlsx_filename(record):
 
 
 def build_anthony_timesheet_xlsx(record):
-    """Fill Anthony's official template workbook. Extra blank rows stay blank."""
+    """Fill Anthony's official template workbook. Extra blank rows stay blank.
+
+    Header text and fonts on the generated file are display-only abbreviations.
+    The template file and the Google Sheets column names stay the official labels.
+    """
     import io
     from openpyxl import load_workbook
+    from openpyxl.styles import Alignment, Font
+    from openpyxl.utils import get_column_letter
 
     path = timesheet_bundle_path(ANTHONY_TIMESHEET_TEMPLATE)
     wb = load_workbook(path)
@@ -7025,16 +7174,39 @@ def build_anthony_timesheet_xlsx(record):
     ws["A1"] = "Employee"
     ws["B1"] = employee
     ws["A4"] = "Week of " + week
+    header_font = Font(name="Calibri", size=ANTHONY_TIMESHEET_XLSX_HEADER_FONT, bold=True)
+    value_font = Font(name="Calibri", size=ANTHONY_TIMESHEET_XLSX_VALUE_FONT)
+    center = Alignment(horizontal="center", vertical="center", wrap_text=False)
+    # Widths in Excel character units. Sum stays inside a portrait letter page.
+    for index, width in enumerate([12, 8, 8, 8, 8, 8, 8, 8, 8, 8, 18], start=1):
+        ws.column_dimensions[get_column_letter(index)].width = width
+    ws.row_dimensions[8].height = 22
+    for col, label in enumerate(anthony_timesheet_display_headers(), start=1):
+        cell = ws.cell(8, col, label)
+        cell.font = header_font
+        cell.alignment = center
     dates = timesheet_day_dates(week)
     for i, day in enumerate(ANTHONY_TIMESHEET_DAYS):
         row = 9 + i
-        ws.cell(row, 1, format_equipment_date(dates[i]))
+        date_cell = ws.cell(row, 1, format_equipment_date(dates[i]))
+        date_cell.font = value_font
+        date_cell.alignment = center
         for col, (field, _label) in enumerate(ANTHONY_TIMESHEET_DAY_FIELDS, start=2):
-            ws.cell(row, col, _cell(record.get(timesheet_day_column(day, field))))
+            value_cell = ws.cell(row, col, _cell(record.get(timesheet_day_column(day, field))))
+            value_cell.font = value_font
+            value_cell.alignment = center
     # Official grid continues through row 30; leave those extra rows empty.
     initials = _cell(record.get("Initials"))
     if initials:
         ws["A32"] = "Initials: " + initials
+    legend_font = Font(name="Calibri", size=10)
+    for offset, line in enumerate(anthony_timesheet_legend_lines()):
+        row = 33 + offset
+        ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=11)
+        cell = ws.cell(row, 1, line)
+        cell.font = legend_font
+        cell.alignment = Alignment(horizontal="left", vertical="center", wrap_text=False)
+        ws.row_dimensions[row].height = 16
     buf = io.BytesIO()
     wb.save(buf)
     return buf.getvalue()
@@ -7067,14 +7239,32 @@ def build_anthony_timesheet_pdf(record, logo_path=None):
     _s(14, True)
     c.drawString(0.4 * inch, y, "Week of  " + week)
 
-    headers = ["Date"] + [label for _field, label in ANTHONY_TIMESHEET_DAY_FIELDS]
-    left = 0.35 * inch
-    col_w = [
-        0.85 * inch, 0.85 * inch, 0.85 * inch, 0.85 * inch, 0.85 * inch,
-        0.8 * inch, 0.75 * inch, 0.75 * inch, 0.75 * inch, 0.7 * inch, 1.3 * inch,
-    ]
-    header_h = 0.48 * inch
-    row_h = 0.32 * inch
+    from reportlab.pdfbase.pdfmetrics import stringWidth
+
+    headers = anthony_timesheet_display_headers()
+    header_font = "Helvetica-Bold"
+    value_font = "Helvetica"
+    header_size = ANTHONY_TIMESHEET_PDF_HEADER_FONT
+    value_size = ANTHONY_TIMESHEET_PDF_VALUE_FONT
+    left = 0.4 * inch
+    usable = width - left - 0.4 * inch
+    pad = 10
+    col_w = []
+    for i, label in enumerate(headers):
+        sample = "2026-12-30" if i == 0 else "8888.88"
+        needed = max(
+            stringWidth(label, header_font, header_size),
+            stringWidth(sample, value_font, value_size),
+        ) + pad
+        col_w.append(needed)
+    extra = usable - sum(col_w)
+    if extra >= 0:
+        col_w[-1] += extra
+    else:
+        scale = usable / sum(col_w)
+        col_w = [w * scale for w in col_w]
+    header_h = 0.32 * inch
+    row_h = 0.34 * inch
     rows = 1 + ANTHONY_TIMESHEET_WEEK_ROWS
     cols = len(headers)
     grid_top = y - 16
@@ -7092,13 +7282,19 @@ def build_anthony_timesheet_pdf(record, logo_path=None):
         if col < cols:
             xx += col_w[col]
 
-    _s(6.5, True)
+    def _clip(text, font, size, max_w):
+        text = _cell(text)
+        if not text or stringWidth(text, font, size) <= max_w:
+            return text
+        ellipsis = "..."
+        while text and stringWidth(text + ellipsis, font, size) > max_w:
+            text = text[:-1]
+        return (text + ellipsis) if text else ""
+
+    _s(header_size, True)
     xx = left
     for i, label in enumerate(headers):
-        text_y = grid_top - 12
-        for line in _timesheet_wrap_label(label, 14):
-            c.drawCentredString(xx + col_w[i] / 2, text_y, line)
-            text_y -= 8
+        c.drawCentredString(xx + col_w[i] / 2, grid_top - header_h + 9, label)
         xx += col_w[i]
 
     dates = timesheet_day_dates(week)
@@ -7109,21 +7305,21 @@ def build_anthony_timesheet_pdf(record, logo_path=None):
             values.append(_cell(record.get(timesheet_day_column(day, field))))
         xx = left
         for i, val in enumerate(values):
-            _s(7, False)
-            shown = val
-            if shown and i == len(values) - 1:
-                shown = shown[:22]
-            elif shown:
-                shown = shown[:12]
+            _s(value_size, False)
+            shown = _clip(val, value_font, value_size, col_w[i] - 6)
             if shown:
-                c.drawCentredString(xx + col_w[i] / 2, yy - 14, shown)
+                c.drawCentredString(xx + col_w[i] / 2, yy - row_h + 10, shown)
             xx += col_w[i]
         yy -= row_h
 
-    y = grid_top - grid_height - 20
-    _s(10, True)
+    y = grid_top - grid_height - 18
+    _s(ANTHONY_TIMESHEET_PDF_INITIALS_FONT, True)
     initials = _cell(record.get("Initials"))
     c.drawString(0.4 * inch, y, "Initials: " + (initials or "________"))
+    _s(ANTHONY_TIMESHEET_PDF_LEGEND_FONT, False)
+    for line in anthony_timesheet_legend_lines():
+        y -= 12
+        c.drawString(0.4 * inch, y, line)
     c.showPage()
     c.save()
     return buf.getvalue()
@@ -7187,14 +7383,25 @@ def show_anthony_timesheet(employee):
         return (saved or {}).get(field, default) if saved else default
 
     st.markdown("**Employee:** " + ANTHONY_TIMESHEET_EMPLOYEE)
+    st.markdown(
+        "<style>div[data-testid='stTextInput'] label p {font-size: "
+        + str(ANTHONY_TIMESHEET_SCREEN_LABEL_PX)
+        + "px; line-height: 1.2;}</style>",
+        unsafe_allow_html=True,
+    )
+    st.caption(anthony_timesheet_legend_text())
     dates = timesheet_day_dates(week, today=today)
     for i, day in enumerate(ANTHONY_TIMESHEET_DAYS):
         title = day + "  " + dates[i].isoformat()
         with st.expander(title, expanded=(dates[i] == today)):
             st.markdown("**Date:** " + dates[i].isoformat())
-            for field, label in ANTHONY_TIMESHEET_DAY_FIELDS:
+            for field, _label in ANTHONY_TIMESHEET_DAY_FIELDS:
                 key = prefix + day + "_" + field.replace(" ", "_")
-                st.text_input(label, value=_saved(timesheet_day_column(day, field)), key=key)
+                st.text_input(
+                    anthony_timesheet_display_label(field),
+                    value=_saved(timesheet_day_column(day, field)),
+                    key=key,
+                )
 
     st.text_input("Initials (required before email)", value=_saved("Initials"), key=prefix + "initials")
 
