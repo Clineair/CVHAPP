@@ -11367,9 +11367,18 @@ elif st.session_state.current_mode == "Driver":
 
         elif checklist_type == driver_checklists.BNSF_HELI2_SPRAY_LABEL:
             st.markdown("**" + driver_checklists.BNSF_HELI2_SPRAY_TITLE + "**")
+            st.markdown(driver_checklists.must_check_legend_html(), unsafe_allow_html=True)
             for item in driver_checklists.BNSF_HELI2_SPRAY_CHECKLIST:
                 label = driver_checklists.format_checklist_item_label(item)
-                st.checkbox(label, key=driver_checklists.checklist_item_key(item))
+                key = driver_checklists.checklist_item_key(item)
+                if driver_checklists.is_must_check(item):
+                    box_col, text_col = st.columns([0.12, 0.88])
+                    with box_col:
+                        st.checkbox(label, key=key, label_visibility="collapsed")
+                    with text_col:
+                        st.markdown(driver_checklists.must_check_item_html(item), unsafe_allow_html=True)
+                else:
+                    st.checkbox(label, key=key)
                 if item.get("note"):
                     st.caption(item["note"])
 

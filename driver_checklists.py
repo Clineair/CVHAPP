@@ -4,7 +4,11 @@ The BNSF HELI2 spray list replaces the old placeholder "BNSF" list under
 Driver > Checklists. Wording, order, quantities, and notes come from Ron's
 24 Nov 2026 workbook "BNSF Spray Check List.xlsx" (sheet title
 "RR Spray Check List").
+
+Items marked emphasis (red in the workbook) are MUST CHECK items.
 """
+
+import html as html_lib
 
 # Job-type option shown in the Driver checklist dropdown.
 BNSF_HELI2_SPRAY_LABEL = "BNSF HELI2 Spray"
@@ -14,6 +18,11 @@ BNSF_HELI2_SPRAY_TITLE = "RR Spray Check List"
 
 # Same en dash the other Driver checklists use between description and qty.
 QTY_SEPARATOR = " \u2013 "
+
+# Ron: red in the workbook means the item must be checked.
+MUST_CHECK_LEGEND = "Red = must check"
+MUST_CHECK_TAG = "MUST CHECK"
+MUST_CHECK_COLOR = "#FF0000"
 
 
 def _item(number, description, qty=None, note=None, emphasis=False):
@@ -78,3 +87,26 @@ def format_checklist_item_label(item):
 
 def checklist_item_key(item, prefix="bnsf_heli2_spray"):
     return "%s_%s" % (prefix, item["number"])
+
+
+def is_must_check(item):
+    """True for the seven workbook items whose Description was red."""
+    return bool(item.get("emphasis"))
+
+
+def must_check_legend_html():
+    """One-line legend at the top of the list; color is not the only cue."""
+    return (
+        '<div style="color:%s;font-weight:bold">%s</div>'
+        % (MUST_CHECK_COLOR, html_lib.escape(MUST_CHECK_LEGEND))
+    )
+
+
+def must_check_item_html(item):
+    """Red visible line: MUST CHECK tag plus the unchanged item wording."""
+    tag = html_lib.escape(MUST_CHECK_TAG)
+    label = html_lib.escape(format_checklist_item_label(item))
+    return (
+        '<div style="color:%s"><strong>%s</strong> %s</div>'
+        % (MUST_CHECK_COLOR, tag, label)
+    )

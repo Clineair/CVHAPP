@@ -108,6 +108,47 @@ class BnsfHeli2SprayChecklistTests(unittest.TestCase):
         self.assertIn('st.checkbox("Fuel for Aircraft/Vehicle – Full")', source)
         self.assertIn('st.checkbox("Check seed hopper calibration and rate")', source)
 
+    def test_must_check_items_have_red_tag_and_unchanged_wording(self):
+        self.assertEqual(dc.MUST_CHECK_LEGEND, "Red = must check")
+        self.assertEqual(dc.MUST_CHECK_TAG, "MUST CHECK")
+        self.assertEqual(dc.MUST_CHECK_COLOR, "#FF0000")
+        must = [item for item in dc.BNSF_HELI2_SPRAY_CHECKLIST if dc.is_must_check(item)]
+        names = [item["description"] for item in must]
+        self.assertEqual(
+            names,
+            [
+                "Torque Wrenches",
+                "Hearing Protection",
+                "Battery Charger (12 volt)",
+                "Grease Gun & Grease (480 t/r Aeroshell)",
+                "Pilot Gel Cushions",
+                "Ice Scraper",
+                "Battery Drill / Driver",
+            ],
+        )
+        self.assertEqual(len(must), 7)
+        legend = dc.must_check_legend_html()
+        self.assertIn("Red = must check", legend)
+        self.assertIn("#FF0000", legend)
+        wrenches = must[0]
+        label = dc.format_checklist_item_label(wrenches)
+        self.assertEqual(label, "Torque Wrenches \u2013 2")
+        self.assertNotIn("MUST CHECK", label)
+        visible = dc.must_check_item_html(wrenches)
+        self.assertIn("<strong>MUST CHECK</strong>", visible)
+        self.assertIn("#FF0000", visible)
+        self.assertIn(label, visible)
+        fuel = dc.BNSF_HELI2_SPRAY_CHECKLIST[0]
+        self.assertFalse(dc.is_must_check(fuel))
+        self.assertNotIn("MUST CHECK", dc.format_checklist_item_label(fuel))
+
+    def test_app_shows_must_check_legend_and_tag(self):
+        source = APP_PY.read_text(encoding="utf-8")
+        self.assertIn("driver_checklists.must_check_legend_html()", source)
+        self.assertIn("driver_checklists.must_check_item_html(item)", source)
+        self.assertIn("driver_checklists.is_must_check(item)", source)
+        self.assertIn('label_visibility="collapsed"', source)
+
 
 if __name__ == "__main__":
     unittest.main()
