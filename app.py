@@ -1229,7 +1229,7 @@ ANTHONY_TIMESHEET_SCREEN_LABEL_PX = 18
 TIMESHEET_DAYS = ("Sun", "Mon", "Tues", "Wed", "Thur", "Fri", "Sat")
 # Vacation and Sick sit with the worked-hour rows on the official weekly form only.
 TIMESHEET_WORKED_HOUR_FIELDS = ("CVH Hours", "Forestry Hours", "BNSF Hours")
-TIMESHEET_LEAVE_FIELDS = ("Vacation Hours", "Sick Hours")
+TIMESHEET_LEAVE_FIELDS = ("Vacation Hours", "Sick Hours", "CVH Paid Holiday")
 TIMESHEET_LEAVE_HOURS_MAX = 24
 TIMESHEET_DAY_FIELDS = (
     ("Location", "Location"),
@@ -1238,6 +1238,7 @@ TIMESHEET_DAY_FIELDS = (
     ("BNSF Hours", "BNSF # work hours"),
     ("Vacation Hours", "Vacation Hours"),
     ("Sick Hours", "Sick Hours"),
+    ("CVH Paid Holiday", "CVH Paid Holiday"),
     ("Perdiem Rate", "Perdiem Rate"),
     ("Other", "Other"),
 )
@@ -4615,43 +4616,42 @@ def timesheet_leave_hours(value):
 
 
 def timesheet_weekly_hour_totals(record):
-    """Worked hours stay CVH + Forestry + BNSF. Vacation and sick are separate.
+    """Worked hours stay CVH + Forestry + BNSF. Paid leave is separate.
 
-    Total hours including paid leave is worked plus vacation plus sick.
-    Reimbursement dollars are not part of these hour totals.
+    Total hours including paid leave is worked plus vacation, sick, and
+    CVH Paid Holiday. Reimbursement dollars are not part of these hour totals.
     """
     record = record or {}
     worked = 0.0
-    vacation = 0.0
-    sick = 0.0
+    leave = {field: 0.0 for field in TIMESHEET_LEAVE_FIELDS}
     for day in TIMESHEET_DAYS:
         for field in TIMESHEET_WORKED_HOUR_FIELDS:
             number = timesheet_parse_number(record.get(timesheet_day_column(day, field)))
             if number is not None:
                 worked += number
-        vacation += timesheet_leave_hours(record.get(timesheet_day_column(day, "Vacation Hours")))
-        sick += timesheet_leave_hours(record.get(timesheet_day_column(day, "Sick Hours")))
+        for field in TIMESHEET_LEAVE_FIELDS:
+            leave[field] += timesheet_leave_hours(record.get(timesheet_day_column(day, field)))
     worked = round(worked, 2)
-    vacation = round(vacation, 2)
-    sick = round(sick, 2)
-    return {
-        "Worked Hours": worked,
-        "Vacation Hours": vacation,
-        "Sick Hours": sick,
-        "Total Hours Including Paid Leave": round(worked + vacation + sick, 2),
-    }
+    for field in leave:
+        leave[field] = round(leave[field], 2)
+    paid = round(sum(leave.values()), 2)
+    totals = {"Worked Hours": worked}
+    totals.update(leave)
+    totals["Total Hours Including Paid Leave"] = round(worked + paid, 2)
+    return totals
 
 
 TIMESHEET_TOTAL_HOUR_ROWS = (
     "CVH Hours", "Forestry Hours", "BNSF Hours", "Vacation Hours", "Sick Hours",
+    "CVH Paid Holiday",
 )
 
 
 def timesheet_grid_totals(record):
     """Totals for the grid on the printed weekly sheet (PDF and Excel).
 
-    rows: weekly sum of each hour row (CVH, Forestry, BNSF, Vacation, Sick).
-    days: per-day sum of worked plus vacation plus sick, in TIMESHEET_DAYS order.
+    rows: weekly sum of each hour row (CVH, Forestry, BNSF, Vacation, Sick, CVH Paid Holiday).
+    days: per-day sum of worked plus paid leave, in TIMESHEET_DAYS order.
     grand: the week's grand total, the same as Total Hours Including Paid Leave.
     Blank cells count as 0. Location, Perdiem Rate and Other are not hours.
     """
@@ -4680,6 +4680,7 @@ def timesheet_hour_total_lines(record):
         "Worked hours: " + timesheet_format_hours(totals["Worked Hours"]),
         "Vacation: " + timesheet_format_hours(totals["Vacation Hours"]),
         "Sick: " + timesheet_format_hours(totals["Sick Hours"]),
+        "CVH Paid Holiday: " + timesheet_format_hours(totals["CVH Paid Holiday"]),
         "Total hours including paid leave: " + timesheet_format_hours(totals["Total Hours Including Paid Leave"]),
     ]
 
@@ -4687,7 +4688,7 @@ def timesheet_hour_total_lines(record):
 def timesheet_day_hour_breakdown(record, day):
     """Hours for one day on the official weekly sheet.
 
-    Worked is CVH + Forestry + BNSF. Total is worked plus vacation plus sick.
+    Worked is CVH + Forestry + BNSF. Total is worked plus vacation, sick, and CVH Paid Holiday.
     Missing or blank worked-hour cells count as 0. Reimbursement dollars are
     not part of these hour totals.
     """
@@ -4705,11 +4706,13 @@ def timesheet_day_hour_breakdown(record, day):
         worked += hours
     vacation = round(timesheet_leave_hours(record.get(timesheet_day_column(day, "Vacation Hours"))), 2)
     sick = round(timesheet_leave_hours(record.get(timesheet_day_column(day, "Sick Hours"))), 2)
+    paid_holiday = round(timesheet_leave_hours(record.get(timesheet_day_column(day, "CVH Paid Holiday"))), 2)
     worked = round(worked, 2)
     parts["Vacation"] = vacation
     parts["Sick"] = sick
+    parts["CVH Paid Holiday"] = paid_holiday
     parts["Worked"] = worked
-    parts["Total"] = round(worked + vacation + sick, 2)
+    parts["Total"] = round(worked + vacation + sick + paid_holiday, 2)
     return parts
 
 
@@ -4718,10 +4721,12 @@ def timesheet_hour_summary_rows(record, dates=None):
 
     dates is an optional 7-item sequence of date values aligned with
     TIMESHEET_DAYS. Each row has Day, Date, CVH, Forestry, BNSF, Vacation,
-    Sick, Worked, and Total. Week Total sums each hour column.
+    Sick, CVH Paid Holiday, Worked, and Total. Week Total sums each hour column.
     """
     rows = []
-    week = {key: 0.0 for key in ("CVH", "Forestry", "BNSF", "Vacation", "Sick", "Worked", "Total")}
+    week = {key: 0.0 for key in (
+        "CVH", "Forestry", "BNSF", "Vacation", "Sick", "CVH Paid Holiday", "Worked", "Total",
+    )}
     for i, day in enumerate(TIMESHEET_DAYS):
         parts = timesheet_day_hour_breakdown(record, day)
         day_date = ""
@@ -4754,6 +4759,7 @@ def timesheet_hour_summary_display_rows(rows):
             "BNSF": timesheet_format_hours(row.get("BNSF")) or "0",
             "Vacation": timesheet_format_hours(row.get("Vacation")) or "0",
             "Sick": timesheet_format_hours(row.get("Sick")) or "0",
+            "CVH Paid Holiday": timesheet_format_hours(row.get("CVH Paid Holiday")) or "0",
             "Worked": timesheet_format_hours(row.get("Worked")) or "0",
             "Total": timesheet_format_hours(row.get("Total")) or "0",
         })
@@ -4791,23 +4797,25 @@ def timesheet_hour_summary_html(rows):
         ("BNSF", "BNSF"),
         ("Vac", "Vacation"),
         ("Sick", "Sick"),
+        ("Hol", "CVH Paid Holiday"),
         ("Wkd", "Worked"),
         ("Tot", "Total"),
     )
-    keys = ("Day", "CVH", "Forestry", "BNSF", "Vacation", "Sick", "Worked", "Total")
+    keys = ("Day", "CVH", "Forestry", "BNSF", "Vacation", "Sick", "CVH Paid Holiday", "Worked", "Total")
     parts = [
         "<style>"
         ".cvh-hour-wrap{overflow-x:hidden;margin:0.15rem 0 0.55rem 0;}"
         ".cvh-hour-summary{width:100%;max-width:100%;border-collapse:collapse;"
         "table-layout:fixed;font-size:0.7rem;box-sizing:border-box;}"
         ".cvh-hour-summary th,.cvh-hour-summary td{padding:0.14rem 0.06rem;"
-        "vertical-align:top;box-sizing:border-box;min-width:0;overflow:hidden;}"
-        ".cvh-hour-summary th{border-bottom:1px solid #bbb;white-space:nowrap;}"
+        "vertical-align:top;box-sizing:border-box;min-width:0;}"
+        ".cvh-hour-summary td{overflow:hidden;}"
+        ".cvh-hour-summary th{border-bottom:1px solid #bbb;white-space:normal;line-height:1.15;}"
         ".cvh-hour-summary .num{text-align:right;white-space:nowrap;}"
         ".cvh-hour-summary .day{text-align:left;white-space:nowrap;}"
         ".cvh-hour-summary .full{display:none;}"
-        ".cvh-hour-summary col.day{width:22%;}"
-        ".cvh-hour-summary col.num{width:11.14%;}"
+        ".cvh-hour-summary col.day{width:18%;}"
+        ".cvh-hour-summary col.num{width:10.25%;}"
         "@media (min-width:560px){"
         ".cvh-hour-summary{font-size:0.9rem;}"
         ".cvh-hour-summary th,.cvh-hour-summary td{padding:0.35rem 0.35rem;}"
@@ -4819,7 +4827,7 @@ def timesheet_hour_summary_html(rows):
         "<table class='cvh-hour-summary'><colgroup>",
         "<col class='day'>",
         "<col class='num'><col class='num'><col class='num'><col class='num'>",
-        "<col class='num'><col class='num'><col class='num'>",
+        "<col class='num'><col class='num'><col class='num'><col class='num'>",
         "</colgroup><thead><tr>",
     ]
     for i, (short, full) in enumerate(headers):
@@ -5144,8 +5152,9 @@ def timesheet_reimb_total(parts, fuel, other):
 def timesheet_content_payload(record):
     """Fields that initials lock; initials/signature metadata are excluded.
 
-    Blank or zero vacation and sick are omitted so they hash the same as older
-    rows that had no leave columns. A non-zero leave entry changes the hash.
+    Blank or zero vacation, sick, and CVH Paid Holiday are omitted so they hash
+    the same as older rows that had no leave columns. A non-zero leave entry
+    changes the hash.
     """
     days = {}
     for day in TIMESHEET_DAYS:
@@ -5387,7 +5396,7 @@ def build_timesheet_record(
 
 
 def ensure_timesheet_leave_columns(ws):
-    """Append missing Vacation and Sick day columns without reordering the header.
+    """Append missing Vacation, Sick, and CVH Paid Holiday day columns.
 
     Older Time Sheets tabs keep every existing header cell. New leave columns
     are added on the right so saves can persist them. Rows that predate those
@@ -5413,8 +5422,8 @@ def ensure_timesheet_leave_columns(ws):
 def ensure_timesheets_worksheet(spreadsheet):
     """Create the Time Sheets tab with a header when it is missing.
 
-    An existing header is not reordered or rewritten. Missing Vacation and
-    Sick columns are appended. Never writes FRAT or other tabs.
+    An existing header is not reordered or rewritten. Missing Vacation, Sick,
+    and CVH Paid Holiday columns are appended. Never writes FRAT or other tabs.
     """
     ws, created, skip = begin_ensure_worksheet(spreadsheet, TIMESHEET_SHEET_TITLE)
     if skip:
@@ -6436,6 +6445,7 @@ def timesheet_template_labels(record=None):
         "BNSF # work hours",
         "Vacation Hours",
         "Sick Hours",
+        "CVH Paid Holiday",
         "Perdiem Rate",
         "Other",
         "Perdiem Rates -",
@@ -6572,18 +6582,23 @@ def build_timesheet_xlsx(record):
     date_text = format_equipment_date(record.get("Signature Date"))
     ws["F42"] = "Date" + (("  " + date_text) if date_text else "")
     # Totals: a Total column (J) for each hour row and a Daily Total row under
-    # Sick Hours. Insert the row last so every fixed cell above keeps its address.
+    # CVH Paid Holiday. Insert that row last so every fixed cell above keeps its address.
     grid_totals = timesheet_grid_totals(record)
     last_row = ws.max_row
-    ws.insert_rows(16)
-    for r in range(last_row + 1, 15, -1):
-        ws.row_dimensions[r + 1].height = ws.row_dimensions[r].height
+    # Two new rows: CVH Paid Holiday, then Daily Total. Perdiem Rates stays below them.
+    ws.insert_rows(16, 2)
+    for r in range(last_row + 2, 15, -1):
+        ws.row_dimensions[r + 2].height = ws.row_dimensions[r].height
     ws.row_dimensions[16].height = 22
+    ws.row_dimensions[17].height = 22
+    ws["B16"] = "CVH Paid Holiday"
+    for i, day in enumerate(days):
+        ws.cell(16, 3 + i, _cell(record.get(timesheet_day_column(day, "CVH Paid Holiday"))) or "0")
     thin = Side(style="thin")
     box = Border(left=thin, right=thin, top=thin, bottom=thin)
     bold = Font(name="Arial", size=10, bold=True)
     center = Alignment(horizontal="center", vertical="center")
-    for r in range(7, 17):
+    for r in range(7, 18):
         ws.cell(r, 10).border = box
         if r >= 14:
             for col in range(2, 10):
@@ -6593,19 +6608,19 @@ def build_timesheet_xlsx(record):
     ws["J7"].font = bold
     ws["J7"].alignment = center
     for row_num, field in ((9, "CVH Hours"), (10, "Forestry Hours"), (11, "BNSF Hours"),
-                           (14, "Vacation Hours"), (15, "Sick Hours")):
+                           (14, "Vacation Hours"), (15, "Sick Hours"), (16, "CVH Paid Holiday")):
         ws.cell(row_num, 10, timesheet_format_hours(grid_totals["rows"][field]) or "0")
         ws.cell(row_num, 10).font = bold
         ws.cell(row_num, 10).alignment = center
-    ws["B16"] = "Daily Total"
-    ws["B16"].font = bold
+    ws["B17"] = "Daily Total"
+    ws["B17"].font = bold
     for i, value in enumerate(grid_totals["days"]):
-        cell = ws.cell(16, 3 + i, timesheet_format_hours(value) or "0")
+        cell = ws.cell(17, 3 + i, timesheet_format_hours(value) or "0")
         cell.font = bold
         cell.alignment = center
-    ws["J16"] = timesheet_format_hours(grid_totals["grand"]) or "0"
-    ws["J16"].font = bold
-    ws["J16"].alignment = center
+    ws["J17"] = timesheet_format_hours(grid_totals["grand"]) or "0"
+    ws["J17"].font = bold
+    ws["J17"].alignment = center
     # keep the sheet on one printed page after the added row and column
     ws.sheet_properties.pageSetUpPr = PageSetupProperties(fitToPage=True)
     ws.page_setup.fitToWidth = 1
@@ -6665,7 +6680,7 @@ def build_timesheet_pdf(record, logo_path=None):
     # Header is tall enough for the day name and date.
     # Data rows are a little shorter so the Daily Total row still fits on one page.
     # A Total column on the far right holds each hour row's weekly sum.
-    daily_after = "Sick Hours"
+    daily_after = "CVH Paid Holiday"
     grid_rows = []
     for field, label in TIMESHEET_DAY_FIELDS:
         grid_rows.append((field, label))
@@ -6674,7 +6689,7 @@ def build_timesheet_pdf(record, logo_path=None):
     grid_totals = timesheet_grid_totals(record)
     col_labels = [""] + list(TIMESHEET_DAYS) + ["Total"]
     col_w = [1.40 * inch] + [0.66 * inch] * 7 + [0.68 * inch]
-    row_h = [0.36 * inch] + [0.37 * inch] * len(grid_rows)
+    row_h = [0.34 * inch] + [0.33 * inch] * len(grid_rows)
     rows = len(row_h)
     cols = len(col_w)
     grid_top = y
@@ -7599,6 +7614,10 @@ def show_employee_timesheet(employee):
                 prefix + day_name + "_Sick",
                 timesheet_leave_hours(_saved(timesheet_day_column(day_name, "Sick Hours"))),
             )
+            live[timesheet_day_column(day_name, "CVH Paid Holiday")] = st.session_state.get(
+                prefix + day_name + "_Holiday",
+                timesheet_leave_hours(_saved(timesheet_day_column(day_name, "CVH Paid Holiday"))),
+            )
         return live
 
     for i, day in enumerate(TIMESHEET_DAYS):
@@ -7610,7 +7629,7 @@ def show_employee_timesheet(employee):
             st.text_input("CVH # work hours", value=_saved(timesheet_day_column(day, "CVH Hours")), key=prefix + day + "_CVH")
             st.text_input("Forestry #  work hours", value=_saved(timesheet_day_column(day, "Forestry Hours")), key=prefix + day + "_Forestry")
             st.text_input("BNSF # work hours", value=_saved(timesheet_day_column(day, "BNSF Hours")), key=prefix + day + "_BNSF")
-            leave_vacation, leave_sick = st.columns(2)
+            leave_vacation, leave_sick, leave_holiday = st.columns(3)
             with leave_vacation:
                 saved_vacation = timesheet_leave_hours(_saved(timesheet_day_column(day, "Vacation Hours")))
                 if saved_vacation < 0:
@@ -7643,6 +7662,22 @@ def show_employee_timesheet(employee):
                     key=prefix + day + "_Sick",
                     help="Paid sick hours for this day. 0 to 24.",
                 )
+            with leave_holiday:
+                saved_holiday = timesheet_leave_hours(_saved(timesheet_day_column(day, "CVH Paid Holiday")))
+                if saved_holiday < 0:
+                    saved_holiday = 0.0
+                if saved_holiday > TIMESHEET_LEAVE_HOURS_MAX:
+                    saved_holiday = float(TIMESHEET_LEAVE_HOURS_MAX)
+                st.number_input(
+                    "CVH Paid Holiday",
+                    min_value=0.0,
+                    max_value=float(TIMESHEET_LEAVE_HOURS_MAX),
+                    value=float(saved_holiday),
+                    step=0.25,
+                    format="%.2f",
+                    key=prefix + day + "_Holiday",
+                    help="Company-paid holiday hours for this day. 0 to 24.",
+                )
             st.text_input("Perdiem Rate", value=_saved(timesheet_day_column(day, "Perdiem Rate")), key=prefix + day + "_Perdiem")
             st.text_input("Other", value=_saved(timesheet_day_column(day, "Other")), key=prefix + day + "_Other")
 
@@ -7654,8 +7689,8 @@ def show_employee_timesheet(employee):
         unsafe_allow_html=True,
     )
     st.caption(
-        "Worked hours are CVH, Forestry, and BNSF only. Vacation and sick are paid leave, "
-        "0 to 24 hours a day, and are not included in worked hours. "
+        "Worked hours are CVH, Forestry, and BNSF only. Vacation, sick, and CVH Paid Holiday "
+        "are paid leave, 0 to 24 hours a day, and are not included in worked hours. "
         "Total hours including paid leave adds them on."
     )
 
@@ -7818,6 +7853,7 @@ def show_employee_timesheet(employee):
                 "BNSF Hours": st.session_state.get(prefix + day + "_BNSF", ""),
                 "Vacation Hours": st.session_state.get(prefix + day + "_Vacation", 0),
                 "Sick Hours": st.session_state.get(prefix + day + "_Sick", 0),
+                "CVH Paid Holiday": st.session_state.get(prefix + day + "_Holiday", 0),
                 "Perdiem Rate": st.session_state.get(prefix + day + "_Perdiem", ""),
                 "Other": st.session_state.get(prefix + day + "_Other", ""),
             }

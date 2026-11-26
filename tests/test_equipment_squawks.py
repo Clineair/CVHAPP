@@ -2448,7 +2448,7 @@ class PlaceholderAndLogicTests(unittest.TestCase):
         totals = s["timesheet_grid_totals"](rec)
         self.assertEqual(totals["rows"], {
             "CVH Hours": 8, "Forestry Hours": 6, "BNSF Hours": 5,
-            "Vacation Hours": 10, "Sick Hours": 2,
+            "Vacation Hours": 10, "Sick Hours": 2, "CVH Paid Holiday": 0,
         })
         self.assertEqual(totals["days"], [0, 3, 2, 3, 8, 8, 7])
         self.assertEqual(totals["grand"], 31)
@@ -2513,11 +2513,13 @@ class PlaceholderAndLogicTests(unittest.TestCase):
         self.assertEqual(str(grid["J11"].value), "5")
         self.assertEqual(str(grid["J14"].value), "10")
         self.assertEqual(str(grid["J15"].value), "2")
-        self.assertEqual(grid["B16"].value, "Daily Total")
-        self.assertEqual([str(grid.cell(16, c).value) for c in range(3, 10)], ["0", "3", "2", "3", "8", "8", "7"])
-        self.assertEqual(str(grid["J16"].value), "31")
-        # the sheet below the new row is intact and shifted down by one
-        self.assertEqual(grid["B17"].value, "Perdiem Rates -")
+        self.assertEqual(grid["B16"].value, "CVH Paid Holiday")
+        self.assertEqual(str(grid["J16"].value), "0")
+        self.assertEqual(grid["B17"].value, "Daily Total")
+        self.assertEqual([str(grid.cell(17, c).value) for c in range(3, 10)], ["0", "3", "2", "3", "8", "8", "7"])
+        self.assertEqual(str(grid["J17"].value), "31")
+        # the sheet below the new rows is intact and shifted down by two
+        self.assertEqual(grid["B18"].value, "Perdiem Rates -")
         self.assertEqual(grid["B14"].value, "Vacation Hours")
         self.assertEqual(grid["B15"].value, "Sick Hours")
 
@@ -2537,22 +2539,25 @@ class PlaceholderAndLogicTests(unittest.TestCase):
         import fitz
         from openpyxl import load_workbook
         s = self.s
-        self.assertEqual(s["TIMESHEET_LEAVE_FIELDS"], ("Vacation Hours", "Sick Hours"))
+        self.assertEqual(s["TIMESHEET_LEAVE_FIELDS"], ("Vacation Hours", "Sick Hours", "CVH Paid Holiday"))
         self.assertEqual(s["TIMESHEET_LEAVE_HOURS_MAX"], 24)
         self.assertEqual(s["TIMESHEET_WORKED_HOUR_FIELDS"], ("CVH Hours", "Forestry Hours", "BNSF Hours"))
         fields = [field for field, _label in s["TIMESHEET_DAY_FIELDS"]]
         self.assertEqual(fields, [
             "Location", "CVH Hours", "Forestry Hours", "BNSF Hours",
-            "Vacation Hours", "Sick Hours", "Perdiem Rate", "Other",
+            "Vacation Hours", "Sick Hours", "CVH Paid Holiday", "Perdiem Rate", "Other",
         ])
         for day in s["TIMESHEET_DAYS"]:
             self.assertIn(day + " Vacation Hours", s["timesheet_columns"]())
             self.assertIn(day + " Sick Hours", s["timesheet_columns"]())
+            self.assertIn(day + " CVH Paid Holiday", s["timesheet_columns"]())
         anthony_cols = " ".join(s["anthony_timesheet_columns"]())
         self.assertNotIn("Vacation Hours", anthony_cols)
         self.assertNotIn("Sick Hours", anthony_cols)
+        self.assertNotIn("CVH Paid Holiday", anthony_cols)
         self.assertNotIn("Vacation Hours", " ".join(s["anthony_timesheet_template_labels"]()))
         self.assertNotIn("Sick Hours", " ".join(s["anthony_timesheet_template_labels"]()))
+        self.assertNotIn("CVH Paid Holiday", " ".join(s["anthony_timesheet_template_labels"]()))
         self.assertIn("Ron Cline", s["TIMESHEET_EMPLOYEES"])
         self.assertNotIn("Anthony Root", s["TIMESHEET_EMPLOYEES"])
 
@@ -2791,7 +2796,8 @@ class PlaceholderAndLogicTests(unittest.TestCase):
         sun = s["timesheet_day_hour_breakdown"](rec, "Sun")
         self.assertEqual(sun, {
             "CVH": 8.0, "Forestry": 1.0, "BNSF": 1.0,
-            "Vacation": 4.0, "Sick": 2.0, "Worked": 10.0, "Total": 16.0,
+            "Vacation": 4.0, "Sick": 2.0, "CVH Paid Holiday": 0.0,
+            "Worked": 10.0, "Total": 16.0,
         })
         mon = s["timesheet_day_hour_breakdown"](rec, "Mon")
         self.assertEqual(mon["CVH"], 30.0)
@@ -5098,6 +5104,7 @@ class HeaderAndEquipmentPageTests(unittest.TestCase):
         self.assertFalse(any("CVH # work hours" in lab for lab in labels))
         self.assertFalse(any(n.label == "Vacation Hours" for n in at.number_input))
         self.assertFalse(any(n.label == "Sick Hours" for n in at.number_input))
+        self.assertFalse(any(n.label == "CVH Paid Holiday" for n in at.number_input))
         book = at.session_state.get("_workbook")
         if book is not None:
             self.assertNotIn("Anthony Time Sheets", book.sheets)
@@ -5644,6 +5651,7 @@ class HeaderAndEquipmentPageTests(unittest.TestCase):
             self.assertFalse(any(t.value == "Time Sheet" and t.value != "Weekly Time Sheet" for t in at.subheader))
             self.assertTrue(any(n.label == "Vacation Hours" for n in at.number_input))
             self.assertTrue(any(n.label == "Sick Hours" for n in at.number_input))
+            self.assertTrue(any(n.label == "CVH Paid Holiday" for n in at.number_input))
             self.assertTrue(any(t.label == "CVH # work hours" for t in at.text_input))
             self.assertTrue(any(t.label == "Forestry #  work hours" for t in at.text_input))
             self.assertTrue(any(t.label == "BNSF # work hours" for t in at.text_input))
@@ -5658,6 +5666,7 @@ class HeaderAndEquipmentPageTests(unittest.TestCase):
             next(t for t in at.text_input if t.label == "CVH # work hours").set_value("8")
             next(n for n in at.number_input if n.label == "Vacation Hours").set_value(4)
             next(n for n in at.number_input if n.label == "Sick Hours").set_value(2)
+            next(n for n in at.number_input if n.label == "CVH Paid Holiday").set_value(8)
             next(t for t in at.text_input if t.label == "Initials (required before email)").set_value("RC")
             next(b for b in at.button if b.label == "Save week").click().run()
             self.assertFalse(list(at.exception))
@@ -5673,13 +5682,15 @@ class HeaderAndEquipmentPageTests(unittest.TestCase):
             self.assertEqual(row[header.index("Sun CVH Hours")], "8")
             self.assertEqual(row[header.index("Sun Vacation Hours")], "4")
             self.assertEqual(row[header.index("Sun Sick Hours")], "2")
+            self.assertEqual(row[header.index("Sun CVH Paid Holiday")], "8")
             self.assertEqual(row[header.index("Initials")], "RC")
             md = " ".join(m.value or "" for m in at.markdown)
             self.assertIn("Worked hours: 8", md)
             self.assertIn("Week Total", md)
             self.assertIn("Vacation", md)
+            self.assertIn("CVH Paid Holiday", md)
             labels = [e.label for e in at.expander]
-            self.assertIn("Sun  2026-11-08 — 14 hrs", labels)
+            self.assertIn("Sun  2026-11-08 — 22 hrs", labels)
             self.assertTrue(any(getattr(b, "label", "") == "Download PDF" for b in list(at.button) + list(at.download_button)))
             self.assertTrue(any(getattr(b, "label", "") == "Download Excel" for b in list(at.button) + list(at.download_button)))
             email_btn = next(b for b in at.button if b.label == "Email to patti@centralvalleyheli.com")
@@ -5716,6 +5727,7 @@ class HeaderAndEquipmentPageTests(unittest.TestCase):
             self.assertFalse(any(label == "L&I Ground Hours" for label in labels))
             self.assertFalse(any(label == "Survery Hrs" for label in labels))
             self.assertFalse(any("Vacation Hours" == (n.label or "") for n in at.number_input))
+            self.assertFalse(any((n.label or "") == "CVH Paid Holiday" for n in at.number_input))
             caption = " ".join(c.value or "" for c in at.caption)
             self.assertIn("Gnd = L&I Ground Hours", caption)
             self.assertIn("Surv = Survery Hrs", caption)
