@@ -1074,15 +1074,19 @@ def render_bnsf_ops(default_pilot="", default_aircraft="", pilots=None, aircraft
             pilot_index = pilots.index(st.session_state.get("bnsf_ops_pilot"))
         pilot = st.selectbox("Pilot", pilots, index=pilot_index, placeholder="Select pilot", key="bnsf_ops_pilot")
     with col_b:
-        aircraft_index = 0
-        if default_aircraft and default_aircraft in aircraft_options:
-            aircraft_index = aircraft_options.index(default_aircraft)
-        elif st.session_state.get("bnsf_ops_aircraft") in aircraft_options:
-            aircraft_index = aircraft_options.index(st.session_state.get("bnsf_ops_aircraft"))
         if aircraft_options:
-            chosen_aircraft = st.selectbox("Aircraft", aircraft_options, index=min(aircraft_index, len(aircraft_options) - 1), key="bnsf_ops_aircraft")
+            if "bnsf_ops_aircraft" not in st.session_state:
+                if default_aircraft in aircraft_options:
+                    st.session_state.bnsf_ops_aircraft = default_aircraft
+                else:
+                    st.session_state.bnsf_ops_aircraft = aircraft_options[0]
+            elif st.session_state.get("bnsf_ops_aircraft") not in aircraft_options:
+                st.session_state.bnsf_ops_aircraft = aircraft_options[0]
+            chosen_aircraft = st.selectbox("Aircraft", aircraft_options, key="bnsf_ops_aircraft")
         else:
-            chosen_aircraft = st.text_input("Aircraft", value=_cell(default_aircraft), key="bnsf_ops_aircraft")
+            if "bnsf_ops_aircraft" not in st.session_state:
+                st.session_state.bnsf_ops_aircraft = _cell(default_aircraft)
+            chosen_aircraft = st.text_input("Aircraft", key="bnsf_ops_aircraft")
 
     records = []
     load_error = None
@@ -1326,4 +1330,5 @@ def render_bnsf_ops(default_pilot="", default_aircraft="", pilots=None, aircraft
         weather_records=records,
         spreadsheet_fn=spreadsheet_fn,
         now=now,
+        location_getter=location_getter,
     )

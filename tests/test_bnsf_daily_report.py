@@ -354,6 +354,162 @@ class SheetAndDocumentTests(unittest.TestCase):
         self.assertEqual(len(reader.pages), 2)
 
 
+class NotSprayedTests(unittest.TestCase):
+    def test_parses_digit_and_spoken_mileposts(self):
+        self.assertEqual(dr.parse_not_sprayed_speech("MP 112.4")["mp"], 112.4)
+        self.assertEqual(dr.parse_not_sprayed_speech("milepost one twelve point four")["mp"], 112.4)
+        self.assertEqual(dr.parse_not_sprayed_speech("112 point 4")["mp"], 112.4)
+        self.assertEqual(dr.parse_not_sprayed_speech("mile post one hundred twelve point four")["mp"], 112.4)
+        spoken = dr.parse_not_sprayed_speech("trees over the track at milepost one twelve point four")
+        self.assertEqual(spoken["mp"], 112.4)
+        self.assertEqual(spoken["reason"], "trees over the track at")
+        plain = dr.parse_not_sprayed_speech("trees over the track")
+        self.assertIsNone(plain["mp"])
+        self.assertEqual(plain["reason"], "trees over the track")
+
+    def test_spoken_milepost_overrides_gps_and_keeps_transcript(self):
+        row = dr.capture_not_sprayed_fix(
+            lat=45.0,
+            lon=-108.0,
+            now=_pt(2026, 7, 16, 14, 14),
+            aircraft="Enstrom N480ML",
+            points=[dr.bw.MilepostPoint("Montana", "Laurel", 100.2, 45.0, -108.0)],
+        )
+        self.assertEqual(row["MP"], "100.2")
+        self.assertEqual(row["MP source"], "GPS")
+        self.assertEqual(row["Aircraft"], "N480ML")
+        self.assertEqual(row["Status"], "Pending review")
+        self.assertEqual(row["Time"], "2:14 PM")
+        updated = dr.apply_spoken_milepost(row, "MP 112.4 trees over the track")
+        self.assertEqual(updated["MP"], "112.4")
+        self.assertEqual(updated["MP source"], "Spoken")
+        self.assertEqual(updated["GPS MP"], "100.2")
+        self.assertEqual(updated["Reason"], "trees over the track")
+        self.assertEqual(updated["Transcript"], "MP 112.4 trees over the track")
+        self.assertEqual(updated["Status"], "Pending review")
+
+    def test_mark_mp_row_has_time_and_no_reason(self):
+        row = dr.capture_not_sprayed_fix(
+            lat=45.0,
+            lon=-108.0,
+            now=_pt(2026, 7, 16, 9, 5),
+            points=[dr.bw.MilepostPoint("Montana", "Laurel", 88.0, 45.0, -108.0)],
+        )
+        self.assertEqual(row["MP"], "88.0")
+        self.assertEqual(row["MP source"], "GPS")
+        self.assertEqual(row["Reason"], "")
+        self.assertEqual(row["Transcript"], "")
+        self.assertEqual(row["Aircraft"], "N480ML")
+        self.assertEqual(row["Status"], "Pending review")
+
+    def test_not_sprayed_round_trip_and_report_output(self):
+        report, _notice = sample_report()
+        row = dr.apply_spoken_milepost(
+            dr.capture_not_sprayed_fix(now=_pt(2026, 7, 16, 14, 14), aircraft="N480ML"),
+            "milepost one twelve point four signal wires",
+        )
+        report["not_sprayed"] = [row]
+        record = dr.report_to_record(report, when=_pt(2026, 7, 16, 16, 0))
+        stored = json.loads(record["Not sprayed"])
+        self.assertEqual(stored[0]["MP"], "112.4")
+        self.assertEqual(stored[0]["MP source"], "Spoken")
+        back = dr.record_to_report(record)
+        self.assertEqual(back["not_sprayed"][0]["Reason"], "signal wires")
+        self.assertEqual(back["not_sprayed"][0]["Transcript"], "milepost one twelve point four signal wires")
+        filled = dr.spray_rows_with_not_sprayed(report["spray_rows"], report["not_sprayed"])
+        self.assertEqual(report["spray_rows"][2]["Notes"], "Buffered crossing")
+        empty_index = next(i for i, item in enumerate(report["spray_rows"]) if not any(item.values()))
+        self.assertEqual(empty_index, 3)
+        self.assertIn("signal wires", filled[empty_index]["Notes"])
+        self.assertEqual(filled[empty_index]["MP ST"], "112.4")
+        self.assertEqual(filled[2]["Notes"], "Buffered crossing")
+
+        data = dr.build_daily_report_pdf(report)
+        from pypdf import PdfReader
+        text = "\n".join(page.extract_text() or "" for page in PdfReader(io.BytesIO(data)).pages)
+        self.assertIn("NOT SPRAYED", text)
+        self.assertIn("112.4", text)
+        self.assertIn("signal wires", text)
+        self.assertIn("N480ML", text)
+        self.assertIn("Pending review", text)
+
+        from docx import Document
+        document = Document(io.BytesIO(dr.fill_daily_report_docx(report)))
+        blob = "\n".join(p.text for p in document.paragraphs)
+        self.assertIn("signal wires", blob)
+        self.assertIn("112.4", blob)
+
+    def test_speech_stays_off_without_a_key_and_errors_hide_the_key(self):
+        calls = []
+
+        def poster(audio, settings):
+            calls.append(settings["api_key"])
+            raise RuntimeError("nope " + settings["api_key"])
+
+        self.assertIsNone(dr.transcribe_not_sprayed_clip(b"clip", secrets={}, http_post=poster))
+        self.assertEqual(calls, [])
+        self.assertFalse(dr.speech_settings({"bnsf_speech": {"enabled": True, "api_key": ""}})["enabled"])
+        secrets = {"bnsf_speech": {"enabled": True, "api_key": "sk-test-should-not-appear"}}
+        self.assertTrue(dr.speech_settings(secrets)["enabled"])
+        with self.assertRaises(ValueError) as caught:
+            dr.transcribe_not_sprayed_clip(b"clip", secrets=secrets, http_post=poster)
+        self.assertNotIn("sk-test-should-not-appear", str(caught.exception))
+        self.assertEqual(calls, ["sk-test-should-not-appear"])
+
+        def ok(audio, settings):
+            return "milepost one twelve point four trees"
+        heard = dr.transcribe_not_sprayed_clip(b"clip", secrets=secrets, http_post=ok)
+        self.assertEqual(dr.parse_not_sprayed_speech(heard)["mp"], 112.4)
+
+
+class NavigationAndSprayGateTests(unittest.TestCase):
+    LABELS = [
+        "N893PC – Robinson R44 Raven II (SN 14940)",
+        "N480ML – Enstrom 480 Turbine (SN 5032)",
+    ]
+
+    def test_bnsf_button_waits_for_aircraft_and_far_137(self):
+        hidden = {"button": False, "pages": False}
+        self.assertEqual(dr.pilot_menu_bnsf("", "Part 137", opened=True), hidden)
+        self.assertEqual(dr.pilot_menu_bnsf("Enstrom 480", "Part 91", opened=True), hidden)
+        self.assertEqual(dr.pilot_menu_bnsf("Enstrom 480", "Part 135", opened=True), hidden)
+        self.assertEqual(dr.pilot_menu_bnsf("Enstrom 480", "Part 133", opened=True), hidden)
+        self.assertEqual(dr.pilot_menu_bnsf("Robinson R44 Raven II", "Part 137", opened=False), {"button": True, "pages": False})
+        self.assertEqual(dr.pilot_menu_bnsf("Enstrom 480", "Part 137", opened=True), {"button": True, "pages": True})
+
+    def test_chosen_aircraft_is_carried_into_bnsf(self):
+        robinson = dr.bnsf_aircraft_label("N893PC", self.LABELS)
+        enstrom = dr.bnsf_aircraft_label("N480ML", self.LABELS)
+        self.assertIn("N893PC", robinson)
+        self.assertNotIn("N480ML", robinson)
+        self.assertIn("N480ML", enstrom)
+        self.assertEqual(dr.aircraft_id(robinson), "N893PC")
+        self.assertEqual(dr.aircraft_id(enstrom), "N480ML")
+        report = dr.gather_daily_report("Ron Cline", aircraft=robinson, now=_pt(2026, 7, 16, 12, 0), county_lookup=lambda *a: "")
+        self.assertEqual(report["Aircraft"], "N893PC")
+
+    def test_voice_and_mark_only_while_spraying_review_stays_open(self):
+        now = _pt(2026, 7, 16, 8, 0)
+        store = {}
+        self.assertFalse(dr.spraying_in_progress(dr.get_ops_clocks(store, "Ron Cline", now=now)))
+        self.assertEqual(dr.not_sprayed_actions(False)["note"], "Available while spraying.")
+        self.assertFalse(dr.not_sprayed_actions(False)["capture"])
+        self.assertTrue(dr.not_sprayed_actions(False)["review"])
+        started = dr.start_bnsf_spray(store, "Ron Cline", now=now)
+        self.assertEqual(started["bnsf_start"], "8:00 AM")
+        self.assertEqual(started["bnsf_end"], "")
+        self.assertTrue(dr.spraying_in_progress(started))
+        self.assertTrue(dr.not_sprayed_actions(True)["capture"])
+        self.assertEqual(dr.not_sprayed_actions(True)["note"], "")
+        stopped = dr.stop_bnsf_spray(store, "Ron Cline", now=_pt(2026, 7, 16, 11, 30))
+        self.assertEqual(stopped["bnsf_end"], "11:30 AM")
+        self.assertFalse(dr.spraying_in_progress(stopped))
+        self.assertTrue(dr.not_sprayed_actions(dr.spraying_in_progress(stopped))["review"])
+        again = dr.start_bnsf_spray(store, "Ron Cline", now=_pt(2026, 7, 16, 13, 0))
+        self.assertEqual(again["bnsf_end"], "")
+        self.assertTrue(dr.spraying_in_progress(again))
+
+
 class CountyLookupTests(unittest.TestCase):
     def test_lookup_county_from_nws_zone(self):
         session = mock.Mock()
