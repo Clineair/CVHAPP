@@ -632,19 +632,7 @@ def fill_daily_report_docx(report, template_path=None):
                     _set_paragraph_text(cells[c_index].paragraphs[0], value)
 
     for item in normalize_not_sprayed(report.get("not_sprayed")):
-        source = item["MP source"] or "GPS"
-        document.add_paragraph(
-            "Not sprayed %s %s MP %s (%s) %s — %s [%s]"
-            % (
-                item["Date display"] or item["Date"],
-                item["Time"],
-                item["MP"] or "—",
-                source,
-                item["Aircraft"] or DEFAULT_AIRCRAFT_ID,
-                item["Reason"] or "(no reason yet)",
-                item["Status"] or NOT_SPRAYED_STATUS,
-            )
-        )
+        document.add_paragraph("Not sprayed " + not_sprayed_report_line(item))
         if item["Transcript"]:
             document.add_paragraph("Transcript: " + item["Transcript"])
 
@@ -819,16 +807,7 @@ def build_daily_report_pdf(report):
         flow.append(Spacer(1, 8))
         flow.append(Paragraph("NOT SPRAYED", warning))
         for item in not_sprayed:
-            source = item["MP source"] or "GPS"
-            line = "%s %s  MP %s (%s)  %s  %s  [%s]" % (
-                item["Date display"] or item["Date"],
-                item["Time"],
-                item["MP"] or "—",
-                source,
-                item["Aircraft"] or DEFAULT_AIRCRAFT_ID,
-                item["Reason"] or "(no reason yet)",
-                item["Status"] or NOT_SPRAYED_STATUS,
-            )
+            line = not_sprayed_report_line(item)
             flow.append(Paragraph(line, small))
             if item["Transcript"]:
                 flow.append(Paragraph("Transcript: " + item["Transcript"], small))
@@ -1209,7 +1188,8 @@ def _post_whisper_clip(audio_bytes, settings):
 
 
 NOT_SPRAYED_FIELDS = (
-    "id", "Date", "Date display", "Time", "Timestamp", "MP", "MP source",
+    "id", "Date", "Date display", "Time", "Time Start", "Time End", "Timestamp",
+    "MP", "MP Start", "MP End", "MP source",
     "GPS MP", "Subdivision", "Division", "Reason", "Aircraft", "Transcript", "Status",
 )
 
@@ -1224,7 +1204,7 @@ def normalize_not_sprayed(rows):
             item["Status"] = NOT_SPRAYED_STATUS
         if not item["Aircraft"]:
             item["Aircraft"] = DEFAULT_AIRCRAFT_ID
-        if any(item[field] for field in ("Time", "MP", "Reason", "Transcript")):
+        if any(item[field] for field in ("Time", "Time Start", "Time End", "MP", "MP Start", "MP End", "Reason", "Transcript")):
             cleaned.append(item)
     return cleaned
 
@@ -1276,6 +1256,72 @@ def apply_spoken_milepost(row, transcript):
     return normalize_not_sprayed([updated])[0]
 
 
+def format_not_sprayed_mp(value):
+    """Always one decimal. 9 and 9.0 both display as 9.0."""
+    text = _cell(value)
+    if not text:
+        return ""
+    try:
+        return bw.format_milepost(float(text))
+    except ValueError:
+        return text
+
+
+def not_sprayed_stretch_text(start_mp, stop_mp, reason=""):
+    """The form line Ron asked for: Start: MP 9.3, Stop: MP 11.2, then the reason."""
+    line = "Start: MP %s, Stop: MP %s" % (
+        format_not_sprayed_mp(start_mp),
+        format_not_sprayed_mp(stop_mp),
+    )
+    reason = _cell(reason)
+    if reason:
+        return "%s. %s" % (line, reason)
+    return line
+
+
+def not_sprayed_mp_span(row):
+    """Milepost text for a point or a start-to-end stretch."""
+    row = row or {}
+    start = format_not_sprayed_mp(row.get("MP Start")) or format_not_sprayed_mp(row.get("MP"))
+    end = format_not_sprayed_mp(row.get("MP End"))
+    if start and end:
+        return not_sprayed_stretch_text(start, end, "")
+    return start or end
+
+
+def not_sprayed_when(row):
+    """Clock text for a point or a start-to-end stretch."""
+    row = row or {}
+    start = _cell(row.get("Time Start")) or _cell(row.get("Time"))
+    end = _cell(row.get("Time End"))
+    if start and end and start != end:
+        return "%s–%s" % (start, end)
+    return start
+
+
+def not_sprayed_report_line(item):
+    """One line for the PDF and Word NOT SPRAYED section."""
+    item = item or {}
+    source = item.get("MP source") or "GPS"
+    start = _cell(item.get("MP Start"))
+    stop = _cell(item.get("MP End"))
+    if start and stop:
+        place = not_sprayed_stretch_text(start, stop, item.get("Reason"))
+    else:
+        place = "MP %s. %s" % (
+            not_sprayed_mp_span(item) or "—",
+            item.get("Reason") or "(no reason yet)",
+        )
+    return "%s %s  %s  (%s)  %s  [%s]" % (
+        item.get("Date display") or item.get("Date") or "",
+        not_sprayed_when(item),
+        place,
+        source,
+        item.get("Aircraft") or DEFAULT_AIRCRAFT_ID,
+        item.get("Status") or NOT_SPRAYED_STATUS,
+    )
+
+
 def spray_rows_with_not_sprayed(spray_rows, not_sprayed):
     """Copy the spray grid and put not-sprayed notes in the first empty rows."""
     rows = [dict(row) for row in normalize_spray_rows(spray_rows)]
@@ -1286,9 +1332,16 @@ def spray_rows_with_not_sprayed(spray_rows, not_sprayed):
         if cursor >= len(rows):
             break
         source = item["MP source"] or "GPS"
-        rows[cursor]["Time"] = item["Time"]
-        rows[cursor]["MP ST"] = item["MP"]
-        rows[cursor]["Notes"] = "Not sprayed (%s): %s" % (source, item["Reason"])
+        start_mp = _cell(item.get("MP Start"))
+        end_mp = _cell(item.get("MP End"))
+        rows[cursor]["Time"] = _cell(item.get("Time Start")) or item["Time"]
+        if start_mp and end_mp:
+            rows[cursor]["MP ST"] = format_not_sprayed_mp(start_mp)
+            rows[cursor]["MP END"] = format_not_sprayed_mp(end_mp)
+            rows[cursor]["Notes"] = not_sprayed_stretch_text(start_mp, end_mp, item["Reason"])
+        else:
+            rows[cursor]["MP ST"] = item["MP"]
+            rows[cursor]["Notes"] = "Not sprayed (%s): %s" % (source, item["Reason"])
         cursor += 1
     return rows
 
@@ -1368,6 +1421,7 @@ def _speech_secrets():
 def _render_not_sprayed_capture(pilot, aircraft, now, location_getter=None):
     """In-flight Not sprayed and Mark MP controls. Capture happens on the tap."""
     import streamlit as st
+    import bnsf_voice
 
     st.markdown(
         """
@@ -1399,11 +1453,31 @@ def _render_not_sprayed_capture(pilot, aircraft, now, location_getter=None):
     st.markdown("**Not sprayed**")
     if actions["capture"]:
         st.caption(
-            "Tap once in flight. The phone records the time and the nearest BNSF milepost. "
-            "With the audio panel in TEL, speak the reason. If you say a milepost, that replaces the GPS post."
+            "Tap Voice commands once, then talk. Say activate milepost, start, stop, and the reason. "
+            "The buttons below are the fallback if the mic drops."
         )
     else:
         st.caption(actions["note"])
+    with st.expander("Voice commands on iPhone and Samsung"):
+        st.markdown(bnsf_voice.VOICE_COMMAND_HELP)
+    voice_session = st.session_state.get("bnsf_voice_session") or bnsf_voice.new_voice_session()
+    voice_speak = st.session_state.get("bnsf_voice_speak") or {"id": 0, "text": ""}
+
+    def _save_voice_row(row):
+        _store_not_sprayed_rows(_not_sprayed_rows() + [row])
+
+    voice_session, voice_speak, _voice_saved = bnsf_voice.render_voice_commands(
+        enabled=actions["capture"],
+        session=voice_session,
+        speak=voice_speak,
+        aircraft=aircraft or DEFAULT_AIRCRAFT_ID,
+        now=now,
+        on_save=_save_voice_row,
+    )
+    st.session_state.bnsf_voice_session = voice_session
+    st.session_state.bnsf_voice_speak = voice_speak
+    if voice_session.get("phase") not in {None, "off"}:
+        st.caption(bnsf_voice.voice_phase_label(voice_session.get("phase")))
     if st.button(
         "Not sprayed (voice)",
         key="bnsf_not_sprayed_voice",
@@ -1516,22 +1590,28 @@ def _render_not_sprayed_capture(pilot, aircraft, now, location_getter=None):
             source = row["MP source"] or "GPS"
             title = "%s %s · MP %s (%s) · %s · %s" % (
                 row["Date display"] or row["Date"],
-                row["Time"],
-                row["MP"] or "—",
+                not_sprayed_when(row),
+                not_sprayed_mp_span(row) or "—",
                 source,
                 row["Aircraft"] or DEFAULT_AIRCRAFT_ID,
                 row["Status"] or NOT_SPRAYED_STATUS,
             )
             with st.expander(title, expanded=False):
                 row_key = row["id"] or str(index)
-                mp_value = st.text_input("Milepost", value=row["MP"], key="bnsf_ns_edit_mp_%s" % row_key)
+                updated = dict(row)
+                if row.get("MP Start") or row.get("MP End"):
+                    updated["MP Start"] = _cell(st.text_input("MP start", value=row.get("MP Start", ""), key="bnsf_ns_edit_mp_s_%s" % row_key))
+                    updated["MP End"] = _cell(st.text_input("MP end", value=row.get("MP End", ""), key="bnsf_ns_edit_mp_e_%s" % row_key))
+                    updated["MP"] = not_sprayed_mp_span(updated)
+                else:
+                    updated["MP"] = _cell(st.text_input("Milepost", value=row["MP"], key="bnsf_ns_edit_mp_%s" % row_key))
                 reason_value = st.text_area("Reason", value=row["Reason"], key="bnsf_ns_edit_reason_%s" % row_key)
+                updated["Reason"] = _cell(reason_value)
+                if row.get("MP Start") and row.get("MP End"):
+                    st.markdown(not_sprayed_stretch_text(row.get("MP Start"), row.get("MP End"), updated.get("Reason") or row.get("Reason")))
                 if row["Transcript"]:
                     st.caption("Transcript: " + row["Transcript"])
                 c1, c2, c3 = st.columns(3)
-                updated = dict(row)
-                updated["MP"] = _cell(mp_value)
-                updated["Reason"] = _cell(reason_value)
                 with c1:
                     if st.button("Save edit", key="bnsf_ns_edit_save_%s" % row_key):
                         updated["Status"] = NOT_SPRAYED_STATUS
