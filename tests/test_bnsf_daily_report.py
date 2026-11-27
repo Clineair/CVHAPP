@@ -13,6 +13,7 @@ sys.path.insert(0, str(ROOT))
 
 import bnsf_daily_report as dr  # noqa: E402
 import bnsf_notice  # noqa: E402
+import bnsf_voice  # noqa: E402
 
 PT = ZoneInfo("America/Los_Angeles")
 FIXTURE = ROOT / "tests" / "fixtures_ten_day_notice_young.txt"
@@ -352,6 +353,384 @@ class SheetAndDocumentTests(unittest.TestCase):
         self.assertIn("Triumph 22K", text)
         self.assertIn("NPDES", text)
         self.assertEqual(len(reader.pages), 2)
+
+    def test_flag_logo_renders_and_a_missing_file_still_builds(self):
+        logo = dr.daily_report_logo_path()
+        self.assertIsNotNone(logo)
+        self.assertTrue(logo.endswith("flaglogo_report.png"))
+        self.assertNotIn("/workspace", logo.replace("\\", "/"))
+        self.assertTrue(Path(logo).is_file())
+        self.assertEqual(Path(logo).resolve().parent, ROOT.resolve())
+
+        report, _notice = sample_report()
+        data = dr.build_daily_report_pdf(report)
+        from pypdf import PdfReader
+        page = PdfReader(io.BytesIO(data)).pages[0]
+        xobjects = page["/Resources"]["/XObject"].get_object()
+        images = [name for name in xobjects if xobjects[name].get_object().get("/Subtype") == "/Image"]
+        self.assertTrue(images)
+
+        from docx import Document
+        from docx.oxml.ns import qn
+        document = Document(io.BytesIO(dr.fill_daily_report_docx(report)))
+        blip = document.element.find(".//" + qn("a:blip"))
+        self.assertIsNotNone(blip)
+        part = document.part.related_parts[blip.get(qn("r:embed"))]
+        self.assertGreater(len(part.blob), 20000)
+        self.assertNotEqual(part.blob, (ROOT / "data" / "cvh_eagle_logo.jpeg").read_bytes())
+        width, height = dr.flag_logo_size_inches()
+        extent = document.element.find(".//" + qn("wp:extent"))
+        self.assertEqual(int(extent.get("cx")), int(round(width * 914400)))
+        self.assertEqual(int(extent.get("cy")), int(round(height * 914400)))
+
+        with mock.patch.object(dr, "daily_report_logo_path", return_value=None):
+            pdf = dr.build_daily_report_pdf(report)
+            docx = dr.fill_daily_report_docx(report)
+        self.assertTrue(pdf.startswith(b"%PDF"))
+        self.assertTrue(docx.startswith(b"PK"))
+        reader = PdfReader(io.BytesIO(pdf))
+        self.assertIn("DAILY FIELD REPORT", "\n".join(p.extract_text() or "" for p in reader.pages))
+
+
+class NotSprayedTests(unittest.TestCase):
+    def test_parses_digit_and_spoken_mileposts(self):
+        self.assertEqual(dr.parse_not_sprayed_speech("MP 112.4")["mp"], 112.4)
+        self.assertEqual(dr.parse_not_sprayed_speech("milepost one twelve point four")["mp"], 112.4)
+        self.assertEqual(dr.parse_not_sprayed_speech("112 point 4")["mp"], 112.4)
+        self.assertEqual(dr.parse_not_sprayed_speech("mile post one hundred twelve point four")["mp"], 112.4)
+        spoken = dr.parse_not_sprayed_speech("trees over the track at milepost one twelve point four")
+        self.assertEqual(spoken["mp"], 112.4)
+        self.assertEqual(spoken["reason"], "trees over the track at")
+        plain = dr.parse_not_sprayed_speech("trees over the track")
+        self.assertIsNone(plain["mp"])
+        self.assertEqual(plain["reason"], "trees over the track")
+
+    def test_spoken_milepost_overrides_gps_and_keeps_transcript(self):
+        row = dr.capture_not_sprayed_fix(
+            lat=45.0,
+            lon=-108.0,
+            now=_pt(2026, 7, 16, 14, 14),
+            aircraft="Enstrom N480ML",
+            points=[dr.bw.MilepostPoint("Montana", "Laurel", 100.2, 45.0, -108.0)],
+        )
+        self.assertEqual(row["MP"], "100.2")
+        self.assertEqual(row["MP source"], "GPS")
+        self.assertEqual(row["Aircraft"], "N480ML")
+        self.assertEqual(row["Status"], "Pending review")
+        self.assertEqual(row["Time"], "2:14 PM")
+        updated = dr.apply_spoken_milepost(row, "MP 112.4 trees over the track")
+        self.assertEqual(updated["MP"], "112.4")
+        self.assertEqual(updated["MP source"], "Spoken")
+        self.assertEqual(updated["GPS MP"], "100.2")
+        self.assertEqual(updated["Reason"], "trees over the track")
+        self.assertEqual(updated["Transcript"], "MP 112.4 trees over the track")
+        self.assertEqual(updated["Status"], "Pending review")
+
+    def test_mark_mp_row_has_time_and_no_reason(self):
+        row = dr.capture_not_sprayed_fix(
+            lat=45.0,
+            lon=-108.0,
+            now=_pt(2026, 7, 16, 9, 5),
+            points=[dr.bw.MilepostPoint("Montana", "Laurel", 88.0, 45.0, -108.0)],
+        )
+        self.assertEqual(row["MP"], "88.0")
+        self.assertEqual(row["MP source"], "GPS")
+        self.assertEqual(row["Reason"], "")
+        self.assertEqual(row["Transcript"], "")
+        self.assertEqual(row["Aircraft"], "N480ML")
+        self.assertEqual(row["Status"], "Pending review")
+
+    def test_not_sprayed_round_trip_and_report_output(self):
+        report, _notice = sample_report()
+        row = dr.apply_spoken_milepost(
+            dr.capture_not_sprayed_fix(now=_pt(2026, 7, 16, 14, 14), aircraft="N480ML"),
+            "milepost one twelve point four signal wires",
+        )
+        report["not_sprayed"] = [row]
+        record = dr.report_to_record(report, when=_pt(2026, 7, 16, 16, 0))
+        stored = json.loads(record["Not sprayed"])
+        self.assertEqual(stored[0]["MP"], "112.4")
+        self.assertEqual(stored[0]["MP source"], "Spoken")
+        back = dr.record_to_report(record)
+        self.assertEqual(back["not_sprayed"][0]["Reason"], "signal wires")
+        self.assertEqual(back["not_sprayed"][0]["Transcript"], "milepost one twelve point four signal wires")
+        filled = dr.spray_rows_with_not_sprayed(report["spray_rows"], report["not_sprayed"])
+        self.assertEqual(report["spray_rows"][2]["Notes"], "Buffered crossing")
+        empty_index = next(i for i, item in enumerate(report["spray_rows"]) if not any(item.values()))
+        self.assertEqual(empty_index, 3)
+        self.assertIn("signal wires", filled[empty_index]["Notes"])
+        self.assertEqual(filled[empty_index]["MP ST"], "112.4")
+        self.assertEqual(filled[2]["Notes"], "Buffered crossing")
+
+        data = dr.build_daily_report_pdf(report)
+        from pypdf import PdfReader
+        text = "\n".join(page.extract_text() or "" for page in PdfReader(io.BytesIO(data)).pages)
+        self.assertIn("NOT SPRAYED", text)
+        self.assertIn("112.4", text)
+        self.assertIn("signal wires", text)
+        self.assertIn("N480ML", text)
+        self.assertIn("Pending review", text)
+
+        from docx import Document
+        document = Document(io.BytesIO(dr.fill_daily_report_docx(report)))
+        blob = "\n".join(p.text for p in document.paragraphs)
+        self.assertIn("signal wires", blob)
+        self.assertIn("112.4", blob)
+
+    def test_speech_stays_off_without_a_key_and_errors_hide_the_key(self):
+        calls = []
+
+        def poster(audio, settings):
+            calls.append(settings["api_key"])
+            raise RuntimeError("nope " + settings["api_key"])
+
+        self.assertIsNone(dr.transcribe_not_sprayed_clip(b"clip", secrets={}, http_post=poster))
+        self.assertEqual(calls, [])
+        self.assertFalse(dr.speech_settings({"bnsf_speech": {"enabled": True, "api_key": ""}})["enabled"])
+        secrets = {"bnsf_speech": {"enabled": True, "api_key": "sk-test-should-not-appear"}}
+        self.assertTrue(dr.speech_settings(secrets)["enabled"])
+        with self.assertRaises(ValueError) as caught:
+            dr.transcribe_not_sprayed_clip(b"clip", secrets=secrets, http_post=poster)
+        self.assertNotIn("sk-test-should-not-appear", str(caught.exception))
+        self.assertEqual(calls, ["sk-test-should-not-appear"])
+
+        def ok(audio, settings):
+            return "milepost one twelve point four trees"
+        heard = dr.transcribe_not_sprayed_clip(b"clip", secrets=secrets, http_post=ok)
+        self.assertEqual(dr.parse_not_sprayed_speech(heard)["mp"], 112.4)
+
+
+class NavigationAndSprayGateTests(unittest.TestCase):
+    LABELS = [
+        "N893PC – Robinson R44 Raven II (SN 14940)",
+        "N480ML – Enstrom 480 Turbine (SN 5032)",
+    ]
+
+    def test_bnsf_button_waits_for_aircraft_and_far_137(self):
+        hidden = {"button": False, "pages": False}
+        self.assertEqual(dr.pilot_menu_bnsf("", "Part 137", opened=True), hidden)
+        self.assertEqual(dr.pilot_menu_bnsf("Enstrom 480", "Part 91", opened=True), hidden)
+        self.assertEqual(dr.pilot_menu_bnsf("Enstrom 480", "Part 135", opened=True), hidden)
+        self.assertEqual(dr.pilot_menu_bnsf("Enstrom 480", "Part 133", opened=True), hidden)
+        self.assertEqual(dr.pilot_menu_bnsf("Robinson R44 Raven II", "Part 137", opened=False), {"button": True, "pages": False})
+        self.assertEqual(dr.pilot_menu_bnsf("Enstrom 480", "Part 137", opened=True), {"button": True, "pages": True})
+
+    def test_chosen_aircraft_is_carried_into_bnsf(self):
+        robinson = dr.bnsf_aircraft_label("N893PC", self.LABELS)
+        enstrom = dr.bnsf_aircraft_label("N480ML", self.LABELS)
+        self.assertIn("N893PC", robinson)
+        self.assertNotIn("N480ML", robinson)
+        self.assertIn("N480ML", enstrom)
+        self.assertEqual(dr.aircraft_id(robinson), "N893PC")
+        self.assertEqual(dr.aircraft_id(enstrom), "N480ML")
+        report = dr.gather_daily_report("Ron Cline", aircraft=robinson, now=_pt(2026, 7, 16, 12, 0), county_lookup=lambda *a: "")
+        self.assertEqual(report["Aircraft"], "N893PC")
+
+    def test_voice_and_mark_only_while_spraying_review_stays_open(self):
+        now = _pt(2026, 7, 16, 8, 0)
+        store = {}
+        self.assertFalse(dr.spraying_in_progress(dr.get_ops_clocks(store, "Ron Cline", now=now)))
+        self.assertEqual(dr.not_sprayed_actions(False)["note"], "Available while spraying.")
+        self.assertFalse(dr.not_sprayed_actions(False)["capture"])
+        self.assertTrue(dr.not_sprayed_actions(False)["review"])
+        started = dr.start_bnsf_spray(store, "Ron Cline", now=now)
+        self.assertEqual(started["bnsf_start"], "8:00 AM")
+        self.assertEqual(started["bnsf_end"], "")
+        self.assertTrue(dr.spraying_in_progress(started))
+        self.assertTrue(dr.not_sprayed_actions(True)["capture"])
+        self.assertEqual(dr.not_sprayed_actions(True)["note"], "")
+        stopped = dr.stop_bnsf_spray(store, "Ron Cline", now=_pt(2026, 7, 16, 11, 30))
+        self.assertEqual(stopped["bnsf_end"], "11:30 AM")
+        self.assertFalse(dr.spraying_in_progress(stopped))
+        self.assertTrue(dr.not_sprayed_actions(dr.spraying_in_progress(stopped))["review"])
+        again = dr.start_bnsf_spray(store, "Ron Cline", now=_pt(2026, 7, 16, 13, 0))
+        self.assertEqual(again["bnsf_end"], "")
+        self.assertTrue(dr.spraying_in_progress(again))
+
+
+class VoiceCommandTests(unittest.TestCase):
+    def _points(self):
+        return [
+            dr.bw.MilepostPoint("Montana", "Laurel", 112.4, 45.0, -108.0),
+            dr.bw.MilepostPoint("Montana", "Laurel", 118.2, 45.2, -108.2),
+        ]
+
+    def _step(self, session, text, kind="utterance", when=None, lat=None, lon=None):
+        return bnsf_voice.apply_voice_command(
+            session,
+            text,
+            kind=kind,
+            now=when,
+            lat=lat,
+            lon=lon,
+            points=self._points(),
+            aircraft="N480ML",
+        )
+
+    def test_command_variants_and_noise(self):
+        self.assertEqual(bnsf_voice.match_voice_command("Activate Milepost"), "activate")
+        self.assertEqual(bnsf_voice.match_voice_command("uh activate the mile post please"), "activate")
+        self.assertEqual(bnsf_voice.match_voice_command("activate mp"), "activate")
+        self.assertEqual(bnsf_voice.match_voice_command("Start"), "start")
+        self.assertEqual(bnsf_voice.match_voice_command("ok stop now"), "stop")
+        self.assertEqual(bnsf_voice.match_voice_command("cancel that"), "cancel")
+        self.assertIsNone(bnsf_voice.match_voice_command("the wind is loud near the stop sign"))
+
+    def test_activate_start_stop_reason_save_and_loop(self):
+        session, outcome = self._step(bnsf_voice.new_voice_session(), "", kind="power-on")
+        self.assertEqual(outcome["phase"], "listening")
+        self.assertIn("activate milepost", outcome["speak"].lower())
+
+        session, outcome = self._step(session, "activate mile post")
+        self.assertEqual(outcome["phase"], "armed")
+        self.assertEqual(outcome["speak"], "Milepost armed.")
+        self.assertIsNone(outcome["row"])
+
+        session, outcome = self._step(session, "Start", when=_pt(2026, 7, 16, 14, 14), lat=45.0, lon=-108.0)
+        self.assertEqual(outcome["phase"], "tracking")
+        self.assertIn("112.4", outcome["speak"])
+        self.assertIn("Start", outcome["speak"])
+        self.assertEqual(session["start"]["MP"], "112.4")
+        self.assertEqual(session["start"]["Time"], "2:14 PM")
+
+        session, outcome = self._step(session, "stop", when=_pt(2026, 7, 16, 14, 22), lat=45.2, lon=-108.2)
+        self.assertEqual(outcome["phase"], "reason")
+        self.assertIn("118.2", outcome["speak"])
+        self.assertIn("Why not sprayed?", outcome["speak"])
+
+        session, outcome = self._step(session, "trees over the track", kind="pause")
+        row = outcome["row"]
+        self.assertEqual(outcome["phase"], "listening")
+        self.assertEqual(outcome["speak"], "Saved.")
+        self.assertEqual(row["MP Start"], "112.4")
+        self.assertEqual(row["MP End"], "118.2")
+        self.assertEqual(row["MP"], "112.4 to 118.2")
+        self.assertEqual(row["Time Start"], "2:14 PM")
+        self.assertEqual(row["Time End"], "2:22 PM")
+        self.assertEqual(row["Reason"], "trees over the track")
+        self.assertIn("activate mile post", row["Transcript"])
+        self.assertIn("trees over the track", row["Transcript"])
+        self.assertEqual(row["Aircraft"], "N480ML")
+        self.assertEqual(row["Status"], "Pending review")
+        self.assertEqual(row["MP source"], "GPS")
+
+        session, outcome = self._step(session, "activate milepost")
+        self.assertEqual(outcome["phase"], "armed")
+        self.assertIsNone(outcome["row"])
+
+    def test_cancel_and_commands_out_of_order_do_not_save(self):
+        session, _ = self._step(bnsf_voice.new_voice_session(), "", kind="power-on")
+        session, outcome = self._step(session, "start", when=_pt(2026, 7, 16, 9, 0), lat=45.0, lon=-108.0)
+        self.assertTrue(outcome["ignored"])
+        self.assertIsNone(outcome["row"])
+        self.assertEqual(outcome["phase"], "listening")
+
+        session, outcome = self._step(session, "stop")
+        self.assertTrue(outcome["ignored"])
+        self.assertIsNone(outcome["row"])
+
+        session, outcome = self._step(session, "wind noise over the rotor")
+        self.assertTrue(outcome["ignored"])
+
+        session, _ = self._step(session, "activate milepost")
+        session, outcome = self._step(session, "stop")
+        self.assertTrue(outcome["ignored"])
+        self.assertEqual(outcome["speak"], "Say start.")
+        self.assertIsNone(outcome["row"])
+
+        session, _ = self._step(session, "start", when=_pt(2026, 7, 16, 9, 1), lat=45.0, lon=-108.0)
+        session, outcome = self._step(session, "cancel")
+        self.assertEqual(outcome["speak"], "Cancelled.")
+        self.assertEqual(outcome["phase"], "listening")
+        self.assertIsNone(outcome["row"])
+        self.assertIsNone(session.get("start"))
+
+        session, _ = self._step(session, "activate milepost")
+        session, _ = self._step(session, "start", when=_pt(2026, 7, 16, 9, 2), lat=45.0, lon=-108.0)
+        session, outcome = self._step(session, "activate mile post")
+        self.assertEqual(outcome["phase"], "armed")
+        self.assertIsNone(session.get("start"))
+        self.assertIsNone(outcome["row"])
+
+    def test_stretch_shows_on_spray_notes_and_pdf(self):
+        session, _ = self._step(bnsf_voice.new_voice_session(), "", kind="power-on")
+        session, _ = self._step(session, "activate milepost")
+        session, _ = self._step(session, "start", when=_pt(2026, 7, 16, 14, 14), lat=45.0, lon=-108.0)
+        session, _ = self._step(session, "stop", when=_pt(2026, 7, 16, 14, 22), lat=45.2, lon=-108.2)
+        _session, outcome = self._step(session, "signal wires", kind="pause")
+        row = outcome["row"]
+        report, _notice = sample_report()
+        report["not_sprayed"] = [row]
+        filled = dr.spray_rows_with_not_sprayed(report["spray_rows"], report["not_sprayed"])
+        empty_index = next(i for i, item in enumerate(report["spray_rows"]) if not any(item.values()))
+        expected = "Start: MP 112.4, Stop: MP 118.2. signal wires"
+        self.assertEqual(filled[empty_index]["MP ST"], "112.4")
+        self.assertEqual(filled[empty_index]["MP END"], "118.2")
+        self.assertEqual(filled[empty_index]["Notes"], expected)
+        self.assertEqual(report["spray_rows"][2]["Notes"], "Buffered crossing")
+
+        from pypdf import PdfReader
+        text = "\n".join(page.extract_text() or "" for page in PdfReader(io.BytesIO(dr.build_daily_report_pdf(report))).pages)
+        self.assertIn("NOT SPRAYED", text)
+        self.assertIn(expected, text)
+        self.assertIn("Pending review", text)
+        from docx import Document
+        blob = "\n".join(p.text for p in Document(io.BytesIO(dr.fill_daily_report_docx(report))).paragraphs)
+        self.assertIn(expected, blob)
+
+    def test_tenth_mile_rounding_interpolation_and_exact_line(self):
+        self.assertEqual(dr.format_not_sprayed_mp(9), "9.0")
+        self.assertEqual(dr.format_not_sprayed_mp("9"), "9.0")
+        self.assertEqual(dr.format_not_sprayed_mp(9.26), "9.3")
+        self.assertEqual(dr.format_not_sprayed_mp(9.24), "9.2")
+        self.assertEqual(
+            dr.not_sprayed_stretch_text(9, 11.2, "trees over the track"),
+            "Start: MP 9.0, Stop: MP 11.2. trees over the track",
+        )
+        self.assertEqual(
+            dr.not_sprayed_stretch_text("9.3", "11.2", "signal wires"),
+            "Start: MP 9.3, Stop: MP 11.2. signal wires",
+        )
+
+        lat_per_mile = 1.0 / 69.172
+        points = [
+            dr.bw.MilepostPoint("Montana", "Laurel", 9, 47.0, -108.0),
+            dr.bw.MilepostPoint("Montana", "Laurel", 10, 47.0 + lat_per_mile, -108.0),
+        ]
+        on_post = dr.bw.locate_milepost(47.0, -108.0, points=points)
+        self.assertEqual(on_post.milepost, 9.0)
+        self.assertEqual(dr.format_not_sprayed_mp(on_post.milepost), "9.0")
+        third = dr.bw.locate_milepost(47.0 + 0.3 * lat_per_mile, -108.0, points=points)
+        self.assertEqual(third.milepost, 9.3)
+        almost = dr.bw.locate_milepost(47.0 + 0.26 * lat_per_mile, -108.0, points=points)
+        self.assertEqual(almost.milepost, 9.3)
+        low = dr.bw.locate_milepost(47.0 + 0.24 * lat_per_mile, -108.0, points=points)
+        self.assertEqual(low.milepost, 9.2)
+
+        start = dr.capture_not_sprayed_fix(lat=47.0 + 0.3 * lat_per_mile, lon=-108.0, now=_pt(2026, 7, 16, 9, 0), points=points)
+        stop = dr.capture_not_sprayed_fix(lat=47.0 + 0.8 * lat_per_mile, lon=-108.0, now=_pt(2026, 7, 16, 9, 10), points=points)
+        self.assertEqual(start["MP"], "9.3")
+        self.assertEqual(stop["MP"], "9.8")
+        row = bnsf_voice.build_stretch_row(start, stop, "MP 9 trees", "MP 9 trees", aircraft="N480ML")
+        self.assertEqual(row["MP Start"], "9.0")
+        self.assertEqual(row["MP source"], "Spoken")
+        self.assertEqual(row["GPS MP"], "9.3 to 9.8")
+        self.assertEqual(row["Reason"], "trees")
+        self.assertEqual(dr.not_sprayed_stretch_text(row["MP Start"], row["MP End"], row["Reason"]), "Start: MP 9.0, Stop: MP 9.8. trees")
+
+    def test_browser_support_messages(self):
+        self.assertEqual(bnsf_voice.voice_support_message({"recognition": True, "platform": "android-chrome"}), "")
+        self.assertIn("Safari", bnsf_voice.voice_support_message({"recognition": True, "platform": "ios-safari", "standalone": True}))
+        message = bnsf_voice.voice_support_message({"recognition": False, "platform": "other"})
+        self.assertIn("Not sprayed (voice)", message)
+        self.assertIn("Mark MP", message)
+        help_text = bnsf_voice.VOICE_COMMAND_HELP
+        self.assertIn("not reliable", help_text)
+        self.assertIn("Android Chrome", help_text)
+        self.assertIn("Samsung Internet", help_text)
+        self.assertIn("Wake Lock", help_text)
+        self.assertIn("home-screen", help_text)
+        self.assertIn("Bluetooth", help_text)
 
 
 class CountyLookupTests(unittest.TestCase):

@@ -11738,13 +11738,34 @@ if st.session_state.current_mode == "Pilot":
             st.button("Cancel", key="pilot_reset_cancel", on_click=cancel_assessment_reset)
     if "far_part" not in st.session_state:
         st.session_state.far_part = "Part 135"
+    selected_aircraft = st.selectbox("Select Aircraft", list(AIRCRAFT_DATA.keys()),
+        key=assessment_key("pilot_config_aircraft"), format_func=lambda name: f"{AIRCRAFT_DATA[name]['registration']} – {name}")
+    aircraft_data = AIRCRAFT_DATA[selected_aircraft]
     sel = st.segmented_control("Operation (FAR Part)", PARTS, default=st.session_state.far_part, key=assessment_key("far_part_ctrl"))
     if sel:
         st.session_state.far_part = sel
     part = st.session_state.far_part
-    selected_aircraft = st.selectbox("Select Aircraft", list(AIRCRAFT_DATA.keys()),
-        key=assessment_key("pilot_config_aircraft"), format_func=lambda name: f"{AIRCRAFT_DATA[name]['registration']} – {name}")
-    aircraft_data = AIRCRAFT_DATA[selected_aircraft]
+    bnsf_gate = bnsf_daily_report.pilot_menu_bnsf(
+        selected_aircraft, part, opened=st.session_state.get("pilot_bnsf_open")
+    )
+    if bnsf_gate["button"]:
+        if st.button("BNSF", key="pilot_bnsf_open_btn", type="primary", use_container_width=True):
+            st.session_state.pilot_bnsf_open = True
+            bnsf_gate = bnsf_daily_report.pilot_menu_bnsf(selected_aircraft, part, opened=True)
+        if bnsf_gate["pages"]:
+            bnsf_label = bnsf_daily_report.bnsf_aircraft_label(aircraft_data["registration"], FRAT_AIRCRAFT)
+            if st.session_state.get("pilot_bnsf_aircraft_source") != bnsf_label:
+                st.session_state.pilot_bnsf_aircraft_source = bnsf_label
+                st.session_state.bnsf_ops_aircraft = bnsf_label
+            bnsf_weather.render_bnsf_ops(
+                default_pilot=st.session_state.get("bnsf_ops_pilot") or "",
+                default_aircraft=bnsf_label,
+                pilots=PILOTS,
+                aircraft=FRAT_AIRCRAFT,
+                spreadsheet_fn=_gsheets_spreadsheet,
+            )
+    else:
+        st.session_state.pilot_bnsf_open = False
     st.subheader(f"Aircraft Configuration – {part}")
     empty_weight = aircraft_empty_weight(aircraft_data, part)
     empty_label = "Aircraft empty weight with spray gear" if part == "Part 137" else "Aircraft empty weight"
@@ -11825,15 +11846,6 @@ if st.session_state.current_mode == "Pilot":
     st.metric("Climb Rate", f"{climb_rate:.0f} fpm")
     st.metric("IGE Hover Ceiling", f"{ige:.0f} ft")
     st.metric("OGE Hover Ceiling", f"{oge:.0f} ft")
-    if part == "Part 137":
-        default_aircraft_label = next((label for label in FRAT_AIRCRAFT if "N480ML" in label), FRAT_AIRCRAFT[-1])
-        bnsf_weather.render_bnsf_ops(
-            default_pilot=st.session_state.get("bnsf_ops_pilot") or "",
-            default_aircraft=default_aircraft_label,
-            pilots=PILOTS,
-            aircraft=FRAT_AIRCRAFT,
-            spreadsheet_fn=_gsheets_spreadsheet,
-        )
     frat_tab, hist_tab = st.tabs(["📋 FRAT", "🗂️ FRAT History"])
     with frat_tab:
         show_risk_assessment(part, config, da_hint=da_ft, default_aircraft_idx=0 if selected_aircraft.startswith("Robinson") else 1)

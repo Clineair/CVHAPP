@@ -458,20 +458,76 @@ class RecordAndSheetTests(unittest.TestCase):
 
 
 class AppHookTests(unittest.TestCase):
-    def test_part_137_section_is_after_performance_and_before_frat_tabs(self):
+    def test_bnsf_button_follows_aircraft_then_far_137(self):
         source = (ROOT / "app.py").read_text(encoding="utf-8")
-        ops = source.index('if part == "Part 137":')
-        # The BNSF hook is the Part 137 block that calls render_bnsf_ops.
-        hook = source.index("bnsf_weather.render_bnsf_ops")
-        frat = source.index('st.tabs(["📋 FRAT", "🗂️ FRAT History"])')
-        oge = source.index('st.metric("OGE Hover Ceiling"')
-        self.assertLess(oge, hook)
-        self.assertLess(hook, frat)
+        pilot = source.index('if st.session_state.current_mode == "Pilot":')
+        frat = source.index('st.tabs(["📋 FRAT", "🗂️ FRAT History"])', pilot)
+        block = source[pilot:frat]
+        aircraft = block.index('st.selectbox("Select Aircraft"')
+        far = block.index('st.segmented_control("Operation (FAR Part)"')
+        button = block.index('st.button("BNSF"')
+        hook = block.index("bnsf_weather.render_bnsf_ops")
+        self.assertLess(aircraft, far)
+        self.assertLess(far, button)
+        self.assertLess(button, hook)
+        self.assertIn("pilot_menu_bnsf", block)
+        self.assertIn("bnsf_aircraft_label", block)
+        self.assertEqual(block.count("bnsf_weather.render_bnsf_ops"), 1)
         self.assertIn("import bnsf_weather", source)
-        # There is more than one 'if part == "Part 137"' — the hook must sit
-        # in the last block immediately before the FRAT tabs.
-        self.assertIn("render_bnsf_ops", source[oge:frat])
-        self.assertTrue(source[source.rindex('if part == "Part 137":', 0, frat):frat].count("render_bnsf_ops") == 1)
+        self.assertIn("import bnsf_daily_report", source)
+
+    def test_pilot_menu_gates_bnsf_and_not_sprayed_until_spraying(self):
+        from streamlit.testing.v1 import AppTest
+        from test_aircraft_weights import offline_app
+
+        at = AppTest.from_string(offline_app(), default_timeout=90).run()
+        self.assertFalse(list(at.exception))
+        self.assertFalse(any(getattr(b, "key", "") == "pilot_bnsf_open_btn" for b in at.button))
+        at.segmented_control[0].set_value("Part 91").run()
+        self.assertFalse(any(getattr(b, "key", "") == "pilot_bnsf_open_btn" for b in at.button))
+        at.segmented_control[0].set_value("Part 137").run()
+        self.assertFalse(list(at.exception))
+        self.assertTrue(any(getattr(b, "key", "") == "pilot_bnsf_open_btn" for b in at.button))
+        self.assertFalse(any(getattr(b, "key", "") == "bnsf_not_sprayed_voice" for b in at.button))
+        at.button(key="pilot_bnsf_open_btn").click().run()
+        self.assertFalse(list(at.exception), [str(item) for item in at.exception])
+        self.assertTrue(at.button(key="bnsf_not_sprayed_voice").disabled)
+        self.assertTrue(at.button(key="bnsf_not_sprayed_mark").disabled)
+        self.assertTrue(any("Available while spraying" in (c.value or "") for c in at.caption))
+        self.assertIn("N893PC", at.selectbox(key="bnsf_ops_aircraft").value)
+        at.selectbox(key="pilot_config_aircraft").select("Enstrom 480").run()
+        self.assertIn("N480ML", at.selectbox(key="bnsf_ops_aircraft").value)
+        self.assertNotIn("N893PC", at.selectbox(key="bnsf_ops_aircraft").value)
+        at.button(key="bnsf_clock_start").click().run()
+        self.assertFalse(at.button(key="bnsf_not_sprayed_voice").disabled)
+        self.assertFalse(at.button(key="bnsf_not_sprayed_mark").disabled)
+        at.button(key="bnsf_clock_stop").click().run()
+        self.assertTrue(at.button(key="bnsf_not_sprayed_voice").disabled)
+        self.assertTrue(at.button(key="bnsf_not_sprayed_mark").disabled)
+        at.session_state["bnsf_not_sprayed_rows"] = [{
+            "id": "NS-1",
+            "Date": "2026-07-16",
+            "Date display": "07/16/2026",
+            "Time": "8:05 AM",
+            "Timestamp": "2026-07-16 08:05:00",
+            "MP": "112.4",
+            "MP source": "GPS",
+            "GPS MP": "112.4",
+            "Subdivision": "Laurel",
+            "Division": "Montana",
+            "Reason": "trees over the track",
+            "Aircraft": "N480ML",
+            "Transcript": "trees over the track",
+            "Status": "Pending review",
+        }]
+        at.run()
+        self.assertFalse(list(at.exception), [str(item) for item in at.exception])
+        self.assertTrue(at.button(key="bnsf_not_sprayed_voice").disabled)
+        self.assertTrue(any(getattr(b, "key", "") == "bnsf_ns_edit_save_NS-1" for b in at.button))
+        self.assertTrue(any(getattr(b, "key", "") == "bnsf_ns_delete_NS-1" for b in at.button))
+        at.segmented_control[0].set_value("Part 135").run()
+        self.assertFalse(any(getattr(b, "key", "") == "pilot_bnsf_open_btn" for b in at.button))
+        self.assertFalse(any(getattr(b, "key", "") == "bnsf_not_sprayed_voice" for b in at.button))
 
 
 

@@ -17,7 +17,16 @@ DEFAULT_AIRCRAFT_ID = "N480ML"
 WEATHER_SLOTS = 6
 SPRAY_ROWS = 30
 FORM_TEMPLATE = Path(__file__).resolve().parent / "data" / "CVH_DAILY_FIELD_REPORT.docx"
-FORM_LOGO = Path(__file__).resolve().parent / "data" / "cvh_eagle_logo.jpeg"
+# Bundled letterhead. flaglogo_report.png is the copy the other CVH reports use.
+# flaglogo.png is the same artwork. Never an absolute /workspace path.
+_REPO_ROOT = Path(__file__).resolve().parent
+FLAG_LOGO_CANDIDATES = (
+    _REPO_ROOT / "flaglogo_report.png",
+    _REPO_ROOT / "flaglogo.png",
+)
+# Same size as the safety-meeting and IFTA letterhead (320×214 artwork).
+FLAG_LOGO_WIDTH_IN = 1.25
+FLAG_LOGO_HEIGHT_RATIO = 214 / 320
 NPDES_LINE = "Met NPDES Requirements.  Buffered Water Crossings 50’ on Each Side."
 FORM_PRODUCT_MIX_FALLBACK = (
     "Triumph 22k: 24 oz/@, Edict RTU: 8 oz/@, MSM 60 DF: 1oz/@, "
@@ -67,6 +76,7 @@ BNSF_DAILY_REPORT_COLUMNS = [
     "Roadmaster",
 ] + _weather_slot_columns() + [
     "Spray log",
+    "Not sprayed",
     "Notes",
     "Edited fields",
 ]
@@ -237,6 +247,54 @@ def set_ops_clocks(store, pilot, fields, now=None):
     return clocks
 
 
+def start_bnsf_spray(store, pilot, now=None):
+    """BNSF Start: spraying is underway, and a previous Stop no longer applies."""
+    return set_ops_clocks(store, pilot, {"bnsf_start": format_clock(now), "bnsf_end": ""}, now=now)
+
+
+def stop_bnsf_spray(store, pilot, now=None):
+    """BNSF Stop: the spray session is over."""
+    return set_ops_clocks(store, pilot, {"bnsf_end": format_clock(now)}, now=now)
+
+
+def spraying_in_progress(clocks):
+    """True from BNSF Start until BNSF Stop. A blank end time means still spraying."""
+    clocks = clocks or {}
+    return bool(_cell(clocks.get("bnsf_start"))) and not _cell(clocks.get("bnsf_end"))
+
+
+def bnsf_nav_visible(aircraft, far_part):
+    """BNSF is offered only after an aircraft is chosen and the operation is FAR 137."""
+    return bool(_cell(aircraft)) and _cell(far_part) == "Part 137"
+
+
+def pilot_menu_bnsf(aircraft, far_part, opened=False):
+    """What the Pilot menu shows for BNSF. Pages stay behind the button."""
+    button = bnsf_nav_visible(aircraft, far_part)
+    return {"button": button, "pages": button and bool(opened)}
+
+
+def bnsf_aircraft_label(registration, labels):
+    """Match the Pilot-menu aircraft to a BNSF aircraft label. Blank if none match."""
+    wanted = _cell(registration).upper()
+    if not wanted:
+        return ""
+    for label in labels or []:
+        if wanted in _cell(label).upper():
+            return label
+    return wanted
+
+
+def not_sprayed_actions(spraying):
+    """Voice and Mark MP are in-flight only. Review stays available after landing."""
+    active = bool(spraying)
+    return {
+        "capture": active,
+        "review": True,
+        "note": "" if active else "Available while spraying.",
+    }
+
+
 def weather_logs_for_pilot_date(records, pilot, now=None):
     now = _as_pacific(now)
     name = _cell(pilot)
@@ -328,7 +386,7 @@ def county_from_slots(slots, lookup=lookup_county):
     return ""
 
 
-def gather_daily_report(pilot, aircraft="", weather_records=None, clocks=None, notice=None, spray_rows=None, loads="", hobbs_start="", hobbs_end="", video_on="Yes", county="", now=None, county_lookup=lookup_county):
+def gather_daily_report(pilot, aircraft="", weather_records=None, clocks=None, notice=None, spray_rows=None, loads="", hobbs_start="", hobbs_end="", video_on="Yes", county="", now=None, county_lookup=lookup_county, not_sprayed=None):
     """Build a prefilled Daily Field Report from the day's logs and a 10-day notice."""
     now = _as_pacific(now)
     clocks = clocks or default_clocks()
@@ -391,6 +449,7 @@ def gather_daily_report(pilot, aircraft="", weather_records=None, clocks=None, n
         "Roadmaster": roadmaster,
         "weather_slots": slots,
         "spray_rows": spray_rows,
+        "not_sprayed": list(not_sprayed or []),
         "Notes": "",
     }
     return report
@@ -400,7 +459,7 @@ def report_to_record(report, original=None, when=None, entry_id=None):
     when = _as_pacific(when)
     record = {column: "" for column in BNSF_DAILY_REPORT_COLUMNS}
     for column in BNSF_DAILY_REPORT_COLUMNS:
-        if column in report and column not in {"weather_slots", "spray_rows", "Spray log"}:
+        if column in report and column not in {"weather_slots", "spray_rows", "Spray log", "not_sprayed", "Not sprayed"}:
             record[column] = _cell(report.get(column))
     slots = report.get("weather_slots") or weather_slots_from_logs([])
     names = ("Time", "Sky", "Wind Speed", "Wind Direction", "Temperature", "Precipitation", "MP Location")
@@ -409,6 +468,7 @@ def report_to_record(report, original=None, when=None, entry_id=None):
             record["Weather %s %s" % (index, name)] = _cell(slot.get(name))
     rows = normalize_spray_rows(report.get("spray_rows"))
     record["Spray log"] = json.dumps(rows, separators=(",", ":"))
+    record["Not sprayed"] = json.dumps(normalize_not_sprayed(report.get("not_sprayed")), separators=(",", ":"))
     record["Entry ID"] = entry_id or new_entry_id("DR", when)
     record["Timestamp"] = format_timestamp(when)
     record["Date"] = format_date(when)
@@ -447,14 +507,25 @@ def record_to_report(record):
         except json.JSONDecodeError:
             pass
     report["spray_rows"] = rows
+    raw_ns = _cell(record.get("Not sprayed"))
+    report["not_sprayed"] = []
+    if raw_ns:
+        try:
+            report["not_sprayed"] = normalize_not_sprayed(json.loads(raw_ns))
+        except json.JSONDecodeError:
+            report["not_sprayed"] = []
     return report
 
 
 def _set_paragraph_text(paragraph, text):
+    from docx.oxml.ns import qn
+
     runs = paragraph.runs
     if runs:
         runs[0].text = text
         for run in runs[1:]:
+            if run._r.find(qn("w:drawing")) is not None:
+                continue
             run.text = ""
     else:
         paragraph.add_run(text)
@@ -553,7 +624,7 @@ def fill_daily_report_docx(report, template_path=None):
 
     if len(document.tables) >= 3:
         spray = document.tables[2]
-        rows = normalize_spray_rows(report.get("spray_rows"))
+        rows = spray_rows_with_not_sprayed(report.get("spray_rows"), report.get("not_sprayed"))
         for r_index in range(1, min(len(spray.rows), SPRAY_ROWS + 1)):
             row = rows[r_index - 1]
             cells = spray.rows[r_index].cells
@@ -573,16 +644,81 @@ def fill_daily_report_docx(report, template_path=None):
                 if cells[c_index].paragraphs:
                     _set_paragraph_text(cells[c_index].paragraphs[0], value)
 
+    for item in normalize_not_sprayed(report.get("not_sprayed")):
+        document.add_paragraph("Not sprayed " + not_sprayed_report_line(item))
+        if item["Transcript"]:
+            document.add_paragraph("Transcript: " + item["Transcript"])
+
+    _apply_flag_logo_to_docx(document)
     buffer = io.BytesIO()
     document.save(buffer)
     return buffer.getvalue()
 
 
-def _pdf_logo():
-    path = FORM_LOGO
-    if path.is_file():
-        return str(path)
+def daily_report_logo_path():
+    """Repo-bundled CVH flag logo, or None. A missing file must not break the report."""
+    for path in FLAG_LOGO_CANDIDATES:
+        try:
+            if path.is_file():
+                return str(path)
+        except OSError:
+            continue
     return None
+
+
+def flag_logo_size_inches():
+    return FLAG_LOGO_WIDTH_IN, FLAG_LOGO_WIDTH_IN * FLAG_LOGO_HEIGHT_RATIO
+
+
+def _flag_logo_flowable(Image, Paragraph, small_bold):
+    """ReportLab image, or a text stand-in when the bundled file cannot be drawn."""
+    from reportlab.lib.units import inch
+
+    path = daily_report_logo_path()
+    width_in, height_in = flag_logo_size_inches()
+    if path:
+        try:
+            return Image(path, width=width_in * inch, height=height_in * inch)
+        except Exception:
+            pass
+    return Paragraph("CENTRAL VALLEY<br/>HELICOPTERS", small_bold)
+
+
+def _apply_flag_logo_to_docx(document):
+    """Swap the form's header picture for the bundled flag. Leave it alone if that fails."""
+    path = daily_report_logo_path()
+    if not path:
+        return
+    try:
+        from PIL import Image as PILImage
+        from docx.oxml.ns import qn
+
+        image = PILImage.open(path).convert("RGB")
+        buffer = io.BytesIO()
+        image.save(buffer, format="JPEG", quality=90)
+        jpeg = buffer.getvalue()
+        blip = document.element.find(".//" + qn("a:blip"))
+        if blip is None:
+            return
+        embed = blip.get(qn("r:embed"))
+        part = document.part.related_parts.get(embed)
+        if part is None:
+            return
+        part._blob = jpeg
+        width = int(round(FLAG_LOGO_WIDTH_IN * 914400))
+        height = int(round(FLAG_LOGO_WIDTH_IN * FLAG_LOGO_HEIGHT_RATIO * 914400))
+        drawing = blip
+        while drawing is not None and not str(drawing.tag).endswith("drawing"):
+            drawing = drawing.getparent()
+        if drawing is None:
+            return
+        for element in drawing.iter():
+            if element.tag.endswith("extent") or element.tag.endswith("}ext"):
+                if "cx" in element.attrib and "cy" in element.attrib:
+                    element.set("cx", str(width))
+                    element.set("cy", str(height))
+    except Exception:
+        return
 
 
 def build_daily_report_pdf(report):
@@ -621,15 +757,11 @@ def build_daily_report_pdf(report):
         return Paragraph((_cell(text) or "&nbsp;").replace(" ", "&nbsp;") if False else (_cell(text).replace("&", "&amp;") or " "), style)
 
     flow = []
-    logo_path = _pdf_logo()
     date_text = "DATE:  " + (report.get("Date display") or format_date_mdy())
-    if logo_path:
-        logo = Image(logo_path, width=0.95 * inch, height=0.64 * inch)
-    else:
-        logo = Paragraph("CENTRAL VALLEY<br/>HELICOPTERS", small_bold)
+    logo = _flag_logo_flowable(Image, Paragraph, small_bold)
     header = Table(
         [[logo, Paragraph("DAILY FIELD REPORT", title_style), Paragraph(date_text, date_style)]],
-        colWidths=[1.15 * inch, 4.5 * inch, 2.0 * inch],
+        colWidths=[1.45 * inch, 4.2 * inch, 2.0 * inch],
     )
     header.setStyle(TableStyle([
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
@@ -701,7 +833,7 @@ def build_daily_report_pdf(report):
     flow.append(Paragraph("<b>PRODUCTS:</b> " + mix.replace("&", "&amp;"), small))
     flow.append(Spacer(1, 6))
 
-    spray = normalize_spray_rows(r.get("spray_rows"))
+    spray = spray_rows_with_not_sprayed(r.get("spray_rows"), r.get("not_sprayed"))
     spray_header = ["#", "Time", "MP ST", "MP END", "", "MP ST", "MP END", "NOTES / REASON FOR NO SPRAY"]
     spray_data = [spray_header]
     for index, row in enumerate(spray, start=1):
@@ -739,6 +871,15 @@ def build_daily_report_pdf(report):
     if rest:
         flow.append(PageBreak())
         flow.append(spray_table([spray_header] + rest, header=True))
+    not_sprayed = normalize_not_sprayed(r.get("not_sprayed"))
+    if not_sprayed:
+        flow.append(Spacer(1, 8))
+        flow.append(Paragraph("NOT SPRAYED", warning))
+        for item in not_sprayed:
+            line = not_sprayed_report_line(item)
+            flow.append(Paragraph(line, small))
+            if item["Transcript"]:
+                flow.append(Paragraph("Transcript: " + item["Transcript"], small))
     flow.append(Spacer(1, 8))
     flow.append(Paragraph(NPDES_LINE, footer))
     doc.build(flow)
@@ -870,6 +1011,410 @@ def notice_option_label(notice):
     return title
 
 
+NOT_SPRAYED_STATUS = "Pending review"
+SPEECH_SECRET_SECTION = "bnsf_speech"
+_SPOKEN_ONES = {
+    "zero": 0, "oh": 0, "o": 0,
+    "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
+    "six": 6, "seven": 7, "eight": 8, "nine": 9,
+    "ten": 10, "eleven": 11, "twelve": 12, "thirteen": 13,
+    "fourteen": 14, "fifteen": 15, "sixteen": 16, "seventeen": 17,
+    "eighteen": 18, "nineteen": 19,
+}
+_SPOKEN_TENS = {
+    "twenty": 20, "thirty": 30, "forty": 40, "fifty": 50,
+    "sixty": 60, "seventy": 70, "eighty": 80, "ninety": 90,
+}
+_NUMBER_WORDS = set(_SPOKEN_ONES) | set(_SPOKEN_TENS) | {"hundred", "point", "dot", "and"}
+
+
+def _speech_words(text):
+    cleaned = re.sub(r"[^A-Za-z0-9.\s]", " ", _cell(text).lower().replace("-", " "))
+    return [word for word in cleaned.split() if word]
+
+
+def _is_number_token(token):
+    if token in _NUMBER_WORDS:
+        return True
+    return bool(re.fullmatch(r"\d+(?:\.\d+)?", token))
+
+
+def _parse_small_number(tokens):
+    if not tokens:
+        return None
+    if len(tokens) == 1:
+        token = tokens[0]
+        if re.fullmatch(r"\d+", token):
+            return int(token)
+        if token in _SPOKEN_TENS:
+            return _SPOKEN_TENS[token]
+        if token in _SPOKEN_ONES:
+            return _SPOKEN_ONES[token]
+        return None
+    if len(tokens) == 2 and tokens[0] in _SPOKEN_TENS and tokens[1] in _SPOKEN_ONES and _SPOKEN_ONES[tokens[1]] < 10:
+        return _SPOKEN_TENS[tokens[0]] + _SPOKEN_ONES[tokens[1]]
+    return None
+
+
+def _parse_whole_number(tokens):
+    tokens = [token for token in tokens if token != "and"]
+    if not tokens:
+        return None
+    if any(re.fullmatch(r"\d+\.\d+", token) for token in tokens):
+        return None
+    if "hundred" in tokens:
+        index = tokens.index("hundred")
+        left = _parse_small_number(tokens[:index]) if tokens[:index] else 1
+        right = _parse_small_number(tokens[index + 1:]) if tokens[index + 1:] else 0
+        if left is None or right is None:
+            return None
+        return left * 100 + right
+    parts = []
+    index = 0
+    while index < len(tokens):
+        pair = tokens[index:index + 2]
+        combined = _parse_small_number(pair) if len(pair) == 2 and pair[0] in _SPOKEN_TENS else None
+        if combined is not None and pair[1] in _SPOKEN_ONES and _SPOKEN_ONES[pair[1]] < 10:
+            parts.append(str(combined))
+            index += 2
+            continue
+        token = tokens[index]
+        if re.fullmatch(r"\d+", token):
+            parts.append(token)
+        elif token in _SPOKEN_TENS:
+            parts.append(str(_SPOKEN_TENS[token]))
+        elif token in _SPOKEN_ONES:
+            parts.append(str(_SPOKEN_ONES[token]))
+        else:
+            return None
+        index += 1
+    if not parts:
+        return None
+    return int("".join(parts))
+
+
+def _parse_fraction(tokens):
+    digits = []
+    for token in tokens:
+        if token in {"point", "dot", "and"}:
+            continue
+        if re.fullmatch(r"\d+", token):
+            digits.append(token)
+        elif token in _SPOKEN_ONES and _SPOKEN_ONES[token] < 10:
+            digits.append(str(_SPOKEN_ONES[token]))
+        else:
+            return None
+    return "".join(digits)
+
+
+def _milepost_from_tokens(tokens):
+    if len(tokens) == 1 and re.fullmatch(r"\d+\.\d+", tokens[0]):
+        return float(tokens[0])
+    if "point" in tokens or "dot" in tokens:
+        splitter = "point" if "point" in tokens else "dot"
+        index = tokens.index(splitter)
+        whole = _parse_whole_number(tokens[:index])
+        fraction = _parse_fraction(tokens[index + 1:])
+        if whole is None or not fraction:
+            return None
+        return float("%s.%s" % (whole, fraction))
+    whole = _parse_whole_number(tokens)
+    if whole is None:
+        return None
+    return float(whole)
+
+
+def _consume_number_tokens(words, start):
+    index = start
+    while index < len(words) and _is_number_token(words[index]):
+        index += 1
+    return words[start:index], index
+
+
+def parse_not_sprayed_speech(text):
+    """Pull a spoken or typed milepost out of a not-sprayed note.
+
+    Returns mp (float or None) and the remaining words as the reason.
+    The raw transcript is not changed here.
+    """
+    words = _speech_words(text)
+    span = None
+    for index, word in enumerate(words):
+        start = None
+        if word in {"mp", "milepost"}:
+            start = index + 1
+        elif word == "mile" and index + 1 < len(words) and words[index + 1] == "post":
+            start = index + 2
+        if start is None:
+            continue
+        phrase, end = _consume_number_tokens(words, start)
+        if phrase and _milepost_from_tokens(phrase) is not None:
+            span = (index, end)
+            break
+    if span is None:
+        for index, word in enumerate(words):
+            if not (_is_number_token(word) and (re.match(r"\d", word) or word in _SPOKEN_ONES or word in _SPOKEN_TENS)):
+                continue
+            phrase, end = _consume_number_tokens(words, index)
+            if "point" not in phrase and "dot" not in phrase and not any(re.fullmatch(r"\d+\.\d+", token) for token in phrase):
+                continue
+            if _milepost_from_tokens(phrase) is not None:
+                span = (index, end)
+                break
+    if span is None:
+        return {"mp": None, "reason": _cell(text)}
+    phrase = words[span[0]:span[1]]
+    while phrase and phrase[0] in {"mp", "milepost", "mile", "post"}:
+        phrase = phrase[1:]
+    value = _milepost_from_tokens(phrase)
+    reason_words = words[:span[0]] + words[span[1]:]
+    reason = " ".join(reason_words).strip(" .")
+    if value is None:
+        return {"mp": None, "reason": _cell(text)}
+    return {"mp": round(float(value), 1), "reason": reason}
+
+
+def speech_settings(secrets=None):
+    """Optional Whisper settings. A missing key means keyboard dictation.
+
+    The returned dict includes whether transcription is turned on. The API key
+    stays only for the request helper and is not meant to be shown.
+    """
+    section = {}
+    if secrets is not None:
+        try:
+            raw = secrets.get(SPEECH_SECRET_SECTION) if hasattr(secrets, "get") else None
+        except Exception:
+            raw = None
+        if raw is None:
+            try:
+                raw = secrets[SPEECH_SECRET_SECTION]
+            except Exception:
+                raw = None
+        if isinstance(raw, dict):
+            section = raw
+    enabled_flag = str(section.get("enabled", "")).strip().lower() in {"1", "true", "yes", "on"}
+    api_key = _cell(section.get("api_key"))
+    return {
+        "enabled": bool(enabled_flag and api_key),
+        "api_key": api_key,
+        "url": _cell(section.get("url")) or "https://api.openai.com/v1/audio/transcriptions",
+        "model": _cell(section.get("model")) or "whisper-1",
+    }
+
+
+def transcribe_not_sprayed_clip(audio_bytes, secrets=None, http_post=None):
+    """Transcribe a clip when [bnsf_speech] is enabled. Otherwise return None.
+
+    http_post(audio_bytes, settings) is injectable for tests. Errors do not
+    include the API key.
+    """
+    settings = speech_settings(secrets)
+    if not settings["enabled"]:
+        return None
+    if not audio_bytes:
+        return None
+    poster = http_post
+    if poster is None:
+        poster = _post_whisper_clip
+    try:
+        text = poster(audio_bytes, settings)
+    except Exception:
+        raise ValueError("Speech service could not transcribe the clip.")
+    return _cell(text)
+
+
+def _post_whisper_clip(audio_bytes, settings):
+    import uuid
+    from urllib.request import Request, urlopen
+
+    boundary = "----cvh" + uuid.uuid4().hex
+    model = settings["model"]
+    body = b"".join([
+        ("--" + boundary + "\r\n").encode(),
+        b'Content-Disposition: form-data; name="model"\r\n\r\n',
+        model.encode(),
+        b"\r\n",
+        ("--" + boundary + "\r\n").encode(),
+        b'Content-Disposition: form-data; name="file"; filename="not-sprayed.wav"\r\n',
+        b"Content-Type: audio/wav\r\n\r\n",
+        audio_bytes,
+        b"\r\n",
+        ("--" + boundary + "--\r\n").encode(),
+    ])
+    request = Request(
+        settings["url"],
+        data=body,
+        headers={
+            "Authorization": "Bearer " + settings["api_key"],
+            "Content-Type": "multipart/form-data; boundary=" + boundary,
+        },
+        method="POST",
+    )
+    with urlopen(request, timeout=30) as response:
+        payload = json.loads(response.read().decode("utf-8"))
+    return _cell(payload.get("text"))
+
+
+NOT_SPRAYED_FIELDS = (
+    "id", "Date", "Date display", "Time", "Time Start", "Time End", "Timestamp",
+    "MP", "MP Start", "MP End", "MP source",
+    "GPS MP", "Subdivision", "Division", "Reason", "Aircraft", "Transcript", "Status",
+)
+
+
+def normalize_not_sprayed(rows):
+    cleaned = []
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        item = {field: _cell(row.get(field)) for field in NOT_SPRAYED_FIELDS}
+        if not item["Status"]:
+            item["Status"] = NOT_SPRAYED_STATUS
+        if not item["Aircraft"]:
+            item["Aircraft"] = DEFAULT_AIRCRAFT_ID
+        if any(item[field] for field in ("Time", "Time Start", "Time End", "MP", "MP Start", "MP End", "Reason", "Transcript")):
+            cleaned.append(item)
+    return cleaned
+
+
+def capture_not_sprayed_fix(lat=None, lon=None, now=None, aircraft="", points=None):
+    """Time plus the nearest tenth-mile BNSF post. Speech can replace the MP later."""
+    now = _as_pacific(now)
+    mp = ""
+    subdivision = ""
+    division = ""
+    if lat is not None and lon is not None:
+        fix = bw.locate_milepost(float(lat), float(lon), points=points)
+        mp = bw.format_milepost(fix.milepost)
+        subdivision = fix.subdivision
+        division = fix.division
+    return {
+        "id": new_entry_id("NS", now),
+        "Date": format_date(now),
+        "Date display": format_date_mdy(now),
+        "Time": format_clock(now),
+        "Timestamp": format_timestamp(now),
+        "MP": mp,
+        "MP source": "GPS" if mp else "",
+        "GPS MP": mp,
+        "Subdivision": subdivision,
+        "Division": division,
+        "Reason": "",
+        "Aircraft": aircraft_id(aircraft),
+        "Transcript": "",
+        "Status": NOT_SPRAYED_STATUS,
+    }
+
+
+def apply_spoken_milepost(row, transcript):
+    """Use a spoken milepost when the pilot says one. Keep the GPS post."""
+    parsed = parse_not_sprayed_speech(transcript)
+    updated = dict(row or {})
+    updated["Transcript"] = _cell(transcript)
+    if parsed["mp"] is not None:
+        updated["MP"] = bw.format_milepost(parsed["mp"])
+        updated["MP source"] = "Spoken"
+        updated["Reason"] = parsed["reason"]
+    else:
+        updated["Reason"] = parsed["reason"]
+    if not updated.get("Status"):
+        updated["Status"] = NOT_SPRAYED_STATUS
+    if not updated.get("Aircraft"):
+        updated["Aircraft"] = DEFAULT_AIRCRAFT_ID
+    return normalize_not_sprayed([updated])[0]
+
+
+def format_not_sprayed_mp(value):
+    """Always one decimal. 9 and 9.0 both display as 9.0."""
+    text = _cell(value)
+    if not text:
+        return ""
+    try:
+        return bw.format_milepost(float(text))
+    except ValueError:
+        return text
+
+
+def not_sprayed_stretch_text(start_mp, stop_mp, reason=""):
+    """The form line Ron asked for: Start: MP 9.3, Stop: MP 11.2, then the reason."""
+    line = "Start: MP %s, Stop: MP %s" % (
+        format_not_sprayed_mp(start_mp),
+        format_not_sprayed_mp(stop_mp),
+    )
+    reason = _cell(reason)
+    if reason:
+        return "%s. %s" % (line, reason)
+    return line
+
+
+def not_sprayed_mp_span(row):
+    """Milepost text for a point or a start-to-end stretch."""
+    row = row or {}
+    start = format_not_sprayed_mp(row.get("MP Start")) or format_not_sprayed_mp(row.get("MP"))
+    end = format_not_sprayed_mp(row.get("MP End"))
+    if start and end:
+        return not_sprayed_stretch_text(start, end, "")
+    return start or end
+
+
+def not_sprayed_when(row):
+    """Clock text for a point or a start-to-end stretch."""
+    row = row or {}
+    start = _cell(row.get("Time Start")) or _cell(row.get("Time"))
+    end = _cell(row.get("Time End"))
+    if start and end and start != end:
+        return "%s–%s" % (start, end)
+    return start
+
+
+def not_sprayed_report_line(item):
+    """One line for the PDF and Word NOT SPRAYED section."""
+    item = item or {}
+    source = item.get("MP source") or "GPS"
+    start = _cell(item.get("MP Start"))
+    stop = _cell(item.get("MP End"))
+    if start and stop:
+        place = not_sprayed_stretch_text(start, stop, item.get("Reason"))
+    else:
+        place = "MP %s. %s" % (
+            not_sprayed_mp_span(item) or "—",
+            item.get("Reason") or "(no reason yet)",
+        )
+    return "%s %s  %s  (%s)  %s  [%s]" % (
+        item.get("Date display") or item.get("Date") or "",
+        not_sprayed_when(item),
+        place,
+        source,
+        item.get("Aircraft") or DEFAULT_AIRCRAFT_ID,
+        item.get("Status") or NOT_SPRAYED_STATUS,
+    )
+
+
+def spray_rows_with_not_sprayed(spray_rows, not_sprayed):
+    """Copy the spray grid and put not-sprayed notes in the first empty rows."""
+    rows = [dict(row) for row in normalize_spray_rows(spray_rows)]
+    cursor = 0
+    for item in normalize_not_sprayed(not_sprayed):
+        while cursor < len(rows) and any(_cell(rows[cursor].get(field)) for field in SPRAY_FIELDS):
+            cursor += 1
+        if cursor >= len(rows):
+            break
+        source = item["MP source"] or "GPS"
+        start_mp = _cell(item.get("MP Start"))
+        end_mp = _cell(item.get("MP End"))
+        rows[cursor]["Time"] = _cell(item.get("Time Start")) or item["Time"]
+        if start_mp and end_mp:
+            rows[cursor]["MP ST"] = format_not_sprayed_mp(start_mp)
+            rows[cursor]["MP END"] = format_not_sprayed_mp(end_mp)
+            rows[cursor]["Notes"] = not_sprayed_stretch_text(start_mp, end_mp, item["Reason"])
+        else:
+            rows[cursor]["MP ST"] = item["MP"]
+            rows[cursor]["Notes"] = "Not sprayed (%s): %s" % (source, item["Reason"])
+        cursor += 1
+    return rows
+
+
 def render_ops_clocks(pilot, now=None):
     """BNSF Start/Stop buttons and editable CVH times, shown on the BNSF Ops page."""
     import streamlit as st
@@ -881,22 +1426,33 @@ def render_ops_clocks(pilot, now=None):
     c1, c2, c3, c4 = st.columns(4)
     with c1:
         if st.button("BNSF Start", key="bnsf_clock_start", use_container_width=True):
-            set_ops_clocks(st.session_state, pilot, {"bnsf_start": format_clock(now)}, now=now)
+            started = start_bnsf_spray(st.session_state, pilot, now=now)
+            st.session_state.bnsf_clock_start_text = started["bnsf_start"]
+            st.session_state.bnsf_clock_end_text = ""
             st.rerun()
     with c2:
         if st.button("BNSF Stop", key="bnsf_clock_stop", use_container_width=True):
-            set_ops_clocks(st.session_state, pilot, {"bnsf_end": format_clock(now)}, now=now)
+            stopped = stop_bnsf_spray(st.session_state, pilot, now=now)
+            st.session_state.bnsf_clock_end_text = stopped["bnsf_end"]
             st.rerun()
     clocks = get_ops_clocks(st.session_state, pilot, now=now)
     with c3:
-        start_val = st.text_input("BNSF Time Start", value=clocks["bnsf_start"], key="bnsf_clock_start_text")
+        if "bnsf_clock_start_text" not in st.session_state:
+            st.session_state.bnsf_clock_start_text = clocks["bnsf_start"]
+        start_val = st.text_input("BNSF Time Start", key="bnsf_clock_start_text")
     with c4:
-        end_val = st.text_input("BNSF Time End", value=clocks["bnsf_end"], key="bnsf_clock_end_text")
+        if "bnsf_clock_end_text" not in st.session_state:
+            st.session_state.bnsf_clock_end_text = clocks["bnsf_end"]
+        end_val = st.text_input("BNSF Time End", key="bnsf_clock_end_text")
     d1, d2 = st.columns(2)
     with d1:
-        cvh_start = st.text_input("CVH Time Start", value=clocks["cvh_start"], key="bnsf_clock_cvh_start")
+        if "bnsf_clock_cvh_start" not in st.session_state:
+            st.session_state.bnsf_clock_cvh_start = clocks["cvh_start"]
+        cvh_start = st.text_input("CVH Time Start", key="bnsf_clock_cvh_start")
     with d2:
-        cvh_end = st.text_input("CVH Time End", value=clocks["cvh_end"], key="bnsf_clock_cvh_end")
+        if "bnsf_clock_cvh_end" not in st.session_state:
+            st.session_state.bnsf_clock_cvh_end = clocks["cvh_end"]
+        cvh_end = st.text_input("CVH Time End", key="bnsf_clock_cvh_end")
     set_ops_clocks(st.session_state, pilot, {
         "bnsf_start": start_val,
         "bnsf_end": end_val,
@@ -905,7 +1461,246 @@ def render_ops_clocks(pilot, now=None):
     }, now=now)
 
 
-def render_daily_field_report(pilot="", aircraft="", weather_records=None, spreadsheet_fn=None, now=None):
+def _not_sprayed_rows():
+    import streamlit as st
+
+    return normalize_not_sprayed(st.session_state.get("bnsf_not_sprayed_rows"))
+
+
+def _store_not_sprayed_rows(rows):
+    import streamlit as st
+
+    cleaned = normalize_not_sprayed(rows)
+    st.session_state.bnsf_not_sprayed_rows = cleaned
+    report = st.session_state.get("bnsf_report_data")
+    if isinstance(report, dict):
+        report["not_sprayed"] = cleaned
+        st.session_state.bnsf_report_data = report
+    return cleaned
+
+
+def _speech_secrets():
+    try:
+        import streamlit as st
+        return st.secrets
+    except Exception:
+        return None
+
+
+def _render_not_sprayed_capture(pilot, aircraft, now, location_getter=None):
+    """In-flight Not sprayed and Mark MP controls. Capture happens on the tap."""
+    import streamlit as st
+    import bnsf_voice
+
+    st.markdown(
+        """
+        <style>
+        div[class*="st-key-bnsf_not_sprayed_voice"] button {
+            min-height: 4.6rem;
+            font-size: 1.45rem;
+            font-weight: 700;
+        }
+        div[class*="st-key-bnsf_not_sprayed_mark"] button {
+            min-height: 3.4rem;
+            font-size: 1.2rem;
+            font-weight: 650;
+        }
+        div[class*="st-key-bnsf_not_sprayed_voice"] button:disabled,
+        div[class*="st-key-bnsf_not_sprayed_mark"] button:disabled {
+            background-color: #d5d8de !important;
+            color: #5c6570 !important;
+            border-color: #c5cad3 !important;
+            opacity: 1 !important;
+            cursor: not-allowed !important;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+    clocks = get_ops_clocks(st.session_state, pilot, now=now)
+    actions = not_sprayed_actions(spraying_in_progress(clocks))
+    st.markdown("**Not sprayed**")
+    if actions["capture"]:
+        st.caption(
+            "Tap Voice commands once, then talk. Say activate milepost, start, stop, and the reason. "
+            "The buttons below are the fallback if the mic drops."
+        )
+    else:
+        st.caption(actions["note"])
+    with st.expander("Voice commands on iPhone and Samsung"):
+        st.markdown(bnsf_voice.VOICE_COMMAND_HELP)
+    voice_session = st.session_state.get("bnsf_voice_session") or bnsf_voice.new_voice_session()
+    voice_speak = st.session_state.get("bnsf_voice_speak") or {"id": 0, "text": ""}
+
+    def _save_voice_row(row):
+        _store_not_sprayed_rows(_not_sprayed_rows() + [row])
+
+    voice_session, voice_speak, _voice_saved = bnsf_voice.render_voice_commands(
+        enabled=actions["capture"],
+        session=voice_session,
+        speak=voice_speak,
+        aircraft=aircraft or DEFAULT_AIRCRAFT_ID,
+        now=now,
+        on_save=_save_voice_row,
+    )
+    st.session_state.bnsf_voice_session = voice_session
+    st.session_state.bnsf_voice_speak = voice_speak
+    if voice_session.get("phase") not in {None, "off"}:
+        st.caption(bnsf_voice.voice_phase_label(voice_session.get("phase")))
+    if st.button(
+        "Not sprayed (voice)",
+        key="bnsf_not_sprayed_voice",
+        type="primary",
+        use_container_width=True,
+        disabled=not actions["capture"],
+    ):
+        st.session_state.bnsf_ns_mode = "voice"
+        st.session_state.bnsf_ns_gps_waited = False
+        st.session_state.pop("bnsf_ns_draft", None)
+        st.session_state.pop("bnsf_ns_text", None)
+        st.session_state.pop("bnsf_ns_audio_id", None)
+        st.session_state.pop("bnsf_ns_audio", None)
+        st.rerun()
+    if st.button("Mark MP", key="bnsf_not_sprayed_mark", use_container_width=True, disabled=not actions["capture"]):
+        st.session_state.bnsf_ns_mode = "mark"
+        st.session_state.bnsf_ns_gps_waited = False
+        st.session_state.pop("bnsf_ns_draft", None)
+        st.rerun()
+
+    mode = st.session_state.get("bnsf_ns_mode")
+    if not actions["capture"] and not st.session_state.get("bnsf_ns_draft"):
+        st.session_state.pop("bnsf_ns_mode", None)
+        mode = None
+    elif not actions["capture"]:
+        mode = None
+    if mode in {"voice", "mark"} and not st.session_state.get("bnsf_ns_draft"):
+        coords = None
+        st.caption("Getting your location… Allow location access if the phone asks.")
+        try:
+            coords = bw.request_browser_location(getter=location_getter)
+        except Exception as exc:
+            st.warning("Could not read GPS (%s). Say the milepost, or edit it after landing." % exc)
+            coords = None
+        if coords is None and location_getter is None and not st.session_state.get("bnsf_ns_gps_waited"):
+            st.session_state.bnsf_ns_gps_waited = True
+            st.stop()
+        lat, lon = (coords or (None, None))
+        draft = capture_not_sprayed_fix(lat, lon, now=now, aircraft=aircraft or DEFAULT_AIRCRAFT_ID)
+        st.session_state.bnsf_ns_draft = draft
+        if mode == "mark":
+            _store_not_sprayed_rows(_not_sprayed_rows() + [draft])
+            st.session_state.pop("bnsf_ns_mode", None)
+            st.session_state.pop("bnsf_ns_draft", None)
+            where = ("MP " + draft["MP"]) if draft["MP"] else "no GPS milepost"
+            st.session_state.bnsf_ns_flash = "Marked %s at %s. Add the reason after landing." % (where, draft["Time"])
+            st.rerun()
+
+    if st.session_state.get("bnsf_ns_flash"):
+        st.success(st.session_state.bnsf_ns_flash)
+        st.session_state.pop("bnsf_ns_flash", None)
+
+    draft = st.session_state.get("bnsf_ns_draft")
+    if st.session_state.get("bnsf_ns_mode") == "voice" and isinstance(draft, dict):
+        where = ("MP " + draft["MP"] + " (GPS)") if draft.get("MP") else "GPS milepost not available"
+        st.info("Captured %s, %s, %s. %s." % (draft.get("Date display") or draft.get("Date"), draft.get("Time"), draft.get("Aircraft") or DEFAULT_AIRCRAFT_ID, where))
+        settings = speech_settings(_speech_secrets())
+        audio = None
+        if hasattr(st, "audio_input"):
+            audio = st.audio_input("Hold to record the reason", key="bnsf_ns_audio")
+        if settings["enabled"]:
+            st.caption("A clip is transcribed on this phone. The API key stays in secrets and is not shown.")
+        else:
+            st.caption(
+                "Automatic transcription is off. Time and milepost are already captured. "
+                "Tap the microphone on the iPhone keyboard in the box below, or type the reason after landing."
+            )
+        if audio is not None and settings["enabled"]:
+            raw = audio.getvalue() if hasattr(audio, "getvalue") else bytes(audio)
+            clip_id = "%s:%s" % (len(raw), raw[:24].hex() if raw else "")
+            if raw and clip_id != st.session_state.get("bnsf_ns_audio_id"):
+                try:
+                    heard = transcribe_not_sprayed_clip(raw, secrets=_speech_secrets())
+                except ValueError as exc:
+                    st.warning(str(exc))
+                    heard = ""
+                st.session_state.bnsf_ns_audio_id = clip_id
+                if heard:
+                    st.session_state.bnsf_ns_text = heard
+                    st.rerun()
+        if "bnsf_ns_text" not in st.session_state:
+            st.session_state.bnsf_ns_text = ""
+        transcript = st.text_area(
+            "Reason (dictate or type)",
+            key="bnsf_ns_text",
+            height=120,
+            placeholder="Example: milepost one twelve point four, trees over the track",
+        )
+        if st.button("Save voice note", key="bnsf_ns_save", type="primary", use_container_width=True):
+            row = apply_spoken_milepost(draft, transcript)
+            _store_not_sprayed_rows(_not_sprayed_rows() + [row])
+            st.session_state.pop("bnsf_ns_mode", None)
+            st.session_state.pop("bnsf_ns_draft", None)
+            st.session_state.pop("bnsf_ns_text", None)
+            st.session_state.pop("bnsf_ns_audio_id", None)
+            label = ("MP " + row["MP"] + " (" + row["MP source"] + ")") if row["MP"] else "no milepost"
+            st.session_state.bnsf_ns_flash = "Saved not-sprayed note at %s, %s. Pending review." % (row["Time"], label)
+            st.rerun()
+        if st.button("Cancel voice note", key="bnsf_ns_cancel"):
+            st.session_state.pop("bnsf_ns_mode", None)
+            st.session_state.pop("bnsf_ns_draft", None)
+            st.session_state.pop("bnsf_ns_text", None)
+            st.rerun()
+
+    rows = _not_sprayed_rows()
+    if rows:
+        st.markdown("**Not sprayed — pending review**")
+        kept = []
+        for index, row in enumerate(rows):
+            source = row["MP source"] or "GPS"
+            title = "%s %s · MP %s (%s) · %s · %s" % (
+                row["Date display"] or row["Date"],
+                not_sprayed_when(row),
+                not_sprayed_mp_span(row) or "—",
+                source,
+                row["Aircraft"] or DEFAULT_AIRCRAFT_ID,
+                row["Status"] or NOT_SPRAYED_STATUS,
+            )
+            with st.expander(title, expanded=False):
+                row_key = row["id"] or str(index)
+                updated = dict(row)
+                if row.get("MP Start") or row.get("MP End"):
+                    updated["MP Start"] = _cell(st.text_input("MP start", value=row.get("MP Start", ""), key="bnsf_ns_edit_mp_s_%s" % row_key))
+                    updated["MP End"] = _cell(st.text_input("MP end", value=row.get("MP End", ""), key="bnsf_ns_edit_mp_e_%s" % row_key))
+                    updated["MP"] = not_sprayed_mp_span(updated)
+                else:
+                    updated["MP"] = _cell(st.text_input("Milepost", value=row["MP"], key="bnsf_ns_edit_mp_%s" % row_key))
+                reason_value = st.text_area("Reason", value=row["Reason"], key="bnsf_ns_edit_reason_%s" % row_key)
+                updated["Reason"] = _cell(reason_value)
+                if row.get("MP Start") and row.get("MP End"):
+                    st.markdown(not_sprayed_stretch_text(row.get("MP Start"), row.get("MP End"), updated.get("Reason") or row.get("Reason")))
+                if row["Transcript"]:
+                    st.caption("Transcript: " + row["Transcript"])
+                c1, c2, c3 = st.columns(3)
+                with c1:
+                    if st.button("Save edit", key="bnsf_ns_edit_save_%s" % row_key):
+                        updated["Status"] = NOT_SPRAYED_STATUS
+                        kept.append(updated)
+                        _store_not_sprayed_rows(kept + rows[index + 1:])
+                        st.rerun()
+                with c2:
+                    if st.button("Mark reviewed", key="bnsf_ns_reviewed_%s" % row_key):
+                        updated["Status"] = "Reviewed"
+                        kept.append(updated)
+                        _store_not_sprayed_rows(kept + rows[index + 1:])
+                        st.rerun()
+                with c3:
+                    if st.button("Delete", key="bnsf_ns_delete_%s" % row_key):
+                        _store_not_sprayed_rows(kept + rows[index + 1:])
+                        st.rerun()
+                kept.append(updated)
+
+
+def render_daily_field_report(pilot="", aircraft="", weather_records=None, spreadsheet_fn=None, now=None, location_getter=None):
     """Daily Field Report section under BNSF Ops."""
     import streamlit as st
 
@@ -916,6 +1711,7 @@ def render_daily_field_report(pilot="", aircraft="", weather_records=None, sprea
         "Builds today's report from weather logs, BNSF Start/Stop, and a 10-day notice "
         "(line segment and product mix). Check every field before you save or download."
     )
+    _render_not_sprayed_capture(pilot, aircraft, now, location_getter=location_getter)
 
     spreadsheet = None
     if spreadsheet_fn is not None:
@@ -974,6 +1770,7 @@ def render_daily_field_report(pilot="", aircraft="", weather_records=None, sprea
                 clocks=clocks,
                 notice=notice,
                 now=now,
+                not_sprayed=_not_sprayed_rows(),
             )
             st.session_state.bnsf_report_data = gathered
             st.session_state.bnsf_report_original = json.loads(json.dumps(gathered, default=str))
@@ -988,6 +1785,7 @@ def render_daily_field_report(pilot="", aircraft="", weather_records=None, sprea
     report = st.session_state.get("bnsf_report_data")
     if not report:
         return
+    report["not_sprayed"] = _not_sprayed_rows()
 
     st.markdown("**Check or edit this report**")
     c1, c2, c3 = st.columns(3)
@@ -1158,5 +1956,5 @@ def render_daily_field_report(pilot="", aircraft="", weather_records=None, sprea
         )
         st.caption(
             "The PDF is built in the app so it works on Streamlit Cloud (LibreOffice is not available there). "
-            "The Word download is the official form with the eagle logo, filled in with this report."
+            "The Word download is the official form with the CVH flag logo, filled in with this report."
         )
