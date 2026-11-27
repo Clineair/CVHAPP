@@ -354,6 +354,43 @@ class SheetAndDocumentTests(unittest.TestCase):
         self.assertIn("NPDES", text)
         self.assertEqual(len(reader.pages), 2)
 
+    def test_flag_logo_renders_and_a_missing_file_still_builds(self):
+        logo = dr.daily_report_logo_path()
+        self.assertIsNotNone(logo)
+        self.assertTrue(logo.endswith("flaglogo_report.png"))
+        self.assertNotIn("/workspace", logo.replace("\\", "/"))
+        self.assertTrue(Path(logo).is_file())
+        self.assertEqual(Path(logo).resolve().parent, ROOT.resolve())
+
+        report, _notice = sample_report()
+        data = dr.build_daily_report_pdf(report)
+        from pypdf import PdfReader
+        page = PdfReader(io.BytesIO(data)).pages[0]
+        xobjects = page["/Resources"]["/XObject"].get_object()
+        images = [name for name in xobjects if xobjects[name].get_object().get("/Subtype") == "/Image"]
+        self.assertTrue(images)
+
+        from docx import Document
+        from docx.oxml.ns import qn
+        document = Document(io.BytesIO(dr.fill_daily_report_docx(report)))
+        blip = document.element.find(".//" + qn("a:blip"))
+        self.assertIsNotNone(blip)
+        part = document.part.related_parts[blip.get(qn("r:embed"))]
+        self.assertGreater(len(part.blob), 20000)
+        self.assertNotEqual(part.blob, (ROOT / "data" / "cvh_eagle_logo.jpeg").read_bytes())
+        width, height = dr.flag_logo_size_inches()
+        extent = document.element.find(".//" + qn("wp:extent"))
+        self.assertEqual(int(extent.get("cx")), int(round(width * 914400)))
+        self.assertEqual(int(extent.get("cy")), int(round(height * 914400)))
+
+        with mock.patch.object(dr, "daily_report_logo_path", return_value=None):
+            pdf = dr.build_daily_report_pdf(report)
+            docx = dr.fill_daily_report_docx(report)
+        self.assertTrue(pdf.startswith(b"%PDF"))
+        self.assertTrue(docx.startswith(b"PK"))
+        reader = PdfReader(io.BytesIO(pdf))
+        self.assertIn("DAILY FIELD REPORT", "\n".join(p.extract_text() or "" for p in reader.pages))
+
 
 class NotSprayedTests(unittest.TestCase):
     def test_parses_digit_and_spoken_mileposts(self):

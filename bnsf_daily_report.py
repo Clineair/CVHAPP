@@ -17,7 +17,16 @@ DEFAULT_AIRCRAFT_ID = "N480ML"
 WEATHER_SLOTS = 6
 SPRAY_ROWS = 30
 FORM_TEMPLATE = Path(__file__).resolve().parent / "data" / "CVH_DAILY_FIELD_REPORT.docx"
-FORM_LOGO = Path(__file__).resolve().parent / "data" / "cvh_eagle_logo.jpeg"
+# Bundled letterhead. flaglogo_report.png is the copy the other CVH reports use.
+# flaglogo.png is the same artwork. Never an absolute /workspace path.
+_REPO_ROOT = Path(__file__).resolve().parent
+FLAG_LOGO_CANDIDATES = (
+    _REPO_ROOT / "flaglogo_report.png",
+    _REPO_ROOT / "flaglogo.png",
+)
+# Same size as the safety-meeting and IFTA letterhead (320×214 artwork).
+FLAG_LOGO_WIDTH_IN = 1.25
+FLAG_LOGO_HEIGHT_RATIO = 214 / 320
 NPDES_LINE = "Met NPDES Requirements.  Buffered Water Crossings 50’ on Each Side."
 FORM_PRODUCT_MIX_FALLBACK = (
     "Triumph 22k: 24 oz/@, Edict RTU: 8 oz/@, MSM 60 DF: 1oz/@, "
@@ -509,10 +518,14 @@ def record_to_report(record):
 
 
 def _set_paragraph_text(paragraph, text):
+    from docx.oxml.ns import qn
+
     runs = paragraph.runs
     if runs:
         runs[0].text = text
         for run in runs[1:]:
+            if run._r.find(qn("w:drawing")) is not None:
+                continue
             run.text = ""
     else:
         paragraph.add_run(text)
@@ -636,16 +649,76 @@ def fill_daily_report_docx(report, template_path=None):
         if item["Transcript"]:
             document.add_paragraph("Transcript: " + item["Transcript"])
 
+    _apply_flag_logo_to_docx(document)
     buffer = io.BytesIO()
     document.save(buffer)
     return buffer.getvalue()
 
 
-def _pdf_logo():
-    path = FORM_LOGO
-    if path.is_file():
-        return str(path)
+def daily_report_logo_path():
+    """Repo-bundled CVH flag logo, or None. A missing file must not break the report."""
+    for path in FLAG_LOGO_CANDIDATES:
+        try:
+            if path.is_file():
+                return str(path)
+        except OSError:
+            continue
     return None
+
+
+def flag_logo_size_inches():
+    return FLAG_LOGO_WIDTH_IN, FLAG_LOGO_WIDTH_IN * FLAG_LOGO_HEIGHT_RATIO
+
+
+def _flag_logo_flowable(Image, Paragraph, small_bold):
+    """ReportLab image, or a text stand-in when the bundled file cannot be drawn."""
+    from reportlab.lib.units import inch
+
+    path = daily_report_logo_path()
+    width_in, height_in = flag_logo_size_inches()
+    if path:
+        try:
+            return Image(path, width=width_in * inch, height=height_in * inch)
+        except Exception:
+            pass
+    return Paragraph("CENTRAL VALLEY<br/>HELICOPTERS", small_bold)
+
+
+def _apply_flag_logo_to_docx(document):
+    """Swap the form's header picture for the bundled flag. Leave it alone if that fails."""
+    path = daily_report_logo_path()
+    if not path:
+        return
+    try:
+        from PIL import Image as PILImage
+        from docx.oxml.ns import qn
+
+        image = PILImage.open(path).convert("RGB")
+        buffer = io.BytesIO()
+        image.save(buffer, format="JPEG", quality=90)
+        jpeg = buffer.getvalue()
+        blip = document.element.find(".//" + qn("a:blip"))
+        if blip is None:
+            return
+        embed = blip.get(qn("r:embed"))
+        part = document.part.related_parts.get(embed)
+        if part is None:
+            return
+        part._blob = jpeg
+        width = int(round(FLAG_LOGO_WIDTH_IN * 914400))
+        height = int(round(FLAG_LOGO_WIDTH_IN * FLAG_LOGO_HEIGHT_RATIO * 914400))
+        drawing = blip
+        while drawing is not None and not str(drawing.tag).endswith("drawing"):
+            drawing = drawing.getparent()
+        if drawing is None:
+            return
+        for element in drawing.iter():
+            if element.tag.endswith("extent") or element.tag.endswith("}ext"):
+                if "cx" in element.attrib and "cy" in element.attrib:
+                    element.set("cx", str(width))
+                    element.set("cy", str(height))
+    except Exception:
+        return
 
 
 def build_daily_report_pdf(report):
@@ -684,15 +757,11 @@ def build_daily_report_pdf(report):
         return Paragraph((_cell(text) or "&nbsp;").replace(" ", "&nbsp;") if False else (_cell(text).replace("&", "&amp;") or " "), style)
 
     flow = []
-    logo_path = _pdf_logo()
     date_text = "DATE:  " + (report.get("Date display") or format_date_mdy())
-    if logo_path:
-        logo = Image(logo_path, width=0.95 * inch, height=0.64 * inch)
-    else:
-        logo = Paragraph("CENTRAL VALLEY<br/>HELICOPTERS", small_bold)
+    logo = _flag_logo_flowable(Image, Paragraph, small_bold)
     header = Table(
         [[logo, Paragraph("DAILY FIELD REPORT", title_style), Paragraph(date_text, date_style)]],
-        colWidths=[1.15 * inch, 4.5 * inch, 2.0 * inch],
+        colWidths=[1.45 * inch, 4.2 * inch, 2.0 * inch],
     )
     header.setStyle(TableStyle([
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
@@ -1887,5 +1956,5 @@ def render_daily_field_report(pilot="", aircraft="", weather_records=None, sprea
         )
         st.caption(
             "The PDF is built in the app so it works on Streamlit Cloud (LibreOffice is not available there). "
-            "The Word download is the official form with the eagle logo, filled in with this report."
+            "The Word download is the official form with the CVH flag logo, filled in with this report."
         )
